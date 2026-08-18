@@ -3837,6 +3837,807 @@ def derive_v4_boundary_attribution(
     return {"boundary_attribution": attribution, "provenance": dict(provenance)}
 
 
+# ---------------------------------------------------------------------------
+# Unit #40 -- the TREATMENT for a boundary-attributed runway shortage: the
+# lasso that would close it.
+#
+# THIS IS NOT A REGENERATION, and the distinction is the whole design. Unit
+# #38's :func:`create_regenerate_job` re-derives an artifact from the SAME
+# source bytes through the corrected converter, sha-verified, because the
+# defect it treats is in the CONVERTER. A runway shortage attributed to the
+# boundary is the opposite case: the road that would close it is not in the
+# stored ``source.osm`` at all -- unit #39 measures exactly that, and on the
+# motivating real job it lands as ``continuation_beyond_extract`` (the extract
+# is itself clipped at the same lasso and cannot testify past its own edge).
+# Re-running the same bytes would reproduce the same shortage exactly.
+# Closing it needs a NEW EXTRACT of a WIDER region, i.e. a NEW GENERATION.
+#
+# So what this derives is a REGION, not a job: the user's own requested
+# polygon with a finger spliced into it, handed to the region page's editable
+# lasso where the human sees it over the basemap and presses that page's own
+# 추출 button. Nothing here starts anything, nothing here touches the parent.
+# ---------------------------------------------------------------------------
+
+#: How far past the measured deficit the proposed finger reaches. A ROUND 20%,
+#: named as round rather than dressed up as a measurement -- the deficit itself
+#: is the gate's own number and needs no help, but a finger measured to exactly
+#: the deficit can still come back short: the re-extract synthesizes a NEW
+#: boundary node on the NEW ring, the corridor crosses that ring at whatever
+#: angle it crosses, and the new draft re-decomposes the way into links at its
+#: own node merges. 20% is a chosen overshoot, and it is reported as
+#: ``margin_m`` beside ``deficit_m`` precisely so a reader can disagree with it
+#: by dragging a vertex.
+_V4_EXTENSION_MARGIN_FRACTION = 0.20
+
+#: The one sentence every extension carries as ``provenance['basis']``.
+_V4_EXTENSION_MARGIN_BASIS = (
+    "deficit + 20% (a round overshoot, named as round -- the re-extract cuts its own "
+    "boundary node on the new ring and the new draft re-decomposes the way, so the finger "
+    "is drawn past the measured deficit rather than exactly onto it)"
+)
+
+#: Where an extension's facts may ever come from, recorded in every
+#: derivation's provenance the way :data:`_V4_ATTRIBUTION_SOURCE_FIELD` is.
+_V4_EXTENSION_SOURCE_FIELD = (
+    "boundary_attribution + metadata.boundary.requested_polygon_wgs84 + way/nd"
+)
+
+#: The sharpest centreline bend the finger's two offset walls may miter around
+#: before the patch is refused rather than emitted. A miter longer than twice
+#: the half-width is a turn past ~120 deg, where the outer wall overshoots far
+#: enough that the emitted shape stops resembling the corridor it claims to
+#: cover -- and a shape a reader cannot recognise as their road is worse than
+#: a named refusal.
+_V4_EXTENSION_MITER_LIMIT = 2.0
+
+# The centreline's own simplification tolerance is NOT declared here: it is
+# ``project.MAX_PLANIMETRIC_ERROR_M``, imported at the point of use below —
+# imported behaviour rather than a copied number, the same discipline
+# ``osm_fetch.MAX_REGION_HALF_EXTENT_M`` states for the radius it borrows. A
+# bend under the projection's own planimetric budget is not a bend this
+# geometry can honestly claim, and every centreline vertex kept becomes TWO
+# vertices on a ring with a 64-corner cap.
+
+
+def _draft_requested_ring(
+    boundary_meta: Mapping[str, Any],
+) -> tuple[tuple[float, float], ...] | None:
+    """The REQUESTED polygon the census recorded, as a ``(lat, lon)`` ring --
+    or ``None`` when the job recorded no polygon (a rectangle region, or a
+    census predating the field). Same field
+    :func:`_point_in_requested_region` judges against, read the same way."""
+    polygon = boundary_meta.get("requested_polygon_wgs84")
+    if not isinstance(polygon, list) or len(polygon) < 3:
+        return None
+    try:
+        return tuple((float(point["lat"]), float(point["lon"])) for point in polygon)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _way_path_outward(
+    node_ids: tuple[int, ...], from_node: int, far_node: int
+) -> list[int]:
+    """The node refs of ONE way between ``from_node`` (exclusive) and
+    ``far_node`` (inclusive), walking OUTWARD -- i.e. the reverse of the
+    arrival run :func:`_arriving_run` measured. Empty when ``far_node`` is not
+    one of the way's two ends, which is the only shape ``_arriving_run``
+    returns."""
+    positions = [i for i, ref in enumerate(node_ids) if ref == from_node]
+    if not positions:
+        return []
+    if far_node == node_ids[0]:
+        return list(reversed(node_ids[: max(positions)]))
+    if far_node == node_ids[-1]:
+        return list(node_ids[min(positions) + 1 :])
+    return []
+
+
+def _source_corridor_walk(
+    index: Mapping[str, Any],
+    *,
+    outer_node: int,
+    corridor_way_id: int,
+    road_name: str,
+    travel_forward: bool,
+    visited: set[int],
+    remaining_m: float,
+) -> tuple[list[tuple[float, float]], list[int]]:
+    """The SOURCE's own coordinates for the road continuing outward from
+    ``outer_node`` -- unit #39's continuation walk, returning GEOMETRY instead
+    of a length.
+
+    Same rules, deliberately, so the two can never disagree about which road
+    continues: a way must ARRIVE at the current stop
+    (:func:`_arriving_run`, the finding's own travel direction for its own
+    way), it must be the same way id or carry the same road NAME (a junction
+    does not end a road that continues through it; a differently named road is
+    not this corridor), and the longest arrival run wins with ties resolved to
+    the smallest way id. The walk stops when ``remaining_m`` is covered, when
+    no same-road way arrives, or at :data:`_V4_SOURCE_WALK_MAX_WAYS` hops.
+
+    Inherits #39's own recorded conservatism verbatim: a name written with a
+    spacing variant under-matches and the walk stops early. That can only
+    SHORTEN the measured continuation, and what a short continuation costs
+    here is honest -- the finger's remaining length is drawn on the last
+    MEASURED bearing and reported as extrapolated, never claimed as source.
+    """
+    points: list[tuple[float, float]] = []
+    walked: list[int] = []
+    node_latlon = index["node_latlon"]
+    current = outer_node
+    accumulated = 0.0
+    previous = node_latlon.get(outer_node)
+    hops = 0
+    while accumulated < remaining_m and hops < _V4_SOURCE_WALK_MAX_WAYS:
+        hops += 1
+        best: tuple[float, int, int] | None = None
+        for candidate_id in index["node_ways"].get(current, ()):
+            if candidate_id in visited:
+                continue
+            cand_refs, cand_oneway = index["ways"][candidate_id]
+            travel = travel_forward if candidate_id == corridor_way_id else None
+            run = _arriving_run(
+                cand_refs, cand_oneway, current, node_latlon, travel_forward=travel
+            )
+            if run is None:
+                continue
+            same_road = candidate_id == corridor_way_id or (
+                bool(road_name) and index["way_names"].get(candidate_id, "") == road_name
+            )
+            if not same_road:
+                continue
+            if (
+                best is None
+                or run[0] > best[0]
+                or (run[0] == best[0] and candidate_id < best[2])
+            ):
+                best = (run[0], run[1], candidate_id)
+        if best is None:
+            break
+        path = _way_path_outward(index["ways"][best[2]][0], current, best[1])
+        if not path:
+            break
+        visited.add(best[2])
+        walked.append(best[2])
+        for ref in path:
+            latlon = node_latlon.get(ref)
+            if latlon is None:
+                break
+            accumulated += _latlon_metres(previous, latlon)
+            points.append(latlon)
+            previous = latlon
+        current = best[1]
+    return points, walked
+
+
+def _chain_lengths(points: list[tuple[float, float]]) -> list[float]:
+    """Cumulative planar lengths along a projected chain, ``[0.0, ...]``."""
+    out = [0.0]
+    for index in range(1, len(points)):
+        (x_a, y_a), (x_b, y_b) = points[index - 1], points[index]
+        out.append(out[-1] + math.hypot(x_b - x_a, y_b - y_a))
+    return out
+
+
+def _first_ring_exit(
+    chain: list[tuple[float, float]], ring: list[tuple[float, float]]
+) -> tuple[int, int, tuple[float, float]] | None:
+    """Where a projected chain FIRST leaves a projected ring.
+
+    Returns ``(chain_segment_index, ring_edge_index, crossing_point)`` for the
+    smallest ``(segment, t)`` at which the chain meets the ring, or ``None``
+    when it never does. A chain that STARTS on the ring (the trim's own
+    synthesized terminal does exactly that) reports ``t = 0`` on the edge it
+    starts on, which is the answer that unit wants: the mouth of the finger
+    belongs on the edge the boundary node was cut into.
+
+    ``None`` is also returned when two ring edges are met at the same point --
+    the chain leaves through a ring VERTEX, where a finger's mouth would
+    straddle two edges and there is no single edge to splice into. The caller
+    names that refusal rather than picking one of the two.
+    """
+    ring_count = len(ring)
+    for segment in range(len(chain) - 1):
+        (ax, ay), (bx, by) = chain[segment], chain[segment + 1]
+        dx, dy = bx - ax, by - ay
+        hits: list[tuple[float, int, tuple[float, float]]] = []
+        for edge in range(ring_count):
+            (ex, ey) = ring[edge]
+            (fx, fy) = ring[(edge + 1) % ring_count]
+            sx, sy = fx - ex, fy - ey
+            denom = dx * sy - dy * sx
+            if denom == 0.0:
+                continue
+            qx, qy = ex - ax, ey - ay
+            t = (qx * sy - qy * sx) / denom
+            u = (qx * dy - qy * dx) / denom
+            if t < -1e-9 or t > 1.0 + 1e-9:
+                continue
+            if u < -1e-9 or u > 1.0 + 1e-9:
+                continue
+            t = min(max(t, 0.0), 1.0)
+            hits.append((t, edge, (ax + t * dx, ay + t * dy)))
+        if not hits:
+            continue
+        hits.sort(key=lambda hit: (hit[0], hit[1]))
+        first_t = hits[0][0]
+        tied = [hit for hit in hits if abs(hit[0] - first_t) <= 1e-9]
+        if len(tied) > 1:
+            return None
+        return segment, hits[0][1], hits[0][2]
+    return None
+
+
+def _simplify_chain(
+    points: list[tuple[float, float]], tolerance_m: float
+) -> list[tuple[float, float]]:
+    """Drop chain vertices whose perpendicular deviation from the line between
+    their surviving neighbours is under ``tolerance_m``. Ends are always kept.
+
+    Not cosmetic: every centreline vertex becomes TWO ring vertices, and the
+    ring the region page will accept has a 64-corner cap.
+    """
+    if len(points) <= 2:
+        return list(points)
+    kept = [points[0]]
+    for index in range(1, len(points) - 1):
+        (ax, ay) = kept[-1]
+        (bx, by) = points[index]
+        (cx, cy) = points[index + 1]
+        span = math.hypot(cx - ax, cy - ay)
+        if span <= 0.0:
+            continue
+        deviation = abs((cx - ax) * (ay - by) - (ax - bx) * (cy - ay)) / span
+        if deviation >= tolerance_m:
+            kept.append(points[index])
+    kept.append(points[-1])
+    return kept
+
+
+def _corridor_walls(
+    chain: list[tuple[float, float]], half_width_m: float
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]], float] | None:
+    """The two offset walls of a corridor of constant half-width.
+
+    Returns ``(left, right, worst_miter)`` with one point per chain vertex on
+    each side, mitered at interior vertices, or ``None`` when a bend needs a
+    miter past :data:`_V4_EXTENSION_MITER_LIMIT` (the caller refuses by name).
+    """
+    count = len(chain)
+    normals: list[tuple[float, float]] = []
+    for index in range(count - 1):
+        (ax, ay), (bx, by) = chain[index], chain[index + 1]
+        length = math.hypot(bx - ax, by - ay)
+        if length <= 0.0:
+            return None
+        normals.append((-(by - ay) / length, (bx - ax) / length))
+    left: list[tuple[float, float]] = []
+    right: list[tuple[float, float]] = []
+    worst = 1.0
+    for index, (x, y) in enumerate(chain):
+        if index == 0:
+            nx, ny = normals[0]
+            scale = 1.0
+        elif index == count - 1:
+            nx, ny = normals[-1]
+            scale = 1.0
+        else:
+            (px, py), (qx, qy) = normals[index - 1], normals[index]
+            mx, my = px + qx, py + qy
+            length = math.hypot(mx, my)
+            if length <= 0.0:
+                return None
+            mx, my = mx / length, my / length
+            projection = mx * px + my * py
+            if projection <= 0.0:
+                return None
+            scale = 1.0 / projection
+            if scale > _V4_EXTENSION_MITER_LIMIT:
+                return None
+            worst = max(worst, scale)
+            nx, ny = mx, my
+        left.append((x + nx * half_width_m * scale, y + ny * half_width_m * scale))
+        right.append((x - nx * half_width_m * scale, y - ny * half_width_m * scale))
+    return left, right, worst
+
+
+def derive_v4_boundary_extension(
+    finding: Mapping[str, Any],
+    attribution: Mapping[str, Any] | None,
+    *,
+    draft: "DraftNetwork | None",
+    job_id: str | None,
+) -> dict[str, Any]:
+    """Unit #40: the WIDER LASSO that would close a boundary-attributed runway
+    shortage — the user's own polygon with a finger spliced into it.
+
+    Takes unit #39's measured :func:`derive_v4_boundary_attribution` output and
+    the job's own recorded requested region, and returns either a proposed
+    region or a NAMED reason there is none. It starts nothing, writes nothing
+    and never touches the parent job: the proposal's destination is the region
+    page's editable lasso, whose own 추출 button is the ask-first gate.
+
+    **Why a new generation and not a regeneration** (unit #38): a regeneration
+    re-derives from the SAME source bytes, and the road that would close this
+    shortage is not in those bytes — the stored ``source.osm`` was fetched with
+    the very region being extended, so it is clipped at the same edge (which is
+    what #39's ``continuation_beyond_extract`` records). Re-running it would
+    reproduce the shortage exactly.
+
+    The measurement, in the order it is taken:
+
+    1. **Eligibility is the attribution's**, never re-litigated here. Only
+       ``status == "boundary_attributed"`` is treatable: an ``interior``
+       shortage is the ROAD's, and extending the region for it would be a lie
+       told in the shape of a polygon (``interior_not_eligible``).
+    2. **The corridor's geometry beyond the boundary is the SOURCE's own.**
+       For a trim-marked boundary the walk starts at the way's last KEPT node
+       (inside the region) and steps outward through the very nodes the trim
+       cut, then continues through :func:`_source_corridor_walk` — #39's
+       continuation rules, returning coordinates. The direction is therefore
+       MEASURED at every step the source declares. When the source runs out
+       before the needed length (the real link-90 case: 127.06 m declared
+       against a 147.85 m deficit, because the extract is clipped too), the
+       remainder is drawn on the LAST MEASURED BEARING and reported as
+       ``extrapolated_m`` — never folded into the measured figure. A straight
+       continuation is an honest REQUEST for data; it is not a claim about the
+       road, which is exactly why the result is handed to a human on a map
+       instead of being fetched.
+    3. **The patch covers ``deficit_m`` plus a stated margin**
+       (:data:`_V4_EXTENSION_MARGIN_BASIS`) along the corridor, and the
+       corridor's own declared roadway (``lanes × lane_width_m``, census-read)
+       plus that same margin on each side across it.
+    4. **The splice is a FINGER, never a hull.** The patch's mouth is placed on
+       the single ring edge the corridor crosses, and its vertices are INSERTED
+       into the vertex ring between that edge's two ends — so every corner the
+       user drew survives, in order, and area the user deliberately excluded
+       stays excluded. A convex hull of the same points would silently swallow
+       it. The result is checked three ways before it is returned: the ring is
+       SIMPLE (the region kernel's own ``_segments_cross`` /
+       ``_segments_overlap``, the same pair that judges a drawn lasso), every
+       patch vertex other than the two mouth points lies OUTSIDE the original
+       ring (so the detour bulges outward and the original interior is
+       contained), and the whole shape passes
+       :class:`services.osm_fetch.RegionPolygon` — the constructor the fetch
+       itself is held to, vertex cap included.
+    5. **The region cap is the region page's own**
+       (:func:`services.osm_fetch.measure_region`), not a second copy: refused
+       by name with BOTH numbers when the widened shape is over it.
+
+    Returns, on success::
+
+        {"extended_polygon_wgs84": [[lat, lon], ...],
+         "added_area_km2": float, "extended_area_km2": float,
+         "corridor_patch": {...}, "provenance": {...}}
+
+    and otherwise ``{"reason_code": ..., "detail": ...}``. The named reasons:
+    ``no_boundary_attribution``, ``interior_not_eligible``,
+    ``attribution_incomplete``, ``no_draft_census``, ``no_draft_record``,
+    ``requested_region_not_a_polygon``, ``requested_polygon_invalid``,
+    ``source_artifact_missing``, ``way_not_in_source``,
+    ``trim_record_unusable``, ``no_measured_continuation_direction``,
+    ``corridor_start_outside_requested_region``,
+    ``corridor_does_not_leave_requested_region``,
+    ``crossing_edge_unidentifiable``, ``corridor_bend_too_sharp``,
+    ``patch_mouth_exceeds_crossing_edge``, ``patch_re_enters_requested_region``,
+    ``extension_polygon_self_intersects``,
+    ``extension_polygon_refused_by_region_kernel`` and
+    ``extension_exceeds_region_cap``.
+    """
+    from services.genesis.osm import _inside_polygon  # noqa: PLC0415
+    from services.osm_fetch import (  # noqa: PLC0415
+        OsmFetchRefused,
+        RegionPolygon,
+        _segments_cross,
+        _segments_overlap,
+        measure_region,
+    )
+    from services.genesis.project import (  # noqa: PLC0415
+        MAX_PLANIMETRIC_ERROR_M,
+        LocalTangentPlane,
+    )
+
+    def _nothing(reason_code: str, detail: str) -> dict[str, Any]:
+        return {"reason_code": reason_code, "detail": detail}
+
+    # ---- 1. eligibility: the attribution's, not this function's ------------
+    if not isinstance(attribution, Mapping) or not attribution:
+        return _nothing(
+            "no_boundary_attribution",
+            "no boundary attribution was derived for this finding, so there is nothing to "
+            "attribute a region extension to -- unit #39's own named reason says why",
+        )
+    status = str(attribution.get("status") or "")
+    if status == "interior":
+        return _nothing(
+            "interior_not_eligible",
+            "the corridor ends INSIDE the model, not at the requested boundary -- the "
+            "shortage is the road's, and widening the region for it would propose an "
+            "extract that cannot contain the road it claims to add",
+        )
+    if status != "boundary_attributed":
+        return _nothing(
+            "no_boundary_attribution",
+            f"the attribution's status is {status or '(absent)'!r}, and only "
+            "'boundary_attributed' has a region treatment",
+        )
+    try:
+        deficit_m = float(attribution["deficit_m"])
+        way_id = int(attribution["way_id"])
+        boundary_node = int(attribution["boundary_node"])
+    except (KeyError, TypeError, ValueError):
+        return _nothing(
+            "attribution_incomplete",
+            "the attribution carries no usable deficit_m / way_id / boundary_node triple",
+        )
+    if deficit_m <= 0:
+        return _nothing(
+            "attribution_incomplete",
+            f"the attribution's deficit_m is {deficit_m} -- there is no shortage to close",
+        )
+
+    if draft is None:
+        return _nothing(
+            "no_draft_census",
+            "this job's *.genesis.json census is absent, unreadable, or does not validate",
+        )
+    metadata = draft.metadata or {}
+    boundary_meta = metadata.get("boundary")
+    boundary_meta = boundary_meta if isinstance(boundary_meta, Mapping) else {}
+    ring_wgs84 = _draft_requested_ring(boundary_meta)
+    if ring_wgs84 is None:
+        return _nothing(
+            "requested_region_not_a_polygon",
+            "the census records no requested POLYGON for this job (a rectangle region, or a "
+            "census older than the field). The treatment hands a lasso to the lasso page, "
+            "and rendering a rectangle as a lasso would show the user corners they never drew",
+        )
+    index = _source_osm_index(job_id) if job_id else None
+    if index is None:
+        return _nothing(
+            "source_artifact_missing",
+            "the job's source .osm is absent or unreadable, so the road's own direction "
+            "beyond the boundary cannot be measured and would have to be guessed",
+        )
+    if way_id not in index["ways"]:
+        return _nothing(
+            "way_not_in_source",
+            f"the attribution names way {way_id}, but the source holds no drivable way with "
+            "that id",
+        )
+
+    # ---- 2. the corridor: the census link, then the source's coordinates ---
+    corridor_links = [
+        link
+        for link in draft.links
+        if int(link.from_node_osm_id) == boundary_node and int(link.osm_way_id) == way_id
+    ]
+    if not corridor_links:
+        return _nothing(
+            "no_draft_record",
+            f"the census declares no link entering node {boundary_node} on way {way_id}, so "
+            "the corridor's own roadway width could not be read",
+        )
+    corridor_link = min(corridor_links, key=lambda link: int(link.id))
+    roadway_width_m = round(float(corridor_link.lanes) * float(corridor_link.lane_width_m), 2)
+
+    node_refs, _oneway = index["ways"][way_id]
+    node_latlon = index["node_latlon"]
+    trim = attribution.get("way_trim")
+    trim = trim if isinstance(trim, Mapping) else None
+    visited: set[int] = set()
+    chain_wgs84: list[tuple[float, float]] = []
+    if trim is not None:
+        try:
+            nodes_cut = int(trim.get("nodes_cut") or 0)
+        except (TypeError, ValueError):
+            nodes_cut = 0
+        trim_end = str(trim.get("end") or "start")
+        if nodes_cut <= 0 or nodes_cut >= len(node_refs):
+            return _nothing(
+                "trim_record_unusable",
+                f"the trim record at node {boundary_node} cut {nodes_cut} of way {way_id}'s "
+                f"{len(node_refs)} node(s) -- there is no kept node left to start the "
+                "corridor's outward walk from",
+            )
+        # The walk starts at the last node the trim KEPT (inside the region) and
+        # steps outward through the nodes it cut. The ring crossing between
+        # those two is where the generator synthesized the boundary terminal,
+        # recomputed below from the ring itself rather than read off an offset
+        # carriageway's first point.
+        if trim_end == "start":
+            seed = [node_refs[nodes_cut]] + list(reversed(node_refs[:nodes_cut]))
+            outer_node = node_refs[0]
+        else:
+            seed = [node_refs[len(node_refs) - nodes_cut - 1]] + list(
+                node_refs[len(node_refs) - nodes_cut :]
+            )
+            outer_node = node_refs[-1]
+        visited.add(way_id)
+        for ref in seed:
+            latlon = node_latlon.get(ref)
+            if latlon is None:
+                break
+            chain_wgs84.append(latlon)
+    else:
+        # An UNTRIMMED boundary end (the dangling-approach witness): the
+        # boundary node is a real source node, and everything beyond it is
+        # found by the same continuation walk.
+        latlon = node_latlon.get(boundary_node)
+        if latlon is None:
+            return _nothing(
+                "no_measured_continuation_direction",
+                f"the source holds no coordinate for boundary node {boundary_node}, so the "
+                "corridor's outward direction could not be measured",
+            )
+        chain_wgs84.append(latlon)
+        outer_node = boundary_node
+
+    margin_m = round(deficit_m * _V4_EXTENSION_MARGIN_FRACTION, 2)
+    needed_m = round(deficit_m + margin_m, 2)
+    walked_points, walked_ways = _source_corridor_walk(
+        index,
+        outer_node=outer_node,
+        corridor_way_id=way_id,
+        road_name=index["way_names"].get(way_id, ""),
+        travel_forward=bool(corridor_link.forward),
+        visited=visited,
+        # Deliberately generous: the walk is measured from the boundary, while
+        # the length that matters is measured from the ring crossing, which the
+        # projection below places somewhere along the first segment.
+        remaining_m=needed_m,
+    )
+    chain_wgs84.extend(walked_points)
+    if len(chain_wgs84) < 2:
+        return _nothing(
+            "no_measured_continuation_direction",
+            "the source declares no node beyond the boundary on this corridor, so the "
+            "direction to extend in could only be guessed",
+        )
+
+    # ---- 3. one plane for all of it ---------------------------------------
+    # The region page's own convention: the projection is built about the
+    # requested polygon's BOUNDING-BOX centre (`osm_fetch.measure_region`), so
+    # the metres this splice reasons in are the metres that shape is measured
+    # in. The transform is affine and separable, so a straight ring edge stays
+    # a straight ring edge and a point's side of it never changes.
+    lats = [lat for lat, _lon in ring_wgs84]
+    lons = [lon for _lat, lon in ring_wgs84]
+    plane = LocalTangentPlane(
+        (min(lats) + max(lats)) / 2.0, (min(lons) + max(lons)) / 2.0
+    )
+    ring_xy = [plane.forward(lat, lon) for lat, lon in ring_wgs84]
+    chain_xy = [plane.forward(lat, lon) for lat, lon in chain_wgs84]
+
+    if not _inside_polygon(chain_wgs84[0][0], chain_wgs84[0][1], ring_wgs84):
+        return _nothing(
+            "corridor_start_outside_requested_region",
+            "the corridor's inward-most node beyond the boundary already lies outside the "
+            "requested polygon -- conflicting census evidence, reported rather than "
+            "adjudicated",
+        )
+    if all(_inside_polygon(lat, lon, ring_wgs84) for lat, lon in chain_wgs84):
+        return _nothing(
+            "corridor_does_not_leave_requested_region",
+            "every node the source declares on this corridor lies inside the requested "
+            "polygon, so no road beyond the region was measured to extend toward",
+        )
+    exit_hit = _first_ring_exit(chain_xy, ring_xy)
+    if exit_hit is None:
+        return _nothing(
+            "crossing_edge_unidentifiable",
+            "the corridor leaves the requested ring through a CORNER (two edges meet at the "
+            "one crossing point), or its exit solved on no edge at all -- either way there is "
+            "no single edge to open a finger onto, and a splice that straddled two edges of "
+            "the user's own shape would not be their shape any more",
+        )
+    segment_index, edge_index, crossing_xy = exit_hit
+
+    # ---- 4. the patch centreline, from the crossing outward ---------------
+    outward = [crossing_xy] + chain_xy[segment_index + 1 :]
+    if len(outward) < 2:
+        # The crossing landed on the chain's LAST segment: the direction is
+        # that segment's own, measured, and everything past it is extrapolated.
+        (ax, ay), (bx, by) = chain_xy[segment_index], chain_xy[segment_index + 1]
+        length = math.hypot(bx - ax, by - ay)
+        if length <= 0.0:  # pragma: no cover - a duplicated source node
+            return _nothing(
+                "no_measured_continuation_direction",
+                "the corridor's last measured segment has zero length",
+            )
+        outward = [crossing_xy, (bx, by)]
+    cumulative = _chain_lengths(outward)
+    measured_m = cumulative[-1]
+    extrapolated_m = 0.0
+    if measured_m >= needed_m:
+        # Cut the centreline exactly at the needed length: the finger reaches
+        # the deficit plus its margin and no further.
+        for index_ in range(1, len(outward)):
+            if cumulative[index_] >= needed_m:
+                over = cumulative[index_] - needed_m
+                (ax, ay), (bx, by) = outward[index_ - 1], outward[index_]
+                segment_len = cumulative[index_] - cumulative[index_ - 1]
+                ratio = 1.0 - (over / segment_len) if segment_len > 0 else 1.0
+                outward = outward[:index_] + [
+                    (ax + (bx - ax) * ratio, ay + (by - ay) * ratio)
+                ]
+                break
+        measured_m = needed_m
+    else:
+        # The source itself ran out (it is clipped at the same lasso). The
+        # remaining metres are drawn on the LAST MEASURED BEARING and named as
+        # extrapolation -- a request for data, not a claim about the road.
+        (ax, ay), (bx, by) = outward[-2], outward[-1]
+        length = math.hypot(bx - ax, by - ay)
+        if length <= 0.0:  # pragma: no cover - a duplicated source node
+            return _nothing(
+                "no_measured_continuation_direction",
+                "the corridor's last measured segment has zero length",
+            )
+        extrapolated_m = round(needed_m - measured_m, 2)
+        outward.append(
+            (bx + (bx - ax) / length * extrapolated_m, by + (by - ay) / length * extrapolated_m)
+        )
+        measured_m = round(measured_m, 2)
+
+    centreline = _simplify_chain(outward, MAX_PLANIMETRIC_ERROR_M)
+    half_width_m = round(roadway_width_m / 2.0 + margin_m, 2)
+    walls = _corridor_walls(centreline, half_width_m)
+    if walls is None:
+        return _nothing(
+            "corridor_bend_too_sharp",
+            "the corridor bends too sharply for a constant-width finger to be mitered around "
+            f"(past the {_V4_EXTENSION_MITER_LIMIT}x half-width limit) -- the emitted shape "
+            "would stop resembling the road it claims to cover",
+        )
+    left, right, _worst_miter = walls
+
+    # ---- 5. the mouth: two points ON the crossing edge ---------------------
+    (ex, ey) = ring_xy[edge_index]
+    (fx, fy) = ring_xy[(edge_index + 1) % len(ring_xy)]
+    edge_dx, edge_dy = fx - ex, fy - ey
+    (c0x, c0y), (c1x, c1y) = centreline[0], centreline[1]
+    dir_x, dir_y = c1x - c0x, c1y - c0y
+    denom = edge_dx * dir_y - edge_dy * dir_x
+    if abs(denom) <= 1e-9:
+        return _nothing(
+            "crossing_edge_unidentifiable",
+            "the corridor runs ALONG the ring edge it meets, so the finger's mouth has no "
+            "single place on that edge to sit",
+        )
+    mouth: dict[str, tuple[float, float, float]] = {}
+    for side, (px, py) in (("left", left[0]), ("right", right[0])):
+        u = ((px - ex) * dir_y - (py - ey) * dir_x) / denom
+        mouth[side] = (u, ex + edge_dx * u, ey + edge_dy * u)
+    if any(u < 0.0 or u > 1.0 for u, _x, _y in mouth.values()):
+        edge_len = math.hypot(edge_dx, edge_dy)
+        return _nothing(
+            "patch_mouth_exceeds_crossing_edge",
+            f"a finger {round(2.0 * half_width_m, 2)} m across does not fit on the "
+            f"{round(edge_len, 2)} m ring edge it would open onto -- splicing it would cut "
+            "across the neighbouring edges of the user's own shape",
+        )
+    first_side = "left" if mouth["left"][0] <= mouth["right"][0] else "right"
+    second_side = "right" if first_side == "left" else "left"
+    first_wall = left if first_side == "left" else right
+    second_wall = right if first_side == "left" else left
+
+    patch_xy: list[tuple[float, float]] = [
+        (mouth[first_side][1], mouth[first_side][2]),
+        *first_wall[1:],
+        *reversed(second_wall[1:]),
+        (mouth[second_side][1], mouth[second_side][2]),
+    ]
+    patch_wgs84 = [
+        (round(lat, 7), round(lon, 7))
+        for lat, lon in (plane.inverse(x, y) for x, y in patch_xy)
+    ]
+
+    # Anti-hull, measured: every patch vertex EXCEPT the two on the ring edge
+    # itself must lie outside the shape the user drew, so the detour bulges
+    # OUTWARD and the original interior is contained in the new one.
+    for lat, lon in patch_wgs84[1:-1]:
+        if _inside_polygon(lat, lon, ring_wgs84):
+            return _nothing(
+                "patch_re_enters_requested_region",
+                "the proposed finger re-enters the region the user already drew, so splicing "
+                "it would carve into their own shape instead of extending it",
+            )
+
+    # The user's own corners travel VERBATIM -- not re-rounded, not re-derived.
+    # Rounding them to 7 dp would move each by up to ~5 mm, which is physically
+    # nothing and doctrinally wrong: this is their shape, and the only thing
+    # this function is entitled to add is the finger.
+    extended_wgs84 = [
+        *ring_wgs84[: edge_index + 1],
+        *patch_wgs84,
+        *ring_wgs84[edge_index + 1 :],
+    ]
+
+    # ---- 6. simple, and then the region kernel's own verdict ---------------
+    count = len(extended_wgs84)
+    for i in range(count):
+        a, b = extended_wgs84[i], extended_wgs84[(i + 1) % count]
+        for j in range(i + 1, count):
+            c, d = extended_wgs84[j], extended_wgs84[(j + 1) % count]
+            adjacent = j == i + 1 or (i == 0 and j == count - 1)
+            if _segments_overlap(a, b, c, d) or (
+                not adjacent and _segments_cross(a, b, c, d)
+            ):
+                return _nothing(
+                    "extension_polygon_self_intersects",
+                    f"the spliced ring crosses itself (edge {i + 1} meets edge {j + 1}); a "
+                    "broken ring is refused rather than emitted for a human to discover on "
+                    "the map",
+                )
+    try:
+        original_region = RegionPolygon.from_sequence(list(ring_wgs84))
+    except OsmFetchRefused as exc:
+        return _nothing(
+            "requested_polygon_invalid",
+            "the region this job recorded does not validate as a polygon today "
+            f"({'; '.join(exc.reasons)})",
+        )
+    try:
+        extended_region = RegionPolygon.from_sequence(extended_wgs84)
+    except OsmFetchRefused as exc:
+        return _nothing(
+            "extension_polygon_refused_by_region_kernel",
+            "the widened shape is refused by the same constructor the fetch itself is held "
+            f"to ({'; '.join(exc.reasons)})",
+        )
+
+    original_measure = measure_region(original_region)
+    extended_measure = measure_region(extended_region)
+    if not extended_measure.within_region_cap:
+        return _nothing(
+            "extension_exceeds_region_cap",
+            f"the widened region measures {round(extended_measure.area_km2, 4)} km² against "
+            f"the {round((2.0 * extended_measure.validity_radius_m / 1000.0) ** 2, 4)} km² "
+            "limit in force at its own centre latitude (half-extent "
+            f"{round(extended_measure.half_extent_m, 1)} m against a "
+            f"{round(extended_measure.validity_radius_m, 1)} m validity radius) -- the same "
+            "cap the region page's own extract button is held to",
+        )
+
+    return {
+        "extended_polygon_wgs84": [[lat, lon] for lat, lon in extended_region.vertices],
+        "extended_area_km2": round(extended_measure.area_km2, 6),
+        "added_area_km2": round(
+            extended_measure.area_km2 - original_measure.area_km2, 6
+        ),
+        "corridor_patch": {
+            "crossing_edge_index": edge_index,
+            "crossing_point_wgs84": list(plane.inverse(*crossing_xy)),
+            "centreline_wgs84": [list(plane.inverse(x, y)) for x, y in centreline],
+            "length_m": needed_m,
+            "measured_source_m": round(measured_m, 2),
+            "extrapolated_m": extrapolated_m,
+            "half_width_m": half_width_m,
+            "roadway_width_m": roadway_width_m,
+            "continuation_way_ids": walked_ways,
+            "vertices_added": len(patch_wgs84),
+        },
+        "provenance": {
+            "source_artifact": "genesis_json+source_osm",
+            "source_field": _V4_EXTENSION_SOURCE_FIELD,
+            "parent_job": job_id,
+            "finding": {
+                "code": str(finding.get("code") or ""),
+                "subject": str(finding.get("subject") or ""),
+            },
+            "way_id": way_id,
+            "boundary_node": boundary_node,
+            "deficit_m": deficit_m,
+            "margin_m": margin_m,
+            "basis": _V4_EXTENSION_MARGIN_BASIS,
+            "boundary_marker": str(attribution.get("boundary_marker") or ""),
+            "treatment": "new_generation_from_a_wider_extract",
+        },
+    }
+
+
 def derive_fix_targets(
     code: str,
     finding: Mapping[str, Any],
@@ -3905,8 +4706,17 @@ def derive_fix_targets(
       source ``.osm``. EVIDENCE ONLY, like V3's testimony: the refusal's
       rationale states, measured, whether the runway shortage is the
       requested boundary's or the road's — the tier never changes with the
-      answer (the boundary-extension treatment is unit #40's, not built
-      here).
+      answer.
+    * **V4** (``boundary_extension`` / ``boundary_extension_refusal``) — unit
+      #40, derived from the attribution above by
+      :func:`derive_v4_boundary_extension`: the user's own requested lasso
+      with a finger spliced in at the edge the corridor crosses, long enough
+      to cover the measured deficit plus a stated margin. Still not a tier
+      change and still not an edit to this artifact — the treatment is a NEW
+      GENERATION from a wider extract (never unit #38's same-source
+      regeneration, whose bytes are clipped at this very boundary), and the
+      proposal's only destination is the region page's editable lasso, whose
+      own extract button is the ask-first gate.
     """
     from services.agent.fixes import node_evidence_from_real_counts  # noqa: PLC0415
     from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
@@ -3951,6 +4761,17 @@ def derive_fix_targets(
         if attribution["boundary_attribution"] is not None:
             targets["boundary_attribution"] = attribution["boundary_attribution"]
         targets["boundary_attribution_provenance"] = attribution["provenance"]
+        # Unit #40: the TREATMENT the attribution above earns -- a wider lasso,
+        # derived only for a shortage the boundary actually caused. A refusal
+        # is carried under its own key so the rationale can NAME it instead of
+        # the card going quiet; neither key changes the tier.
+        extension = derive_v4_boundary_extension(
+            finding, targets.get("boundary_attribution"), draft=draft, job_id=job_id
+        )
+        if "reason_code" in extension:
+            targets["boundary_extension_refusal"] = extension
+        else:
+            targets["boundary_extension"] = extension
 
     if code == V3_TREATABLE_FINDING_CODE:
         plan = derive_v3_connector_plan(

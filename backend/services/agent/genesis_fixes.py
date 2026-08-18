@@ -1558,6 +1558,143 @@ def _v4_interior_clause(attribution: Mapping[str, Any]) -> tuple[str, str, str]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Unit #40 -- the TREATMENT clause on a boundary-attributed refusal. The
+# refusal itself does not move: no registered verb lengthens a runway, and this
+# artifact is still not editable into a compliant one. What the clause adds is
+# that a WIDER REGION covering the measured shortage was derived
+# (``genesis_jobs.derive_v4_boundary_extension``) and is waiting on the region
+# page's own extract button -- a NEW GENERATION, never unit #38's same-source
+# regeneration, because the stored source is clipped at this very boundary.
+# ---------------------------------------------------------------------------
+
+
+def _v4_extension_clause(extension: Mapping[str, Any]) -> tuple[str, str, str]:
+    """The localized sentence for a DERIVED region extension: how far the
+    proposed finger reaches, how much area it adds, and that a human still has
+    to look at it on the map and press the button.
+
+    **The extrapolation is named in the SENTENCE, not only in the payload.**
+    ``length_m`` is what the finger asks for; ``measured_source_m`` is how much
+    of it the source itself declared. On the real link-90 case those differ by
+    50 m -- the extract is clipped at the very boundary being extended, so the
+    source could only declare 127 of the 177 metres and the rest is drawn on
+    the last MEASURED bearing. A reader given only the 177 would read a
+    measurement where there is an extrapolation, so the split rides in the
+    prose the same way it rides in ``corridor_patch``, together with the one
+    distinction that makes an extrapolated finger honest at all: widening the
+    lasso widens the EXTRACT REQUEST, and is never a claim that the road is
+    there. (The card in ``app/genesis/jobs/[id]/page.tsx`` and the region
+    page's arrival banner state the same split for the same reason -- this is
+    the localized answer-builder's copy of it, for every reader who meets the
+    rationale rather than the card.)
+    """
+    provenance = extension.get("provenance")
+    provenance = provenance if isinstance(provenance, Mapping) else {}
+    patch = extension.get("corridor_patch")
+    patch = patch if isinstance(patch, Mapping) else {}
+    deficit = provenance.get("deficit_m")
+    margin = provenance.get("margin_m")
+    length = patch.get("length_m")
+    added = extension.get("added_area_km2")
+    measured = patch.get("measured_source_m")
+    try:
+        extrapolated = float(patch.get("extrapolated_m") or 0.0)
+    except (TypeError, ValueError):  # pragma: no cover - a payload we did not build
+        extrapolated = 0.0
+    extrapolated_ko = extrapolated_en = extrapolated_ja = ""
+    if extrapolated > 0.0:
+        extrapolated_ko = (
+            f" 이 중 원본이 도로라고 선언한 길이는 {measured} m뿐이고, 나머지 "
+            f"{patch.get('extrapolated_m')} m는 마지막으로 측정된 방위로 그은 것입니다 — 도로를 "
+            "지어낸 것이 아니라 그만큼 더 넓게 추출을 요청하는 것이므로, 지도에서 확인해 주세요."
+        )
+        extrapolated_en = (
+            f" Only {measured} m of that is road the source itself declared; the remaining"
+            f" {patch.get('extrapolated_m')} m is drawn on the last MEASURED bearing. It widens"
+            " the EXTRACT REQUEST by that much and claims nothing about the road being there,"
+            " so check it on the map."
+        )
+        extrapolated_ja = (
+            f" そのうちソースが道路と宣言しているのは {measured} m のみで、残り "
+            f"{patch.get('extrapolated_m')} m は最後に測定された方位へ引いたものです — 道路を"
+            "作り出したのではなく、その分だけ広く抽出を要求するものですので、地図でご確認ください。"
+        )
+    return (
+        f" 치료: 요청하셨던 영역에 이 회랑 방향으로 {length} m(부족분 {deficit} m + 여유 "
+        f"{margin} m)의 손가락을 덧댄 영역을 도출했습니다 — 넓이 +{added} km²."
+        + extrapolated_ko
+        + " 그리려던 모양은 그대로 두고 이 한 변에만 끼워 넣은 것이며, 지도에서 직접 확인·수정한 "
+        "뒤 추출 버튼을 누르셔야 새 생성이 시작됩니다.",
+        f" Treatment: a widened version of the region you requested has been derived -- a"
+        f" {length} m finger along this corridor (the {deficit} m deficit plus a {margin} m"
+        f" margin), adding {added} km²."
+        + extrapolated_en
+        + " It is your own shape with the finger spliced into the one edge the corridor"
+        " crosses; nothing is fetched until you have looked at it on the map and pressed the"
+        " extract button yourself.",
+        f" 治療: 要求された領域に、この回廊方向へ {length} m(不足分 {deficit} m + 余裕 "
+        f"{margin} m)の指を継ぎ足した領域を導出しました — 面積 +{added} km²。"
+        + extrapolated_ja
+        + "描かれた形はそのままに、この一辺だけに差し込んだものです。地図で確認・修正のうえ、"
+        "抽出ボタンを押されるまで何も取得しません。",
+    )
+
+
+#: Unit #40: the measured reason no region extension could be derived for a
+#: boundary-attributed shortage, localized. Keys mirror
+#: ``genesis_jobs.derive_v4_boundary_extension``'s own ``reason_code`` values;
+#: an unknown code falls back to quoting the code itself, the same discipline
+#: :data:`_V4_ATTRIBUTION_REASONS` established.
+_V4_EXTENSION_REASONS: dict[str, tuple[str, str, str]] = {
+    "requested_region_not_a_polygon": (
+        " 이 작업의 census에는 요청 폴리곤이 기록되어 있지 않아(사각형 영역), 넓힌 라쏘를 "
+        "제안하지 않습니다.",
+        " No widened lasso is proposed: this job's census records no requested POLYGON (it was"
+        " a rectangle region), and drawing one would show corners nobody drew.",
+        " このジョブのcensusには要求ポリゴンが記録されておらず(矩形領域)、広げたラッソは提案"
+        "しません。",
+    ),
+    "no_measured_continuation_direction": (
+        " 원본이 경계 너머의 노드를 하나도 선언하지 않아 어느 방향으로 넓힐지 측정할 수 없어 "
+        "영역을 제안하지 않습니다.",
+        " No region is proposed: the source declares no node beyond the boundary on this"
+        " corridor, so the direction to widen in could only be guessed.",
+        " ソースが境界の先のノードを一つも宣言しておらず、どの方向へ広げるかを測定できないため"
+        "領域を提案しません。",
+    ),
+    "extension_exceeds_region_cap": (
+        " 넓힌 영역이 추출 화면과 동일한 넓이 한계를 넘어 제안하지 않습니다.",
+        " No region is proposed: the widened shape is over the very area cap the extract screen"
+        " itself enforces.",
+        " 広げた領域が抽出画面と同じ面積上限を超えるため提案しません。",
+    ),
+    "extension_polygon_self_intersects": (
+        " 넓힌 고리가 스스로 교차해, 깨진 모양을 지도에 내보내는 대신 제안을 거부합니다.",
+        " No region is proposed: the spliced ring crosses itself, and a broken shape is refused"
+        " rather than handed to the map.",
+        " 広げた輪が自己交差するため、壊れた形を地図に出す代わりに提案を拒否します。",
+    ),
+}
+
+
+def _v4_extension_refusal_clause(refusal: Any) -> tuple[str, str, str]:
+    """The localized measured sentence for an extension derivation that
+    produced nothing -- or three empty strings when no derivation record was
+    supplied at all (a caller with no service layer keeps the exact pre-#40
+    answer)."""
+    if not isinstance(refusal, Mapping):
+        return "", "", ""
+    reason_code = refusal.get("reason_code")
+    if not reason_code:
+        return "", "", ""
+    clause = _V4_EXTENSION_REASONS.get(str(reason_code))
+    if clause is None:
+        fallback = f" (boundary extension: {reason_code})"
+        return fallback, fallback, fallback
+    return clause
+
+
 def _build_v4_lane_drop_without_runway(
     *,
     code: str,
@@ -1583,8 +1720,18 @@ def _build_v4_lane_drop_without_runway(
     interior one refuses under :data:`NO_TOOL_WITHOUT_FABRICATION` with the
     honest opposite; a derivation that could not answer appends its NAMED
     measured reason to the pre-#39 "no evidence" refusal. The tier NEVER
-    changes with the answer -- the boundary-extension treatment is unit
-    #40's, not this catalogue's.
+    changes with the answer.
+
+    **Unit #40: the boundary-attributed refusal now names its TREATMENT.**
+    ``genesis_jobs.derive_v4_boundary_extension`` turns that attribution into
+    the user's own requested lasso with a finger spliced in at the edge the
+    corridor crosses, long enough to cover the measured deficit plus a stated
+    margin -- threaded through ``targets['boundary_extension']`` (or
+    ``targets['boundary_extension_refusal']`` with its named reason), which
+    this builder only folds in, exactly as it folds the attribution. The tier
+    still does not move, and deliberately: the treatment is a NEW GENERATION
+    from a wider extract that a human asks for on the region screen, not an
+    edit this catalogue could apply to this artifact.
 
     Without a derivation record, the pre-#39 behaviour is kept exactly:
     which upstream link the shortfall traces back to is NETWORK-WALK
@@ -1677,6 +1824,20 @@ def _build_v4_lane_drop_without_runway(
 
     attribution = _as_mapping((targets or {}).get("boundary_attribution"))
     attribution_prov = _as_mapping((targets or {}).get("boundary_attribution_provenance"))
+    # Unit #40's treatment, folded in the same way and with the same rule: it
+    # rides on the evidence and adds a sentence, and it NEVER moves the tier.
+    # Widening the region is a new generation a human asks for on another
+    # screen, not a fix applied to this artifact.
+    extension = _as_mapping((targets or {}).get("boundary_extension"))
+    extension_refusal = _as_mapping((targets or {}).get("boundary_extension_refusal"))
+    if extension:
+        evidence["boundary_extension"] = dict(extension)
+    if extension_refusal:
+        evidence["boundary_extension_refusal"] = dict(extension_refusal)
+    if extension:
+        treat_ko, treat_en, treat_ja = _v4_extension_clause(extension)
+    else:
+        treat_ko, treat_en, treat_ja = _v4_extension_refusal_clause(extension_refusal)
     if attribution or attribution_prov:
         if attribution:
             evidence["boundary_attribution"] = dict(attribution)
@@ -1690,13 +1851,13 @@ def _build_v4_lane_drop_without_runway(
                 evidence=evidence,
                 ko=intro_ko + clause_ko
                 + " 그 지점을 넘겨 도로를 늘리는 것은 사용자가 요청하지 않은 구역으로 네트워크를 "
-                "확장하는 것과 같으므로 자동 수정을 제안하지 않습니다.",
+                "확장하는 것과 같으므로 자동 수정을 제안하지 않습니다." + treat_ko,
                 en=intro_en + clause_en
                 + " Lengthening it past that point would extend the network beyond the requested "
-                "area, so no automated fix is proposed.",
+                "area, so no automated fix is proposed." + treat_en,
                 ja=intro_ja + clause_ja
                 + " その地点を越えて延長することは要求されていない区域までネットワークを拡張する"
-                "ことになるため、自動修正は提案しません。",
+                "ことになるため、自動修正は提案しません。" + treat_ja,
             )
         if attribution.get("status") == "interior":
             clause_ko, clause_en, clause_ja = _v4_interior_clause(attribution)

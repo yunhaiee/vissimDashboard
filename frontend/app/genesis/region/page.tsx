@@ -98,6 +98,7 @@ import {
   fetchRegionFetch,
   fetchRegionFetches,
   fetchRegionLimits,
+  getWorkspaceId,
   previewRegion,
   startGenesisJob,
   startRegionFetch,
@@ -106,6 +107,7 @@ import {
   type RegionMeasurement,
   type RegionShape,
 } from "@/lib/api";
+import { takeRegionPrefill, type RegionPrefill } from "@/lib/region-prefill";
 
 /** Leaflet reads `window` at module scope, so the drawing surface is mounted
  * client-only (`01-app/02-guides/lazy-loading.md`), the same way
@@ -453,6 +455,14 @@ export default function GenesisRegionPage() {
   // a half-restored one.
   const [vertices, setVertices] = useState<Array<[number, number]>>([]);
   const [ringClosed, setRingClosed] = useState(false);
+  // UNIT #40: the ONE way this page can open on a shape it did not draw -- a
+  // V4 refusal whose runway shortage the backend attributed to this very
+  // boundary, handed over with the region that would close it. Read ONCE from
+  // sessionStorage in the mount effect below (see lib/region-prefill.ts for
+  // why not a URL parameter), which keeps every promise the initial-state note
+  // above makes: the store is empty on a refresh, so a reload of this page
+  // lands on the same empty ring a first visit does.
+  const [prefill, setPrefill] = useState<RegionPrefill | null>(null);
   const [name, setName] = useState("");
   const [measurement, setMeasurement] = useState<RegionMeasurement | null>(null);
   const [measureError, setMeasureError] = useState<string | null>(null);
@@ -542,6 +552,26 @@ export default function GenesisRegionPage() {
   useEffect(() => {
     if (vertices.length < 3 && ringClosed) setRingClosed(false);
   }, [vertices.length, ringClosed]);
+
+  // UNIT #40 -- the pre-fill, consumed exactly once. `takeRegionPrefill` reads
+  // AND removes, and the effect runs on mount only, so the proposed shape can
+  // never re-appear over a ring the user has since edited. The vertices land in
+  // this page's OWN state, which means everything downstream of them is
+  // unchanged: the map draws them, the table edits them, the server measures
+  // them, and the 추출 button below is still the only thing that fetches
+  // anything. A stored shape that does not validate is dropped silently -- the
+  // page then simply opens empty, which is its documented initial state. So is
+  // a shape stamped with ANOTHER 프로젝트: `getWorkspaceId()` is the project
+  // every request from this page is scoped to, and pre-filling this project's
+  // extract with a polygon derived in a different one is exactly the confusion
+  // the stamp exists to prevent (see lib/region-prefill.ts).
+  useEffect(() => {
+    const handed = takeRegionPrefill(getWorkspaceId());
+    if (!handed) return;
+    setPrefill(handed);
+    setVertices(handed.polygon);
+    setRingClosed(true);
+  }, []);
 
   const loadFetches = useCallback(async () => {
     try {
@@ -733,6 +763,42 @@ export default function GenesisRegionPage() {
         * when the extract button is enabled or not, and the refusal path names
         * itself when it fires. */}
       <Panel density="console" title={t("① 영역 지정", "1. Name the region", "① 領域の指定")}>
+        {prefill && (
+          /* UNIT #40 -- why this page opened on a shape nobody drew here. One
+            * line, sky (info) tint with ink from the neutral ramp per the
+            * tinted-box rule above, and every number is the backend's own
+            * measurement quoted verbatim. It does NOT claim the shape is
+            * right: the map below and the table beside it are how a reader
+            * disagrees with it. */
+          <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-[15px] leading-relaxed text-slate-800">
+            <p>
+              {t(
+                `작업 ${prefill.parent_job}의 ${prefill.finding_code} 부족분 ${prefill.deficit_m} m를 메우려고 넓힌 영역입니다 — 링크 ${prefill.subject}, 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
+                `This region was widened to close job ${prefill.parent_job}'s ${prefill.finding_code} shortage of ${prefill.deficit_m} m — link ${prefill.subject}, +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
+                `ジョブ ${prefill.parent_job} の ${prefill.finding_code} 不足分 ${prefill.deficit_m} m を埋めるために広げた領域です — リンク ${prefill.subject}、面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
+              )}
+            </p>
+            {prefill.extrapolated_m > 0 && (
+              /* THE SPLIT, on the screen that owns the extract button. The
+                * finger is long enough to close the deficit, but the source could
+                * only DECLARE part of it -- this job's own .osm was fetched
+                * with the very boundary being widened, so it is clipped at the
+                * same edge. Stating it only in the payload, or only on the job
+                * page the reader has already left, would let the shape under
+                * this banner read as measured road all the way out. Widening
+                * the lasso widens the EXTRACT REQUEST; it claims nothing about
+                * the road being there, and that is precisely why a human is
+                * looking at a map instead of a fetch that already ran. */
+              <p className="mt-1.5 text-[14px] text-slate-600">
+                {t(
+                  `이 중 원본이 도로라고 선언한 길이는 ${prefill.measured_source_m} m뿐이고, 나머지 ${prefill.extrapolated_m} m는 마지막으로 측정된 방위로 그은 것입니다 — 도로를 지어낸 것이 아니라 그만큼 더 넓게 추출을 요청하는 것이므로, 그 끝부분을 지도에서 꼭 확인해 주세요.`,
+                  `Only ${prefill.measured_source_m} m of that finger is road the source itself declared; the remaining ${prefill.extrapolated_m} m is drawn on the last MEASURED bearing. It widens the EXTRACT REQUEST by that much and claims nothing about the road being there — so check its far end on the map.`,
+                  `そのうちソースが道路と宣言しているのは ${prefill.measured_source_m} m のみで、残り ${prefill.extrapolated_m} m は最後に測定された方位へ引いたものです — 道路を作り出したのではなく、その分だけ広く抽出を要求するものですので、その先端を地図で必ずご確認ください。`,
+                )}
+              </p>
+            )}
+          </div>
+        )}
         <div className="mb-4 flex flex-col gap-3">
           <RegionLassoMap
             vertices={vertices}

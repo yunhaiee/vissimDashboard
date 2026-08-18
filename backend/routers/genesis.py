@@ -1348,7 +1348,11 @@ def _render_fix_disposition(
     does. Deliberately a STATUS change rather than an enrichment: "there is no
     automated fix" would be false about a finding that has a treatment.
 
-    Two optional enrichments inside the third shape, never a fifth shape:
+    Optional enrichments inside the third shape, never a fifth shape:
+    a V4 refusal whose evidence carries ``boundary_attribution`` (unit #39) and
+    -- when that attribution earned one -- ``boundary_extension`` (unit #40,
+    the wider lasso that would close the measured shortage, an ask on ANOTHER
+    screen rather than an action here);
     a V3 refusal whose evidence carries ``source_testimony`` (unit #36 -- the
     job's own source ``.osm`` declares the connection the network lost) and
     one whose evidence carries ``attestation_invitation`` (unit #35 -- the
@@ -1402,6 +1406,18 @@ def _render_fix_disposition(
     attribution = (proposal.evidence or {}).get("boundary_attribution")
     if isinstance(attribution, dict):
         disposition["boundary_attribution"] = attribution
+    # Unit #40: the TREATMENT that attribution earns -- the user's own
+    # requested lasso with a finger spliced into the edge the corridor
+    # crosses, long enough to cover the measured deficit plus its margin
+    # (genesis_jobs.derive_v4_boundary_extension). Key-ABSENT when no
+    # extension could be derived (the named reason is in the rationale
+    # instead), and NOT a tier change: the entry stays a refusal, because
+    # widening the region is a NEW GENERATION a human starts on the region
+    # screen -- never an edit to this artifact, and never unit #38's
+    # same-source regeneration, whose bytes are clipped at this very boundary.
+    extension = (proposal.evidence or {}).get("boundary_extension")
+    if isinstance(extension, dict):
+        disposition["boundary_extension"] = extension
     # Unit #35: when the refusal is a world gap the model COULD still answer --
     # the source shares the gap, but this network holds link ends a connector
     # could reach -- carry the ask-first question's own data: which link ends

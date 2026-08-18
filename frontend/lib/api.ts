@@ -3353,6 +3353,53 @@ export interface GenesisFixRegeneration {
   }>;
 }
 
+/** Unit #40: the widened REGION that would close a boundary-attributed runway
+ * shortage — the user's own requested lasso with a finger spliced into the one
+ * ring edge the corridor crosses. Key-ABSENT unless the backend actually
+ * derived one (an interior shortage has no region treatment, and a splice it
+ * refused by name has none either), so an absent field never reads as "the
+ * boundary was not the cause".
+ *
+ * NOT a regeneration (`GenesisFixRegeneration` above): that re-derives from the
+ * SAME source bytes, and this shortage's road is not in those bytes — the
+ * stored `.osm` was fetched with the very region being extended. The treatment
+ * is a NEW generation from a WIDER extract, which is why this carries a shape
+ * for a human to check on a map rather than a button that starts anything. */
+export interface GenesisFixBoundaryExtension {
+  /** `[lat, lon]` pairs, open ring — the region page's own vertex convention. */
+  extended_polygon_wgs84: Array<[number, number]>;
+  extended_area_km2: number;
+  added_area_km2: number;
+  corridor_patch: {
+    crossing_edge_index: number;
+    crossing_point_wgs84: [number, number];
+    centreline_wgs84: Array<[number, number]>;
+    length_m: number;
+    /** How much of `length_m` the SOURCE itself declared, and how much was
+     * drawn on the last measured bearing because the extract is clipped at the
+     * same boundary. Reported separately, never summed into one claim. */
+    measured_source_m: number;
+    extrapolated_m: number;
+    half_width_m: number;
+    roadway_width_m: number;
+    continuation_way_ids: number[];
+    vertices_added: number;
+  };
+  provenance: {
+    source_artifact: string;
+    source_field: string;
+    parent_job: string | null;
+    finding: { code: string; subject: string };
+    way_id: number;
+    boundary_node: number;
+    deficit_m: number;
+    margin_m: number;
+    basis: string;
+    boundary_marker: string;
+    treatment: string;
+  };
+}
+
 export interface GenesisFixDisposition {
   status: string;
   verb: string | null;
@@ -3365,6 +3412,7 @@ export interface GenesisFixDisposition {
   source_testimony?: GenesisFixSourceTestimony;
   attestation?: GenesisFixAttestationInvitation;
   regenerate?: GenesisFixRegeneration;
+  boundary_extension?: GenesisFixBoundaryExtension;
 }
 
 export interface GenesisFixFinding {

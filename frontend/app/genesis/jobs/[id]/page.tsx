@@ -59,9 +59,11 @@ import {
   fetchGenesisJob,
   fetchGenesisJobFixes,
   fetchGenesisJobs,
+  getWorkspaceId,
   regenerateGenesisJob,
   startGenesisLiveCheck,
   type GenesisArtifactKind,
+  type GenesisFixBoundaryExtension,
   type GenesisFixDisposition,
   type GenesisFixFinding,
   type GenesisGateCheck,
@@ -69,6 +71,7 @@ import {
   type GenesisJob,
   type GenesisJobFixes,
 } from "@/lib/api";
+import { stashRegionPrefill } from "@/lib/region-prefill";
 import {
   POLL_INTERVAL_MS,
   TERMINAL_RECHECK_MS,
@@ -327,6 +330,10 @@ function FixFindingRow({
   // route: nothing about this artifact is edited.
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<GenesisError | Error | null>(null);
+  // Unit #40 -- the only failure the region hand-off can have that is this
+  // page's to report: a browser that refuses the session store.
+  const [prefillError, setPrefillError] = useState<string | null>(null);
+  const router = useRouter();
 
   const missingRequired = disposition.requires.some((field) => !requiredValues[field]?.trim());
   // A connector's to-link is DERIVED, and a reader confirming it is the point
@@ -375,6 +382,45 @@ function FixFindingRow({
       }
     },
     [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t],
+  );
+
+  // Unit #40 -- the ONE action on this page that leaves it. Nothing is fetched
+  // and no job is started here: the derived shape is stashed for exactly one
+  // navigation (lib/region-prefill.ts states why sessionStorage and not a URL)
+  // and the region page's own extract button remains the ask-first gate. A
+  // store that refuses the write is SAID, not navigated past -- landing on an
+  // empty region page with no explanation is how a user concludes the feature
+  // is broken.
+  const proposeWiderRegion = useCallback(
+    (extension: GenesisFixBoundaryExtension) => {
+      const stashed = stashRegionPrefill({
+        polygon: extension.extended_polygon_wgs84,
+        // The 프로젝트 this proposal was derived in travels WITH it: the store
+        // outlives a project switch (which reloads the tab) and a proposal read
+        // back under another project would pre-fill B's extract with A's shape.
+        workspace_id: getWorkspaceId(),
+        parent_job: jobId,
+        finding_code: finding.code,
+        subject: finding.subject,
+        deficit_m: extension.provenance.deficit_m,
+        added_area_km2: extension.added_area_km2,
+        measured_source_m: extension.corridor_patch.measured_source_m,
+        extrapolated_m: extension.corridor_patch.extrapolated_m,
+      });
+      if (!stashed) {
+        setPrefillError(
+          t(
+            "이 브라우저에서 제안된 영역을 넘길 수 없습니다 (세션 저장소 사용 불가). 영역 화면에서 직접 그려 주세요.",
+            "This browser cannot carry the proposed region across (session storage is unavailable). Draw it on the region screen instead.",
+            "このブラウザでは提案された領域を引き渡せません（セッションストレージが利用不可）。領域画面で直接描いてください。",
+          ),
+        );
+        return;
+      }
+      setPrefillError(null);
+      router.push("/genesis/region");
+    },
+    [jobId, finding.code, finding.subject, router, t],
   );
 
   const regenerate = useCallback(async () => {
@@ -489,6 +535,64 @@ function FixFindingRow({
                     <p key={line}>{line}</p>
                   ))}
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* Unit #40 -- the fourth thing that can sit under a refusal, and
+            * the only one whose action leaves this screen. The backend
+            * measured that this runway shortage is the requested BOUNDARY's
+            * (unit #39) and derived the lasso that would close it: the user's
+            * own polygon with a finger spliced into the one edge the corridor
+            * crosses. Nothing is fetched here and no job is started -- the
+            * button hands the shape to the region page, where it is drawn over
+            * the basemap, every vertex is editable, and THAT page's extract
+            * button is the ask-first gate. */}
+          {disposition.boundary_extension && (
+            <div className="mt-3 flex flex-col gap-2 rounded-md border border-slate-300 bg-white/[0.06] px-3 py-2.5">
+              <p className="text-[15px] font-semibold text-slate-800">
+                {t(
+                  "이 부족은 편집이 아니라 경계를 넓혀 다시 생성해야 합니다",
+                  "This shortage is treated by widening the boundary and generating again",
+                  "この不足は編集ではなく、境界を広げて再生成する必要があります",
+                )}
+              </p>
+              <p className="font-mono text-[14px] leading-relaxed text-slate-600">
+                {t(
+                  `부족 ${disposition.boundary_extension.provenance.deficit_m} m + 여유 ${disposition.boundary_extension.provenance.margin_m} m = 손가락 ${disposition.boundary_extension.corridor_patch.length_m} m · 넓이 +${disposition.boundary_extension.added_area_km2} km² · 점 ${disposition.boundary_extension.extended_polygon_wgs84.length}개`,
+                  `${disposition.boundary_extension.provenance.deficit_m} m deficit + ${disposition.boundary_extension.provenance.margin_m} m margin = a ${disposition.boundary_extension.corridor_patch.length_m} m finger · +${disposition.boundary_extension.added_area_km2} km² · ${disposition.boundary_extension.extended_polygon_wgs84.length} corners`,
+                  `不足 ${disposition.boundary_extension.provenance.deficit_m} m + 余裕 ${disposition.boundary_extension.provenance.margin_m} m = ${disposition.boundary_extension.corridor_patch.length_m} m の指 · 面積 +${disposition.boundary_extension.added_area_km2} km² · 点 ${disposition.boundary_extension.extended_polygon_wgs84.length} 個`,
+                )}
+              </p>
+              {disposition.boundary_extension.corridor_patch.extrapolated_m > 0 && (
+                /* NAMED, never folded into the measured figure: the extract is
+                 * clipped at this very boundary, so the source could only
+                 * declare part of the finger and the rest is drawn on the last
+                 * measured bearing. That is a request for data, not a claim
+                 * about the road -- which is exactly why a human looks at it. */
+                <p className="font-mono text-[14px] leading-relaxed text-slate-500">
+                  {t(
+                    `이 중 ${disposition.boundary_extension.corridor_patch.measured_source_m} m만 원본이 선언한 도로이고, 나머지 ${disposition.boundary_extension.corridor_patch.extrapolated_m} m는 마지막으로 측정된 방향으로 그은 것입니다 — 지도에서 확인해 주세요.`,
+                    `Only ${disposition.boundary_extension.corridor_patch.measured_source_m} m of that is road the source declared; the remaining ${disposition.boundary_extension.corridor_patch.extrapolated_m} m is drawn on the last MEASURED bearing — check it on the map.`,
+                    `そのうち ${disposition.boundary_extension.corridor_patch.measured_source_m} m のみがソースの宣言した道路で、残り ${disposition.boundary_extension.corridor_patch.extrapolated_m} m は最後に測定された方向へ引いたものです — 地図でご確認ください。`,
+                  )}
+                </p>
+              )}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => proposeWiderRegion(disposition.boundary_extension!)}
+                  className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px]"
+                >
+                  {t(
+                    "경계를 넓혀 다시 생성 →",
+                    "Widen the boundary and generate again →",
+                    "境界を広げて再生成 →",
+                  )}
+                </button>
+              </div>
+              {prefillError && (
+                <p className="text-[14px] leading-relaxed text-rose-700">{prefillError}</p>
               )}
             </div>
           )}

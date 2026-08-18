@@ -6,6 +6,11 @@ import test from "node:test";
 import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
 import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline } from "../lib/roadWidth.ts";
 import {
+  REGION_PREFILL_STORAGE_KEY,
+  stashRegionPrefill,
+  takeRegionPrefill,
+} from "../lib/region-prefill.ts";
+import {
   CRITICAL_INTERSECTION_GEH_MAX,
   SATURATION_FLOW_WITHIN_PCT,
   SIGNAL_TIMING_CRITERIA,
@@ -5214,6 +5219,11 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
   const treatmentMarkers = [
     "{attestation && attestation.candidates.length > 0 && (",
     "{disposition.regenerate && (",
+    // Unit #40 put a THIRD in -- the widened-region proposal, whose action
+    // leaves this screen entirely for the region page's own ask-first button.
+    // Same rule, same slice: the refusal a reader meets FIRST still has no
+    // control of any kind on it.
+    "{disposition.boundary_extension && (",
   ];
   for (const marker of treatmentMarkers) {
     pin.match(
@@ -5312,6 +5322,236 @@ contractTest("unit #38: a finding the census cannot correct is treated by regene
     /regenerateGenesisJob\(jobId, `\$\{finding\.code\} \/ \$\{finding\.subject\}`\)/,
     "expected the audit sentence to quote the finding this re-derivation was asked for",
   );
+});
+
+contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED lasso", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const region = read("app/genesis/region/page.tsx");
+  const handoff = read("lib/region-prefill.ts");
+
+  // 1. THE GATE. The action renders only when the BACKEND derived a region for
+  //    this finding -- key-absent on an interior shortage, on a splice it
+  //    refused by name, and on every non-V4 card. Never on a status string,
+  //    and never on a client-side guess about what the boundary did.
+  pin.match(
+    page,
+    /\{disposition\.boundary_extension && \(/,
+    "expected the widen-the-boundary action to be gated on the backend's own derived extension",
+  );
+  const treatmentBlock = sliceBetween(
+    page,
+    "{disposition.boundary_extension && (",
+    "{/* Unit #35 -- the ask-first QUESTION",
+  );
+  pin.match(treatmentBlock, /<button/, "expected to find the treatment block (markers moved?)");
+  pin.doesNotMatch(
+    withoutComments(treatmentBlock),
+    /boundary_attribution/,
+    "expected the action to key off the derived EXTENSION, never off unit #39's attribution -- an attributed shortage whose splice refused by name has no region to propose and must show no button",
+  );
+  pin.match(
+    page,
+    /경계를 넓혀 다시 생성/,
+    "expected the treatment's ko-primary label",
+  );
+
+  // 2. THE HAND-OFF SPELLING. One module owns the key and the shape, and both
+  //    sides import it -- a second copy of the string is how a writer and a
+  //    reader drift into never meeting.
+  pin.match(
+    handoff,
+    /export const REGION_PREFILL_STORAGE_KEY = "prism-region-prefill";/,
+    "expected the sessionStorage key to be declared exactly once, in the hand-off module",
+  );
+  pin.match(
+    page,
+    /import \{ stashRegionPrefill \} from "@\/lib\/region-prefill";/,
+    "expected the job page to write the proposal through the shared hand-off module",
+  );
+  pin.match(
+    region,
+    /import \{ takeRegionPrefill, type RegionPrefill \} from "@\/lib\/region-prefill";/,
+    "expected the region page to read the proposal through the same shared module",
+  );
+  for (const source of [page, region]) {
+    pin.doesNotMatch(
+      withoutComments(source),
+      /sessionStorage/,
+      "expected neither page to touch sessionStorage directly -- the hand-off module owns the store",
+    );
+  }
+  // The read is ONE-SHOT: taken and removed together, so a refresh lands on the
+  // empty ring the region page's own initial-state note promises.
+  pin.match(
+    handoff,
+    /getItem\(REGION_PREFILL_STORAGE_KEY\);\s*\n\s*window\.sessionStorage\.removeItem\(REGION_PREFILL_STORAGE_KEY\);/,
+    "expected takeRegionPrefill to remove the entry in the same breath it reads it",
+  );
+  // The stored polygon is RE-VALIDATED before it reaches the map: a NaN handed
+  // to Leaflet throws inside the tile layer, and devtools can edit this store.
+  pin.match(
+    handoff,
+    /if \(!Array\.isArray\(polygon\) \|\| polygon\.length < 3 \|\| !polygon\.every\(isVertex\)\) return null;/,
+    "expected a stored ring to be re-validated (three corners, every vertex in range) before it is handed back",
+  );
+
+  // 3. THE PRE-FILL LANDS IN THE PAGE'S OWN STATE, so the map, the editable
+  //    table and the server-side measurement all keep reading one array -- and
+  //    the page's own extract button stays the only thing that fetches.
+  pin.match(
+    region,
+    /const handed = takeRegionPrefill\(getWorkspaceId\(\)\);\s*\n\s*if \(!handed\) return;\s*\n\s*setPrefill\(handed\);\s*\n\s*setVertices\(handed\.polygon\);/,
+    "expected the pre-fill to become this page's own vertices rather than a second shape beside them",
+  );
+  const arrival = sliceBetween(region, "const handed = takeRegionPrefill(", "const loadFetches");
+  pin.match(arrival, /\S/, "expected to find the arrival effect (markers moved?)");
+  pin.doesNotMatch(
+    arrival,
+    /startRegionFetch|startGenesisJob/,
+    "expected the hand-off to fetch NOTHING on arrival -- the extract button is the ask-first gate",
+  );
+
+  // 3b. THE PROPOSAL IS STAMPED WITH ITS 프로젝트, and the reader checks it.
+  //     sessionStorage is per-tab and survives the reload ProjectSelector
+  //     switches projects with, so a write that lost its navigation would
+  //     otherwise pre-fill ANOTHER project's extract with this one's polygon
+  //     under a banner naming a job that does not exist there. (Behaviour --
+  //     not just spelling -- is exercised by the imported-module test below.)
+  pin.match(
+    page,
+    /workspace_id: getWorkspaceId\(\),/,
+    "expected the job page to stamp the proposal with the project it was derived in",
+  );
+  pin.match(
+    handoff,
+    /if \(\(workspaceId \?\? null\) !== \(currentWorkspaceId \?\? null\)\) return null;/,
+    "expected takeRegionPrefill to refuse a proposal stamped with another project",
+  );
+
+  // 4. THE BANNER says what the shape is treating, in the backend's own
+  //    numbers, so a reader can compare it against the map instead of trusting
+  //    a polygon that appeared out of nowhere.
+  pin.match(
+    region,
+    /\{prefill && \(/,
+    "expected the region page to explain itself when it opens on a shape nobody drew here",
+  );
+  pin.match(
+    region,
+    /작업 \$\{prefill\.parent_job\}의 \$\{prefill\.finding_code\} 부족분 \$\{prefill\.deficit_m\} m/,
+    "expected the banner to name the parent job, the finding and the measured deficit it treats",
+  );
+  // ...AND it names the part of the finger the source never declared. This is
+  // the screen that owns the extract button: a reader who presses it here must
+  // not be able to read an extrapolated tail as measured road. The pin is
+  // scoped to the banner block (not the file) because `extrapolated_m` said
+  // anywhere else on the page would not be said to that reader.
+  const banner = sliceBetween(region, "{prefill && (", "<div className=\"mb-4 flex flex-col gap-3\">");
+  pin.match(banner, /\S/, "expected to find the arrival banner (markers moved?)");
+  pin.match(
+    banner,
+    /\{prefill\.extrapolated_m > 0 && \(/,
+    "expected the banner to state the extrapolation split whenever there is one",
+  );
+  pin.match(
+    banner,
+    /\$\{prefill\.measured_source_m\} m뿐이고, 나머지 \$\{prefill\.extrapolated_m\} m/,
+    "expected the ko banner to quote BOTH numbers -- how much of the finger the source declared, and how much was drawn on the last measured bearing",
+  );
+  pin.match(
+    banner,
+    /border-sky-200 bg-sky-50/,
+    "expected the banner to follow the tinted-box rule -- sky is the info tint, the ink comes from the neutral ramp",
+  );
+  pin.match(
+    banner,
+    /text-slate-800/,
+    "expected the banner's ink to come from the neutral ramp, not from the sky family",
+  );
+});
+
+contractTest("unit #40: the region hand-off is one-shot AND project-scoped", () => {
+  // BEHAVIOUR, not spelling: `lib/region-prefill.ts` imports nothing, so it runs
+  // here against a fake store. Three properties, each of which was reachable as
+  // a real defect before it was pinned:
+  //   * one-shot -- a second read returns null, so a proposal cannot reappear
+  //     over a ring the user has since edited;
+  //   * project-scoped -- a proposal stamped in project A is REFUSED (and still
+  //     removed) when read in project B. sessionStorage is per-tab and survives
+  //     the reload a project switch does, so "written once" is not the same as
+  //     "read in the project it came from";
+  //   * re-validated -- a store a devtools user edited into nonsense yields
+  //     null rather than a NaN vertex that throws inside Leaflet's tile layer.
+  const store = new Map<string, string>();
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    sessionStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    },
+  };
+  try {
+    const proposal = {
+      polygon: [
+        [36.35, 127.38],
+        [36.35, 127.39],
+        [36.34, 127.39],
+      ] as Array<[number, number]>,
+      workspace_id: "bfc69251bd04",
+      parent_job: "5e550c739aed",
+      finding_code: "v4_lane_drop_without_runway",
+      subject: "90 (둔산로)",
+      deficit_m: 147.85,
+      added_area_km2: 0.012976,
+      measured_source_m: 127.06,
+      extrapolated_m: 50.36,
+    };
+
+    assert.equal(stashRegionPrefill(proposal), true);
+    const same = takeRegionPrefill("bfc69251bd04");
+    assert.equal(same?.parent_job, "5e550c739aed");
+    assert.equal(same?.extrapolated_m, 50.36);
+    assert.equal(
+      takeRegionPrefill("bfc69251bd04"),
+      null,
+      "one-shot: the second read must find nothing",
+    );
+
+    // Project A's proposal, read in project B: refused, and gone afterwards.
+    assert.equal(stashRegionPrefill(proposal), true);
+    assert.equal(
+      takeRegionPrefill("a9cbf243c5f4"),
+      null,
+      "a proposal derived in another 프로젝트 must never pre-fill this one's extract",
+    );
+    assert.equal(store.size, 0, "the refused proposal must still be removed from the store");
+
+    // The default project is `null` on both sides, and it is not a wildcard.
+    assert.equal(stashRegionPrefill({ ...proposal, workspace_id: null }), true);
+    assert.equal(takeRegionPrefill("bfc69251bd04"), null);
+    assert.equal(stashRegionPrefill({ ...proposal, workspace_id: null }), true);
+    assert.equal(takeRegionPrefill(null)?.workspace_id, null);
+
+    // A store edited by hand: every one of these is dropped, never repaired.
+    for (const broken of [
+      "{not json",
+      JSON.stringify({ ...proposal, polygon: [[36.35, 127.38]] }),
+      JSON.stringify({ ...proposal, polygon: [[36.35, 127.38], [36.35, 127.39], ["x", 1]] }),
+      JSON.stringify({ ...proposal, polygon: [[36.35, 127.38], [36.35, 127.39], [999, 1]] }),
+      JSON.stringify({ ...proposal, parent_job: "" }),
+      JSON.stringify({ ...proposal, measured_source_m: "127" }),
+      JSON.stringify({ ...proposal, extrapolated_m: Number.NaN }),
+      JSON.stringify({ ...proposal, workspace_id: 7 }),
+    ]) {
+      store.set(REGION_PREFILL_STORAGE_KEY, broken);
+      assert.equal(takeRegionPrefill("bfc69251bd04"), null, `expected to drop: ${broken}`);
+      assert.equal(store.size, 0);
+    }
+  } finally {
+    if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
+    else (globalThis as { window?: unknown }).window = previousWindow;
+  }
 });
 
 contractTest("B5-2 stage 4: the requires-gated button and the demand-estimate confidence chip", (pin) => {
