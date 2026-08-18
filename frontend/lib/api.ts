@@ -3400,6 +3400,45 @@ export interface GenesisFixBoundaryExtension {
   };
 }
 
+/** Unit #42: the SECOND ask-first question on a V3 world-gap refusal, and the
+ * one `GenesisFixAttestationInvitation` cannot reach — the road may really END
+ * here. Some world gaps are real: a department store's parking ramp genuinely
+ * stops at the public network, and attesting to the nearest reachable candidate
+ * would put false geometry in the model.
+ *
+ * Everything here is MEASURED, and it is the SCOPE the confirming reader signs
+ * for: exactly one `way_id` (never the roads it touches), the census links that
+ * carry it, and `collateral_way_ids` — what the SOURCE's own adjacency says
+ * would be cut loose with it. Key-ABSENT whenever the disposition is not on
+ * offer; the reason then arrives as `dead_end_refusal` and as prose. */
+export interface GenesisFixDeadEndConfirmation {
+  way_id: number;
+  node_id: number | null;
+  link_ids: string[];
+  links: Array<{ link_id: string; name: string; lanes: number; length_m: number }>;
+  excluded_length_m: number;
+  /** Empty for the ordinary leaf case. Non-empty means confirming this dead end
+   * also removes roads BEHIND it, which is a fact the reader must see before
+   * they sign — the confirm call echoes this list back and the server refuses a
+   * set that does not match its own re-derivation. */
+  collateral_way_ids: number[];
+  collateral: Array<{ way_id: number; name: string }>;
+  source_component_ways: number;
+  surviving_component_ways: number;
+}
+
+/** Unit #42: why the dead-end disposition is NOT on offer, when the reason is
+ * one a reader deserves named. The load-bearing value is
+ * `source_testifies_the_connection` — the source itself declares the road
+ * continues, and a human confirmation may not delete road the map states. This
+ * renders a SENTENCE, never a control: a refusal with a button is not a
+ * refusal. Key-ABSENT when the disposition IS on offer, and also for the
+ * measured reasons the testimony/connector prose already covers. */
+export interface GenesisFixDeadEndRefusal {
+  reason_code: string | null;
+  detail: string | null;
+}
+
 export interface GenesisFixDisposition {
   status: string;
   verb: string | null;
@@ -3413,6 +3452,8 @@ export interface GenesisFixDisposition {
   attestation?: GenesisFixAttestationInvitation;
   regenerate?: GenesisFixRegeneration;
   boundary_extension?: GenesisFixBoundaryExtension;
+  dead_end_confirmation?: GenesisFixDeadEndConfirmation;
+  dead_end_refusal?: GenesisFixDeadEndRefusal;
 }
 
 export interface GenesisFixFinding {
@@ -3494,6 +3535,38 @@ export async function regenerateGenesisJob(jobId: string, reason?: string): Prom
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ reason: reason?.trim() || null }),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Unit #42: record that a human CONFIRMED the road really ends here, and
+ * re-derive this generation without that way -> the sibling job's record (202).
+ *
+ * Deliberately carries NO way id. The way is re-derived server-side from the
+ * finding's own census record, so this client is structurally unable to widen
+ * an exclusion past the road the confirming reader actually looked at — the
+ * same discipline that keeps `attested_by` off `applyGenesisFix`'s body.
+ * `confirmed_by` and the timestamp are likewise stamped from the session and the
+ * server clock.
+ *
+ * `acknowledgedCollateralWayIds` is the ONE echo: the ways the reader was SHOWN
+ * would also be cut loose (usually empty). The server re-derives the set and
+ * refuses a mismatch, so a stale screen cannot smuggle an unseen severance past
+ * the person signing for it. */
+export async function confirmGenesisDeadEnd(
+  jobId: string,
+  body: {
+    finding_code: string;
+    subject: string;
+    basis: string;
+    acknowledged_collateral_way_ids: number[];
+  },
+): Promise<GenesisJob> {
+  const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/dead-end-confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();

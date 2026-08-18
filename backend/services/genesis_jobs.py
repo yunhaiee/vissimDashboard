@@ -161,7 +161,7 @@ import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from services import datasets, observations, workspaces
@@ -192,6 +192,7 @@ from services.genesis.gate import (
 )
 from services.genesis.osm import (
     CONVERTER_FIXES,
+    SKIP_CONFIRMED_REAL_WORLD_DEAD_END,
     parse_osm_file,
     requested_bbox_from_provenance,
     requested_polygon_from_provenance,
@@ -199,6 +200,7 @@ from services.genesis.osm import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, see _build_fix_edit_session
     from services.agent.edit_session import VissimEditSession
+    from services.genesis.osm import OsmExtract
 
 logger = logging.getLogger(__name__)
 
@@ -1493,6 +1495,15 @@ def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
                 "osm_unreadable", [refusal.message for refusal in extract.refusals]
             )
 
+        # Unit #42 -- the ONE declarative parameter a dead-end exclusion job
+        # carries, applied HERE and nowhere else: after the faithful parse of
+        # the source (which is evidence and is never edited), before the draft.
+        # ``without_ways`` leaves a named skip per way, so the exclusion travels
+        # into the census and the compliance report as a LEDGER ENTRY carrying
+        # who confirmed it and why -- B5-1's rule for an exclusion, applied to a
+        # human's confirmation instead of the isolation pass's own measurement.
+        extract = _apply_declared_exclusions(job_id, record, extract)
+
         _update(job_id, phase=PHASE_DRAFTING)
         draft = build_draft(extract, name=str(record["name"]))
         if draft.refused:
@@ -1606,6 +1617,74 @@ def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
             refusal={"code": code, "reasons": [f"{type(exc).__name__}: {exc}"]},
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def _apply_declared_exclusions(
+    job_id: str, record: Mapping[str, Any], extract: "OsmExtract"
+) -> "OsmExtract":
+    """The unit #42 exclusion step: remove every way this job's record DECLARES
+    excluded, each leaving a named skip whose detail is the whole attribution.
+
+    A no-op returning the SAME object for every ordinary generation — a job with
+    no ``excluded_ways`` key produces a byte-identical artifact to the one it
+    produced before this function existed, which is the only acceptable cost of
+    adding a step to the shared runner.
+
+    Refuses BY NAME rather than proceeding when a declared way is not in the
+    parsed extract (``dead_end_excluded_way_not_in_source``). That state should
+    be unreachable — the create path verified the way against the same source's
+    own index, and this pipeline is deterministic — but "the exclusion I
+    declared did not apply" is precisely the silent difference between what a
+    job claims and what it did, and this package exists to refuse those. A
+    refusal here leaves the job in ``error`` with the code on its record; it
+    does not mint an artifact whose lineage would be a lie.
+    """
+    declared = list(record.get("excluded_ways") or [])
+    if not declared:
+        return extract
+    by_id: dict[int, Mapping[str, Any]] = {}
+    for entry in declared:
+        try:
+            by_id[int(entry["way_id"])] = entry
+        except (KeyError, TypeError, ValueError) as exc:  # pragma: no cover - record is ours
+            raise GenesisRefused(
+                "dead_end_excluded_way_not_in_source",
+                [f"An excluded_ways entry names no readable way id: {entry!r} [{exc}]"],
+            ) from exc
+    present = {way.id for way in extract.ways}
+    missing = sorted(way_id for way_id in by_id if way_id not in present)
+    if missing:
+        raise GenesisRefused(
+            "dead_end_excluded_way_not_in_source",
+            [
+                f"Job {job_id} declares way(s) {missing} excluded as operator-confirmed "
+                "real-world dead ends, but this parse of its source holds no drivable way with "
+                "those ids. Nothing was generated: an artifact whose lineage claims an "
+                "exclusion that never applied would be a record of something that did not "
+                "happen."
+            ],
+        )
+
+    def detail_for(way_id: int) -> str:
+        entry = by_id[way_id]
+        return (
+            f"operator-confirmed real-world dead end: {entry.get('confirmed_by')} confirmed at "
+            f"{entry.get('confirmed_at')} against finding {entry.get('finding_code')} "
+            f"({entry.get('subject')!r}); basis (their own words, verbatim): "
+            f"\"{entry.get('basis')}\""
+        )
+
+    logger.info(
+        "genesis_jobs: job %s excludes %d operator-confirmed dead-end way(s): %s",
+        job_id,
+        len(by_id),
+        sorted(by_id),
+    )
+    return extract.without_ways(
+        sorted(by_id),
+        reason=SKIP_CONFIRMED_REAL_WORLD_DEAD_END,
+        detail_for=detail_for,
+    )
 
 
 def _compose_side_layers(
@@ -3220,6 +3299,454 @@ def derive_v3_connector_plan(
     return {"connector_params": params, "provenance": provenance}
 
 
+# ---------------------------------------------------------------------------
+# Unit #42 — the THIRD answer a world gap can have. Unit #36 split a V3
+# connectivity refusal into "the source declares this connection" (ours) and
+# "the source shares the gap" (the world's); unit #35 gave the second one an
+# ask-first question — *does the real road continue, and to where?* — that only
+# has an answer when the road really does continue. It often does not: a
+# department store's parking ramp genuinely ENDS at the public network, and the
+# nearest reachable link end is 9.7 m away and belongs to a different road.
+# Picking it would be false geometry, and leaving the finding untreated forever
+# is the dead end this unit removes: a human who checked the site CONFIRMS the
+# road ends, the confirmed way is excluded BY NAME, and the generation is
+# re-derived without it (through unit #38's own machine). The judge is not
+# touched — V3 stops firing because the way it fired about is no longer in the
+# network, which is the only honest way for a finding to go away.
+# ---------------------------------------------------------------------------
+
+#: Where a dead-end confirmation's own facts come from — the source's declared
+#: way/node membership plus the census's link records — recorded verbatim in
+#: every derivation's provenance, mirroring :data:`_V3_SOURCE_FIELD`.
+_V3_DEAD_END_SOURCE_FIELD = "way/nd + links[].osm_way_id"
+
+#: The longest basis sentence a confirmation may carry, mirroring the
+#: attestation basis cap on ``routers.genesis.GenesisFixAttestationRequest``.
+DEAD_END_BASIS_MAX_CHARS = 600
+
+
+def _declared_excluded_way_ids(job_id: str | None) -> frozenset[int]:
+    """The way ids ``job_id``'s OWN record already declares excluded.
+
+    Refuter find (2026-08-18), and the reason this exists: a job's source ``.osm``
+    is deliberately never edited, so a sibling that already carries a confirmed
+    exclusion holds a source that STILL declares the removed way. Measuring what
+    a further exclusion would cut loose against that source measures a network
+    nobody is looking at — the first confirmer's road is still in the graph,
+    still holding a pocket together that the sibling has already let go of. The
+    numbers a second confirmer signs for have to be about the network THEY are
+    looking at.
+
+    A record's own ``excluded_ways`` is exactly the right correction and nothing
+    more: it is this system's own declaration, re-readable at any time, sitting
+    on the job being measured — the top of the evidence hierarchy, not a guess
+    about what the pipeline might later do.
+
+    Never raises: an unknown or unreadable job contributes nothing, the same
+    derive-LESS discipline :func:`_source_osm_index` keeps.
+    """
+    if not job_id:
+        return frozenset()
+    try:
+        record = get_job(job_id)
+    except GenesisJobError:
+        return frozenset()
+    found: set[int] = set()
+    for entry in record.get("excluded_ways") or []:
+        try:
+            found.add(int(entry["way_id"]))
+        except (KeyError, TypeError, ValueError):  # pragma: no cover - record is ours
+            continue
+    return frozenset(found)
+
+
+def _index_without_ways(
+    index: Mapping[str, Any], removed: frozenset[int]
+) -> Mapping[str, Any]:
+    """``index`` with ``removed`` gone from its way graph — a NEW mapping, never
+    a mutation: :func:`_source_osm_index` hands out an LRU-cached dict that every
+    other derivation on this job shares. The SAME object back when there is
+    nothing to remove, so an ordinary generation's measurement is byte-for-byte
+    the one it always was."""
+    if not removed:
+        return index
+    return {
+        **index,
+        "ways": {w: v for w, v in index["ways"].items() if w not in removed},
+        "node_ways": {
+            node: tuple(w for w in ways if w not in removed)
+            for node, ways in index["node_ways"].items()
+        },
+    }
+
+
+def _source_way_components(index: Mapping[str, Any], *, without: int | None = None) -> list[set[int]]:
+    """The connected components of the SOURCE's own way graph — two ways are
+    adjacent when the source declares they share a node — optionally with one
+    way id removed.
+
+    Undirected on purpose, and the honest reading of that: this measures what
+    the SOURCE DECLARES about adjacency, not what a vehicle can drive. Oneway
+    declarations, turn restrictions and the generator's own connector rules can
+    all make a source-adjacent pocket unreachable in the emitted network, so a
+    component here is a LOWER bound on severance — it can miss a pocket the
+    pipeline will later strand, and it never invents one that is not there. The
+    pipeline's own isolation pass (``draft.build_draft``, B5-1) remains the
+    authority, and it names what it removes; this is the number a human gets to
+    see BEFORE they press, which is a different job.
+
+    ``index`` is whatever graph the caller decided the question is about, and
+    :func:`derive_v3_dead_end_confirmation` narrows it by the job's OWN declared
+    exclusions before asking (:func:`_index_without_ways`). Without that the
+    "source declares" reading is a trap on a sibling: the source keeps declaring
+    a way an earlier confirmation removed, and the pocket that way was holding
+    up reads as safely attached.
+    """
+    adjacency: dict[int, set[int]] = {way_id: set() for way_id in index["ways"] if way_id != without}
+    for way_ids in index["node_ways"].values():
+        present = [w for w in way_ids if w != without and w in adjacency]
+        for a in present:
+            adjacency[a].update(w for w in present if w != a)
+    seen: set[int] = set()
+    components: list[set[int]] = []
+    for start in sorted(adjacency):
+        if start in seen:
+            continue
+        stack = [start]
+        component: set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(w for w in adjacency[current] if w not in component)
+        seen |= component
+        components.append(component)
+    return components
+
+
+def _dead_end_collateral(index: Mapping[str, Any], way_id: int) -> dict[str, Any]:
+    """What ELSE the source says would come loose if ``way_id`` were excluded.
+
+    The honesty clause of this whole unit: an operator confirms that ONE road
+    ends where they saw it end. They do not thereby confirm anything about the
+    roads behind it, and an exclusion that quietly severed a neighbourhood
+    would be exactly the "completed edit with wrong numbers" this system
+    refuses. So the severance is MEASURED and NAMED before the ask.
+
+    Returns ``{"collateral_way_ids", "empties_the_network", "component_ways",
+    "surviving_ways"}``. ``collateral_way_ids`` is every way that shares the
+    excluded way's own component today and would NOT share the largest
+    remaining piece of it — sorted, and empty for a leaf way (the common case,
+    and the real Galleria one: a 2-node service stub whose far node no other
+    drivable way touches).
+
+    Only the excluded way's OWN component is examined: a way in a different
+    component is unaffected by construction, and calling a pocket that was
+    already separate "collateral" would inflate the number a human is being
+    asked to weigh.
+    """
+    before = _source_way_components(index)
+    home = next((component for component in before if way_id in component), {way_id})
+    remaining = sorted(
+        (component for component in _source_way_components(index, without=way_id) if component & home),
+        key=lambda component: (-len(component), min(component)),
+    )
+    survivor = remaining[0] if remaining else set()
+    collateral = sorted({w for component in remaining[1:] for w in component})
+    return {
+        "collateral_way_ids": collateral,
+        # A network of exactly one drivable way: removing it leaves nothing to
+        # emit, and ``draft`` would answer with an opaque "no node coordinates
+        # to project". Named here instead, before a job directory exists.
+        "empties_the_network": len(index["ways"]) <= 1,
+        "component_ways": len(home),
+        "surviving_ways": len(survivor),
+    }
+
+
+def derive_v3_dead_end_confirmation(
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None",
+    job_id: str | None,
+    testimony: Mapping[str, Any] | None = None,
+    testimony_provenance: Mapping[str, Any] | None = None,
+    confirmation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Unit #42: may a human confirm that the road REALLY ends here — and, when
+    one has, what exactly does that exclude?
+
+    Returns ``{"dead_end_confirmation": {...} | None, "provenance": {...}}``,
+    the same shape :func:`derive_v3_source_testimony` and
+    :func:`derive_v3_connector_plan` return.
+
+    **The evidence hierarchy is the first door, and the load-bearing one.** A
+    finding unit #36 classified as SOURCE TESTIMONY — the job's own ``.osm``
+    declares ways sharing the node, drivably — is refused by name
+    (``source_testifies_the_connection``). The source is a declaration about the
+    world that this system can re-read at any time; a human's confirmation is a
+    claim it cannot check. Letting the second erase the first would mean a click
+    could delete road the map declares, which is the same fabrication as
+    inventing a connector, only subtractive. The honest treatment for a
+    testified gap is unit #35's connector, and the refusal says so.
+
+    The invitation is offered for EXACTLY ONE measured state: unit #36 answered
+    ``source_shares_the_gap``. Everything else refuses by name:
+
+    * ``source_testifies_the_connection`` — above;
+    * ``world_gap_not_measured`` — unit #36 reached some OTHER answer (no census
+      record, an unreadable source, a way or node the source does not hold), so
+      nothing measured that this is a world gap at all. The underlying reason
+      code is quoted rather than hidden;
+    * ``no_draft_record`` — the finding maps to no census link, so there is no
+      way id to exclude;
+    * ``way_not_in_source`` — the census names a way the source does not declare
+      drivably, so excluding it would be a parameter naming nothing;
+    * ``exclusion_would_empty_the_network`` — nothing would be left to generate:
+      either the source (minus what this job already excludes) holds one drivable
+      way and it is this one, or every link in this job's own network rides it.
+      Both halves are needed and a refuter proved it: the source count alone is
+      evadable through ``exclude_service``, the requested-region trim, and a
+      chain of exclusions, each of which leaves ways in the source that the
+      network does not hold. B5-1's own isolation pass refuses to delete a whole
+      network (:data:`~services.genesis.draft.ISOLATION_WOULD_EMPTY_THE_NETWORK`);
+      an operator's confirmation gets the same answer, before a job exists.
+
+    **Every measurement below is made on the network THIS job holds**, not on
+    everything its source declares — the job's own ``excluded_ways`` are taken
+    out of the graph first (:func:`_declared_excluded_way_ids`), and the ones
+    taken out are named in the provenance as ``measured_without_way_ids`` so the
+    lineage records which graph the number came from. The source file is never
+    edited, which is exactly why this correction is needed: a sibling's source
+    still declares the road its parent's confirmer removed.
+
+    **What an offered confirmation carries** — all measured, none invented:
+    ``way_id`` (the ONE way the exclusion names — never the roads it touches),
+    ``node_id`` (the departure end the finding is about), the census's own
+    ``links`` carrying that way with their names and lengths, and ``collateral``
+    (:func:`_dead_end_collateral` — what the source says would come loose with
+    it, whose docstring states exactly what that measurement can and cannot
+    see). ``collateral`` is a fact the human is shown, never a silent
+    consequence, and it rides into the ledger either way.
+
+    **When a confirmation is SUBMITTED** (``confirmation``), the checks that
+    make an attestation a claim rather than a click apply, each refusing rather
+    than defaulting: ``confirmation_without_basis``,
+    ``confirmation_basis_too_long`` (refused, never truncated — a ledger that
+    cuts a person's sentence in half quotes them saying something they did not
+    say), ``confirmation_without_attribution`` (attester and server timestamp —
+    a request model has no field for either, so attribution cannot be forged),
+    ``confirmation_way_mismatch`` (the submitted way id is not the one this
+    finding names), and ``collateral_not_acknowledged`` (the acknowledged set
+    differs from the re-derived one — the same re-derive-and-compare discipline
+    unit #35 applies to connector params, so a client's stale screen cannot
+    smuggle an unseen severance past its reader).
+    """
+    provenance: dict[str, Any] = {
+        "source_field": _V3_DEAD_END_SOURCE_FIELD,
+        "job_id": job_id,
+        "link_id": None,
+        "way_id": None,
+        "node_id": None,
+    }
+
+    def _nothing(reason_code: str, detail: str) -> dict[str, Any]:
+        return {
+            "dead_end_confirmation": None,
+            "provenance": {**provenance, "reason_code": reason_code, "detail": detail},
+        }
+
+    testimony_reason = str((testimony_provenance or {}).get("reason_code") or "")
+    if isinstance(testimony, Mapping) and testimony.get("connected_way_ids"):
+        ways_text = ", ".join(str(w) for w in testimony["connected_way_ids"])
+        return _nothing(
+            "source_testifies_the_connection",
+            f"the source itself declares way(s) {ways_text} depart node "
+            f"{testimony.get('node_id')} here, so this gap is the pipeline's and not the "
+            "world's -- a human confirmation cannot delete road the source declares, and the "
+            "treatment for a testified gap is the connector unit #35 proposes",
+        )
+    if testimony_reason != "source_shares_the_gap":
+        return _nothing(
+            "world_gap_not_measured",
+            "nothing measured that the SOURCE shares this gap -- unit #36's derivation "
+            f"answered {testimony_reason or '(nothing)'!r} instead, so there is no measured "
+            "world gap for a human to confirm",
+        )
+
+    from_link = _v3_finding_link(finding, draft)
+    if from_link is None or draft is None:
+        return _nothing(
+            "no_draft_record",
+            "the finding names no addressable link id, or the census declares no links[] "
+            "record for it -- there is no way id to exclude",
+        )
+    provenance["link_id"] = str(from_link.id)
+    way_id = int(from_link.osm_way_id)
+    provenance["way_id"] = way_id
+    node_id = (testimony_provenance or {}).get("node_id")
+    provenance["node_id"] = node_id
+
+    index = _source_osm_index(job_id) if job_id else None
+    if index is None or way_id not in index["ways"]:
+        return _nothing(
+            "way_not_in_source",
+            f"the census names way {way_id} for link {from_link.id}, but the source holds no "
+            "drivable way with that id -- an exclusion naming it would exclude nothing",
+        )
+
+    # REFUTER FIND (2026-08-18), closed: measure on the graph THIS job holds.
+    # The source is evidence and is never edited, so a sibling that already
+    # carries a confirmed exclusion keeps a source declaring the removed way --
+    # and the severance measurement below, run against that source, would report
+    # a pocket as safely attached by a road the first confirmer already took
+    # responsibility for removing. Exploited on a two-step chain: with stub A
+    # already excluded, confirming stub B measured "nothing else comes loose"
+    # while the re-derivation stranded the way hanging off the node they shared.
+    # The job's own declared exclusions are the correction, and they are named
+    # in the provenance so the lineage says which graph the number was measured
+    # on. NEVER the way under consideration: it has to stay in the graph for
+    # the question "what would removing it cut loose" to have an answer at all.
+    measured_without = _declared_excluded_way_ids(job_id) - {way_id}
+    if measured_without:
+        provenance["measured_without_way_ids"] = sorted(measured_without)
+        index = _index_without_ways(index, measured_without)
+
+    collateral = _dead_end_collateral(index, way_id)
+    # The SECOND half of the same find: emptiness is a question about the
+    # network, and ``_source_osm_index`` parses with DEFAULTS on purpose (what
+    # the SOURCE declares). So ``exclude_service`` and the requested-region trim
+    # both leave ways in that count which this generation never modelled, and a
+    # source declaring two drivable ways can be a network of one. Exploited by
+    # padding a source with a service way: the guard's sentence stayed true and
+    # the sibling died on ``draft_refused: osm_no_nodes`` -- the very opaque
+    # answer this refusal exists to say instead. The draft is the authority on
+    # what the network holds, and it is already in hand.
+    network_ways = {int(link.osm_way_id) for link in draft.links}
+    if collateral["empties_the_network"] or network_ways <= {way_id}:
+        measured = (
+            f"the source it re-reads declares {len(index['ways'])} drivable way(s) and this is "
+            "one of them"
+            if collateral["empties_the_network"]
+            else f"every one of this job's {len(draft.links)} link(s) rides it"
+        )
+        return _nothing(
+            "exclusion_would_empty_the_network",
+            f"excluding way {way_id} would leave no network to generate -- {measured}. That is "
+            "the one thing B5-1's own isolation pass refuses to do as well, and it is refused "
+            "here before a job directory exists rather than as an opaque draft failure after",
+        )
+
+    carried = [link for link in draft.links if int(link.osm_way_id) == way_id]
+    links = [
+        {
+            "link_id": str(link.id),
+            "name": link.name,
+            "lanes": int(link.lanes),
+            "length_m": round(float(link.length_m), 3),
+        }
+        for link in sorted(carried, key=lambda link: link.id)
+    ]
+    offer: dict[str, Any] = {
+        "way_id": way_id,
+        "node_id": node_id,
+        "link_ids": [entry["link_id"] for entry in links],
+        "links": links,
+        "excluded_length_m": round(sum(float(link.length_m) for link in carried), 3),
+        "collateral_way_ids": collateral["collateral_way_ids"],
+        "collateral": [
+            {"way_id": other, "name": index["way_names"].get(other) or ""}
+            for other in collateral["collateral_way_ids"]
+        ],
+        "source_component_ways": collateral["component_ways"],
+        "surviving_component_ways": collateral["surviving_ways"],
+    }
+    provenance["collateral_way_ids"] = collateral["collateral_way_ids"]
+    provenance["link_ids"] = offer["link_ids"]
+
+    if confirmation is None:
+        return {"dead_end_confirmation": offer, "provenance": provenance}
+
+    basis_text = str(confirmation.get("basis") or "").strip()
+    confirmed_by = str(confirmation.get("confirmed_by") or "").strip()
+    confirmed_at = str(confirmation.get("confirmed_at") or "").strip()
+    provenance["confirmed_by"] = confirmed_by or None
+    provenance["confirmed_at"] = confirmed_at or None
+    if not basis_text:
+        return _nothing(
+            "confirmation_without_basis",
+            "the confirmation carries no basis sentence -- confirming that a road ends is a "
+            "claim somebody is accountable for, and a claim with no stated basis is a click",
+        )
+    if len(basis_text) > DEAD_END_BASIS_MAX_CHARS:
+        # REFUSED, never truncated. The basis lands in the ledger as the
+        # confirmer's own words verbatim, and silently cutting a person's
+        # sentence in half would make the record quote them saying something
+        # they did not say.
+        return _nothing(
+            "confirmation_basis_too_long",
+            f"the confirmation's basis is {len(basis_text)} characters and the ledger records "
+            f"a confirmer's own words verbatim up to {DEAD_END_BASIS_MAX_CHARS} -- shorten it "
+            "rather than having this record quote half a sentence",
+        )
+    if not confirmed_by or not confirmed_at:
+        return _nothing(
+            "confirmation_without_attribution",
+            "the confirmation carries no confirmer and/or no timestamp -- an unattributed "
+            "confirmation cannot be recorded as one",
+        )
+    # ``way_id`` is DERIVED from the finding's own census record, never taken
+    # from a caller: the HTTP body has no field for it, so an exclusion cannot
+    # be widened past the road the confirming reader actually looked at. A
+    # caller MAY assert one (the service layer, a tool, a test), and then it has
+    # to be the same one -- defence in depth against a future caller that starts
+    # passing the target through, the same redundancy ``apply_genesis_fix``
+    # keeps between its route gate and its service gate.
+    submitted_way = confirmation.get("way_id")
+    if submitted_way is not None:
+        try:
+            submitted_way_id = int(str(submitted_way))
+        except (TypeError, ValueError):
+            submitted_way_id = None
+        if submitted_way_id != way_id:
+            return _nothing(
+                "confirmation_way_mismatch",
+                f"the confirmation names way {submitted_way!r}, but this finding is about way "
+                f"{way_id} (link {from_link.id}) -- a confirmation may only exclude the way its "
+                "own finding names, never a road connected to it",
+            )
+    acknowledged_raw = confirmation.get("acknowledged_collateral_way_ids")
+    acknowledged: set[int] = set()
+    if acknowledged_raw is not None:
+        try:
+            acknowledged = {int(str(value)) for value in acknowledged_raw}
+        except (TypeError, ValueError):
+            acknowledged = {-1}
+    if acknowledged != set(collateral["collateral_way_ids"]):
+        return _nothing(
+            "collateral_not_acknowledged",
+            "the confirmation acknowledges "
+            f"{sorted(acknowledged) or '(nothing)'} as the ways this exclusion would also cut "
+            f"loose, and re-deriving it here names {collateral['collateral_way_ids'] or '(nothing)'} "
+            "-- the reader must have seen what they are removing, so a set that does not match "
+            "is refused rather than reconciled",
+        )
+    return {
+        "dead_end_confirmation": {
+            **offer,
+            "confirmed": {
+                "way_id": way_id,
+                "basis": basis_text,
+                "confirmed_by": confirmed_by,
+                "confirmed_at": confirmed_at,
+                "acknowledged_collateral_way_ids": sorted(acknowledged),
+            },
+        },
+        "provenance": {**provenance, "basis": basis_text},
+    }
+
+
 def normalized_connector_params(params: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """One comparable shape for an ``add_connector`` payload, so a SUBMITTED
     payload and this module's own DERIVED one are compared by value rather
@@ -4646,6 +5173,7 @@ def derive_fix_targets(
     params: Mapping[str, Any] | None = None,
     job_id: str | None = None,
     attestation: Mapping[str, Any] | None = None,
+    dead_end_confirmation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The ``targets`` :func:`services.agent.genesis_fixes.propose_genesis_fix`
     is re-run with — built from what THIS service layer can honestly derive,
@@ -4699,6 +5227,18 @@ def derive_fix_targets(
       derived the picker a human would attest FROM
       (:func:`derive_v3_attestation_candidates`) rides along so the refusal
       can carry the ask-first question instead of being a dead end.
+    * **V3** (``dead_end_confirmation`` + ``dead_end_derivation``) — unit #42,
+      for :data:`V3_TREATABLE_FINDING_CODE` alone and the OTHER answer a world
+      gap can have: the road really ends. Derived by
+      :func:`derive_v3_dead_end_confirmation` — an invitation naming exactly
+      which way an exclusion would remove and what the source says would come
+      loose with it, or a NAMED refusal (most importantly
+      ``source_testifies_the_connection``: a human confirmation may not erase
+      road the source declares). ``dead_end_confirmation`` is the caller's own
+      threaded claim, never derived here, exactly like ``attestation`` above,
+      and neither key changes the tier — the treatment is a NEW re-derivation
+      without the confirmed way (``create_dead_end_exclusion_job``), never an
+      edit to this artifact.
     * **V4** (``boundary_attribution`` + ``boundary_attribution_provenance``)
       — unit #39, for :data:`V4_RUNWAY_FINDING_CODE` alone: derived by
       :func:`derive_v4_boundary_attribution` from the judge's own stored
@@ -4789,6 +5329,24 @@ def derive_fix_targets(
             candidates = derive_v3_attestation_candidates(finding, draft=draft)
             if candidates:
                 targets["attestation_candidates"] = candidates
+        # Unit #42: the OTHER thing a world gap can be -- a road that really
+        # ends. Derived UNCONDITIONALLY (never gated on the connector plan
+        # failing) for one reason: the source-testimony case must reach the
+        # refusal clause too, so a reader who wants to erase a gap the SOURCE
+        # declares is told why they may not, instead of finding no control and
+        # guessing. ``confirmation`` is threaded from the caller ONLY, exactly
+        # as ``attestation`` above is -- it is a human's claim, never derived.
+        dead_end = derive_v3_dead_end_confirmation(
+            finding,
+            draft=draft,
+            job_id=job_id,
+            testimony=targets.get("source_testimony"),
+            testimony_provenance=targets.get("source_testimony_provenance"),
+            confirmation=dead_end_confirmation,
+        )
+        if dead_end["dead_end_confirmation"] is not None:
+            targets["dead_end_confirmation"] = dead_end["dead_end_confirmation"]
+        targets["dead_end_derivation"] = dead_end["provenance"]
 
     return targets
 
@@ -6060,6 +6618,122 @@ def reconcile_interrupted_jobs() -> list[str]:
 #: source from one somebody started by uploading a file.
 REGENERATE_LINEAGE_KIND = "regenerate"
 
+#: The lineage ``kind`` on a unit #42 DEAD-END EXCLUSION job. It rides the very
+#: same machine as :data:`REGENERATE_LINEAGE_KIND` — the parent's sha-verified
+#: source bytes, the parent's own options, the normal runner, the unmodified
+#: judge — and differs in exactly one declared parameter: a way a human
+#: CONFIRMED the road really ends at is excluded by name. A separate kind rather
+#: than a flag on the other, because "re-derived unchanged" and "re-derived
+#: without a way somebody took responsibility for removing" are two different
+#: claims and a reader must never have to infer which one they hold.
+DEAD_END_EXCLUSION_LINEAGE_KIND = "dead_end_exclusion"
+
+
+def _regeneration_source_preflight(parent_job_id: str) -> tuple[dict[str, Any], Path, str]:
+    """The four refusals EVERY re-derivation of a parent's own source shares —
+    ``(parent record, parent source path, recorded sha)`` when all four pass.
+
+    Extracted (unit #42) from :func:`create_regenerate_job` so its sibling
+    :func:`create_dead_end_exclusion_job` obeys the SAME doors rather than
+    growing its own near-copies of them. The refusal codes and their sentences
+    are unit #38's, unchanged and deliberately so: a caller who learned them
+    from the regenerate route reads the identical answer from the exclusion
+    route, and a unit that quietly relaxed one of them for its own path would be
+    exactly the bypass #38's docstring warns about. Each door, and why:
+
+    * ``genesis_regenerate_parent_not_gated`` — no verdict, so no finding to treat;
+    * ``genesis_regenerate_parent_has_side_inputs`` — a re-derivation carries
+      GEOMETRY ONLY, and minting a thinner artifact that looks complete is the
+      completed-but-wrong outcome this system exists to refuse;
+    * ``genesis_regenerate_source_missing`` — no stored source bytes to re-read;
+    * ``genesis_regenerate_source_sha_mismatch`` — the bytes no longer hash to
+      the digest the parent RECORDED, so "the same source" is a claim that would
+      be assumed rather than verified.
+
+    Eligibility — WHICH finding earns the re-derivation — is deliberately NOT
+    here: that is the one question the two callers answer differently, and each
+    raises its own named refusal for it.
+    """
+    parent = get_job(parent_job_id)
+    if parent.get("status") not in GATED_STATUSES:
+        raise GenesisRefused(
+            "genesis_regenerate_parent_not_gated",
+            [
+                f"Job {parent_job_id} is {parent.get('status')!r}, which carries no gate "
+                "verdict. A regeneration treats a finding the gate already made -- wait for "
+                "the generation to reach a verdict, or start a new one."
+            ],
+        )
+
+    # Refuter finding F7 (2026-08-15): a regeneration re-runs osm->draft->emit
+    # with side_inputs=None, so regenerating a COMPOSED parent would mint an
+    # artifact that silently lacks the demand/signals/fleet its parent carried
+    # -- structurally indistinguishable from a job that never had them. Until a
+    # unit decides how side inputs travel through a regeneration, the honest
+    # answer is a refusal that says exactly that.
+    if parent.get("side_inputs"):
+        raise GenesisRefused(
+            "genesis_regenerate_parent_has_side_inputs",
+            [
+                f"Job {parent_job_id} was composed with side inputs "
+                f"({', '.join(sorted(parent['side_inputs']))}), and a regeneration re-derives "
+                "GEOMETRY ONLY -- the regenerated artifact would silently lack what the "
+                "parent carried. Carrying side inputs through a regeneration is a decision "
+                "no unit has made yet, so this refuses rather than minting a thinner "
+                "artifact that looks complete."
+            ],
+        )
+
+    source_record = parent.get("source_osm") or {}
+    try:
+        parent_source = artifact_path(parent_job_id, "source_osm")
+    except GenesisJobNotFoundError as exc:
+        raise GenesisRefused(
+            "genesis_regenerate_source_missing",
+            [
+                f"Job {parent_job_id} has no stored source .osm to re-derive from. [{exc}] "
+                "A regeneration re-reads the SAME source bytes; a job that never had a "
+                "source of its own (a fix job, a live check) cannot be regenerated -- "
+                "regenerate the generation those were derived from instead."
+            ],
+        ) from exc
+
+    recorded_sha = str(source_record.get("sha256") or "")
+    actual_sha = _sha256(parent_source)
+    if not recorded_sha or actual_sha != recorded_sha:
+        raise GenesisRefused(
+            "genesis_regenerate_source_sha_mismatch",
+            [
+                f"Job {parent_job_id}'s stored source .osm hashes to {actual_sha}, and its "
+                f"record says {recorded_sha or '(nothing)'}. A regeneration claims to use the "
+                "SAME source bytes, so the claim is verified rather than assumed -- and this "
+                "file is not the one the parent was judged on."
+            ],
+        )
+    return parent, parent_source, recorded_sha
+
+
+def _freeze_parent_source(job_id: str, parent_source: Path, recorded_sha: str) -> Path:
+    """Copy the parent's own source bytes into ``job_id``'s work dir and PROVE
+    the copy is the same file. Unit #38's own two steps, shared with #42.
+
+    The parent's file is opened for READING here and nowhere else — the
+    byte-untouched rule every sibling job obeys."""
+    work_dir = job_dir(job_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    frozen_osm = work_dir / f"source{parent_source.suffix.lower() or '.osm'}"
+    shutil.copyfile(parent_source, frozen_osm)
+    copied_sha = _sha256(frozen_osm)
+    if copied_sha != recorded_sha:  # pragma: no cover - a copy that changed bytes
+        raise GenesisRefused(
+            "genesis_regenerate_source_sha_mismatch",
+            [
+                f"The copy of the parent's source hashes to {copied_sha}, not the "
+                f"recorded {recorded_sha}. Nothing was started."
+            ],
+        )
+    return frozen_osm
+
 
 def regenerable_findings(job_id: str) -> list[dict[str, Any]]:
     """Every finding in ``job_id``'s STORED verdict whose only honest treatment
@@ -6166,62 +6840,10 @@ def create_regenerate_job(
     verbatim and never invented here.
     """
     workspace_id = workspaces.current_workspace_id()
-    parent = get_job(parent_job_id)
-    if parent.get("status") not in GATED_STATUSES:
-        raise GenesisRefused(
-            "genesis_regenerate_parent_not_gated",
-            [
-                f"Job {parent_job_id} is {parent.get('status')!r}, which carries no gate "
-                "verdict. A regeneration treats a finding the gate already made -- wait for "
-                "the generation to reach a verdict, or start a new one."
-            ],
-        )
-
-    # Refuter finding F7 (2026-08-15): a regeneration re-runs osm->draft->emit
-    # with side_inputs=None, so regenerating a COMPOSED parent would mint an
-    # artifact that silently lacks the demand/signals/fleet its parent carried
-    # -- structurally indistinguishable from a job that never had them. Until a
-    # unit decides how side inputs travel through a regeneration, the honest
-    # answer is a refusal that says exactly that.
-    if parent.get("side_inputs"):
-        raise GenesisRefused(
-            "genesis_regenerate_parent_has_side_inputs",
-            [
-                f"Job {parent_job_id} was composed with side inputs "
-                f"({', '.join(sorted(parent['side_inputs']))}), and a regeneration re-derives "
-                "GEOMETRY ONLY -- the regenerated artifact would silently lack what the "
-                "parent carried. Carrying side inputs through a regeneration is a decision "
-                "no unit has made yet, so this refuses rather than minting a thinner "
-                "artifact that looks complete."
-            ],
-        )
-
+    # The four doors every re-derivation shares (unit #38's own, extracted for
+    # #42's sibling path so neither can drift from the other).
+    parent, parent_source, recorded_sha = _regeneration_source_preflight(parent_job_id)
     source_record = parent.get("source_osm") or {}
-    try:
-        parent_source = artifact_path(parent_job_id, "source_osm")
-    except GenesisJobNotFoundError as exc:
-        raise GenesisRefused(
-            "genesis_regenerate_source_missing",
-            [
-                f"Job {parent_job_id} has no stored source .osm to re-derive from. [{exc}] "
-                "A regeneration re-reads the SAME source bytes; a job that never had a "
-                "source of its own (a fix job, a live check) cannot be regenerated -- "
-                "regenerate the generation those were derived from instead."
-            ],
-        ) from exc
-
-    recorded_sha = str(source_record.get("sha256") or "")
-    actual_sha = _sha256(parent_source)
-    if not recorded_sha or actual_sha != recorded_sha:
-        raise GenesisRefused(
-            "genesis_regenerate_source_sha_mismatch",
-            [
-                f"Job {parent_job_id}'s stored source .osm hashes to {actual_sha}, and its "
-                f"record says {recorded_sha or '(nothing)'}. A regeneration claims to use the "
-                "SAME source bytes, so the claim is verified rather than assumed -- and this "
-                "file is not the one the parent was judged on."
-            ],
-        )
 
     eligible = regenerable_findings(parent_job_id)
     if not eligible:
@@ -6236,21 +6858,8 @@ def create_regenerate_job(
         )
 
     job_id = uuid4().hex[:12]
-    work_dir = job_dir(job_id)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    frozen_osm = work_dir / f"source{parent_source.suffix.lower() or '.osm'}"
-    # A plain copy of the PARENT's bytes -- the parent's file is opened for
-    # reading here and nowhere else in this function.
-    shutil.copyfile(parent_source, frozen_osm)
+    frozen_osm = _freeze_parent_source(job_id, parent_source, recorded_sha)
     copied_sha = _sha256(frozen_osm)
-    if copied_sha != recorded_sha:  # pragma: no cover - a copy that changed bytes
-        raise GenesisRefused(
-            "genesis_regenerate_source_sha_mismatch",
-            [
-                f"The copy of job {parent_job_id}'s source hashes to {copied_sha}, not the "
-                f"recorded {recorded_sha}. Nothing was started."
-            ],
-        )
 
     record = {
         "id": job_id,
@@ -6267,6 +6876,18 @@ def create_regenerate_job(
         # quietly changed exclude_service would be comparing two different
         # questions and calling the difference a fix.
         "options": dict(parent.get("options") or {}),
+        # ...and, for the same reason, the parent's own declared exclusions
+        # (unit #42). A regeneration re-derives with the SAME inputs, and a
+        # confirmed real-world dead end is one of them: dropping it here would
+        # silently REVERSE a decision a named person took responsibility for,
+        # and the reversal would be invisible in a record whose whole claim is
+        # "the same source". Key-ABSENT when the parent declared none, so an
+        # ordinary regeneration's record is byte-for-byte what it always was.
+        **(
+            {"excluded_ways": [dict(entry) for entry in parent["excluded_ways"]]}
+            if parent.get("excluded_ways")
+            else {}
+        ),
         "source_osm": {
             "filename": str(source_record.get("filename") or frozen_osm.name),
             "bytes": frozen_osm.stat().st_size,
@@ -6299,6 +6920,15 @@ def create_regenerate_job(
             "parent_source_sha256": recorded_sha,
             "converter_fixes": [dict(entry) for entry in CONVERTER_FIXES],
             "findings": eligible,
+            # Unit #42: what this re-derivation inherits besides the bytes. A
+            # regeneration that carried a human's exclusion without SAYING so
+            # would leave a reader of the lineage unable to explain why the
+            # regenerated network is missing a road the source declares.
+            **(
+                {"inherited_exclusions": [dict(e) for e in parent["excluded_ways"]]}
+                if parent.get("excluded_ways")
+                else {}
+            ),
             "reason": reason,
         },
     }
@@ -6314,6 +6944,260 @@ def start_regenerate_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
     artifact is produced by a special path the ordinary one does not have.
     """
     record = create_regenerate_job(parent_job_id, **kwargs)
+    threading.Thread(
+        target=run_genesis_job,
+        args=(record["id"], record["workspace_id"]),
+        daemon=True,
+    ).start()
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Unit #42 — the dead-end EXCLUSION job. The same machine as the regeneration
+# above, plus exactly one declared parameter.
+# ---------------------------------------------------------------------------
+
+
+def create_dead_end_exclusion_job(
+    parent_job_id: str,
+    *,
+    finding_code: str,
+    subject: str | None,
+    way_id: int | str | None = None,
+    basis: str,
+    acknowledged_collateral_way_ids: Sequence[Any] | None,
+    confirmed_by: str | None,
+) -> dict[str, Any]:
+    """Register a re-derivation of ``parent_job_id`` WITHOUT the one way a human
+    confirmed the road really ends at — the unit #42 treatment. Does not run it.
+
+    **Everything unit #38's regeneration is**, and one thing more. The parent's
+    own ``source.osm`` bytes are copied (sha-verified against the parent's own
+    recorded digest), the parent's ``options`` ride verbatim, the NORMAL runner
+    and the UNMODIFIED judge do the rest, the parent is byte-untouched, and the
+    sibling gates on its own merits. The four shared doors are literally the
+    same code (:func:`_regeneration_source_preflight`) rather than a near-copy,
+    so this path cannot be a way around them.
+
+    **The source file is never edited.** The exclusion is a DECLARATIVE
+    parameter on the new job's record (``excluded_ways``), applied by
+    :func:`_run_genesis_job_locked` to the PARSED extract through
+    :meth:`~services.genesis.osm.OsmExtract.without_ways`. The stored bytes stay
+    sha-identical to the parent's, because a source is evidence: an exclusion
+    that rewrote it would destroy the very thing a later reader would need to
+    disagree with the exclusion.
+
+    **The exclusion is a ledger entry, not a deletion.** Every excluded way
+    leaves a :data:`~services.genesis.osm.SKIP_CONFIRMED_REAL_WORLD_DEAD_END`
+    skip behind whose detail names WHO confirmed it, WHEN (server-stamped),
+    against which finding, and their own words verbatim — so it lands in the
+    sibling's ``*.genesis.json`` census and its compliance report, which is
+    B5-1's rule for an exclusion applied to itself.
+
+    **Refusals, each named** (beyond the four shared ones, which keep unit #38's
+    own codes):
+
+    * ``genesis_dead_end_finding_not_in_parent_verdict`` — the confirmation
+      names a finding the parent's stored verdict does not carry, the same door
+      ``create_genesis_fix_job`` closed against exploit #3. Ambiguity resolves
+      the same way too: a code appearing twice needs its ``subject``;
+    * ``genesis_dead_end_finding_ambiguous_without_subject`` — that code appears
+      more than once and no subject named which;
+    * ``genesis_dead_end_not_confirmable`` — this module's OWN re-derivation
+      (:func:`derive_v3_dead_end_confirmation`) does not offer the confirmation,
+      and the refusal quotes its measured reason. This is the door that carries
+      the evidence hierarchy: a finding whose SOURCE testifies to the connection
+      refuses here under ``source_testifies_the_connection``, however confident
+      the person pressing is. It is also where an incomplete or mismatched
+      confirmation lands, and where a collateral set the reader never saw is
+      refused rather than reconciled;
+    * ``genesis_dead_end_already_excluded`` — the parent already carries this
+      way as a confirmed dead end, so its network does not contain it.
+
+    **A chain of confirmations ACCUMULATES.** The parent's own
+    ``excluded_ways`` lead the new record's list and this confirmation appends,
+    so a second confirmation on a sibling cannot silently re-introduce the way
+    the first one's confirmer took responsibility for removing. Unit #38's
+    plain regeneration carries them forward for the same reason, naming them in
+    its lineage as ``inherited_exclusions``.
+
+    ``confirmed_by`` is the SIGNED-IN session's own name and the timestamp is
+    this server's clock — neither is a field any request model offers, exactly
+    as unit #35's attestation and the phase-diagram attestation before it.
+    """
+    workspace_id = workspaces.current_workspace_id()
+    parent, parent_source, recorded_sha = _regeneration_source_preflight(parent_job_id)
+    source_record = parent.get("source_osm") or {}
+
+    raw_parent_gate = json.loads(
+        (job_dir(parent_job_id) / GATE_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    # ``genesis_fix_finding_ambiguous_without_subject`` propagates from here
+    # UNRENAMED: it is a statement about addressing a finding, not about the
+    # treatment being applied, and a caller who learned it from the apply route
+    # must read the same answer here. Unit #41 measured the state it guards on
+    # the real screen -- V3 emits the same (code, subject) twice for 대덕대로
+    # w52496957s1 -- so it is a live door on this path too.
+    finding = _finding_in_stored_gate(raw_parent_gate, finding_code, subject=subject)
+    if finding is None:
+        looked_for = (
+            f"Finding code {finding_code!r} with subject {subject!r}"
+            if subject is not None
+            else f"Finding code {finding_code!r}"
+        )
+        raise GenesisRefused(
+            "genesis_dead_end_finding_not_in_parent_verdict",
+            [
+                f"{looked_for} does not appear anywhere in job {parent_job_id}'s stored gate "
+                "verdict -- there is no diagnosis for this confirmation to answer."
+            ],
+        )
+
+    stamped = {
+        "way_id": way_id,
+        # NOT truncated here: an over-long basis is refused by name below
+        # (``confirmation_basis_too_long``), because a ledger that quotes half a
+        # person's sentence quotes them saying something they did not say.
+        "basis": str(basis or "").strip(),
+        "confirmed_by": str(confirmed_by or "").strip(),
+        "confirmed_at": _now_iso(),
+        "acknowledged_collateral_way_ids": list(acknowledged_collateral_way_ids or []),
+    }
+    draft = job_draft_or_none(parent_job_id)
+    targets = derive_fix_targets(
+        finding_code,
+        finding,
+        draft=draft,
+        params=None,
+        job_id=parent_job_id,
+        dead_end_confirmation=stamped,
+    )
+    offered = targets.get("dead_end_confirmation")
+    derivation = targets.get("dead_end_derivation") or {}
+    if offered is None or not offered.get("confirmed"):
+        raise GenesisRefused(
+            "genesis_dead_end_not_confirmable",
+            [
+                f"Job {parent_job_id}'s finding {finding_code!r} (subject "
+                f"{finding['subject']!r}) does not accept a real-world dead-end confirmation: "
+                f"{derivation.get('reason_code') or 'no_derivation'} -- "
+                f"{derivation.get('detail') or 'nothing measured'}."
+            ],
+        )
+
+    confirmed = dict(offered["confirmed"])
+    excluded_way_id = int(confirmed["way_id"])
+
+    # Every exclusion the PARENT already carried travels forward, and a repeat
+    # refuses. Without this, a second confirmation on a sibling would silently
+    # RE-INTRODUCE the way the first one's confirmer took responsibility for
+    # removing -- an accountable human decision reversed by a path that never
+    # mentions it, which is the exact class of silent difference this unit
+    # exists to close. (Unreachable by re-confirming the same finding -- an
+    # excluded way raises no finding -- and closed anyway, because "unreachable
+    # today" is not a property this record's shape guarantees tomorrow.)
+    inherited = [dict(entry) for entry in (parent.get("excluded_ways") or [])]
+    if any(int(entry.get("way_id", -1)) == excluded_way_id for entry in inherited):
+        raise GenesisRefused(
+            "genesis_dead_end_already_excluded",
+            [
+                f"Way {excluded_way_id} is already excluded in job {parent_job_id} as an "
+                "operator-confirmed real-world dead end, so this network does not contain it "
+                "and there is nothing further to remove."
+            ],
+        )
+
+    job_id = uuid4().hex[:12]
+    frozen_osm = _freeze_parent_source(job_id, parent_source, recorded_sha)
+    copied_sha = _sha256(frozen_osm)
+
+    exclusion = {
+        "way_id": excluded_way_id,
+        "reason": SKIP_CONFIRMED_REAL_WORLD_DEAD_END,
+        "finding_code": finding_code,
+        "subject": finding["subject"],
+        # The PARENT's link ids, and named as such: removing a way renumbers
+        # every link after it (``draft``'s own link-table fingerprint note), so
+        # these address the network the confirmer was LOOKING at and never the
+        # one this job will emit. The stable id across both is the OSM way id.
+        "parent_link_ids": list(offered.get("link_ids") or []),
+        "node_id": offered.get("node_id"),
+        "collateral_way_ids": list(offered.get("collateral_way_ids") or []),
+        "basis": confirmed["basis"],
+        "confirmed_by": confirmed["confirmed_by"],
+        "confirmed_at": confirmed["confirmed_at"],
+    }
+
+    record = {
+        "id": job_id,
+        "workspace_id": workspace_id,
+        "name": str(parent.get("name") or "regenerated"),
+        "status": STATUS_QUEUED,
+        "phase": PHASE_QUEUED,
+        "progress": 0.0,
+        "created_at": _now_iso(),
+        "started_at": None,
+        "completed_at": None,
+        "submitted_by": confirmed["confirmed_by"],
+        "options": dict(parent.get("options") or {}),
+        "source_osm": {
+            "filename": str(source_record.get("filename") or frozen_osm.name),
+            "bytes": frozen_osm.stat().st_size,
+            "sha256": copied_sha,
+            "stored_as": frozen_osm.name,
+        },
+        "side_inputs": None,
+        "network": None,
+        "artifact": None,
+        "layers": None,
+        "gate": None,
+        "publication": None,
+        "refusal": None,
+        "error": None,
+        # THE declarative parameter, and the whole difference between this job
+        # and its parent. Top-level rather than inside ``options`` on purpose:
+        # ``options`` is the user's own generation settings, carried verbatim
+        # from the parent, and burying a human's accountable claim inside them
+        # would make the two indistinguishable to every reader of the record.
+        # The parent's own exclusions lead, this confirmation appends -- a chain
+        # of confirmations accumulates rather than replacing.
+        "excluded_ways": [*inherited, exclusion],
+        "derived_from": {
+            "kind": DEAD_END_EXCLUSION_LINEAGE_KIND,
+            "job_id": parent_job_id,
+            "requested_by": confirmed["confirmed_by"],
+            "requested_at": confirmed["confirmed_at"],
+            "source_sha256": copied_sha,
+            "parent_source_sha256": recorded_sha,
+            "converter_fixes": [dict(entry) for entry in CONVERTER_FIXES],
+            "findings": [
+                {
+                    "code": finding_code,
+                    "subject": finding["subject"],
+                    "derivation_reason_code": "source_shares_the_gap",
+                }
+            ],
+            "exclusions": [*inherited, exclusion],
+            "confirmed": exclusion,
+            # The derivation that PRODUCED the exclusion, verbatim -- so the
+            # lineage names not just what was removed but what was measured
+            # before a person was asked, including the collateral they had to
+            # acknowledge.
+            "dead_end_derivation": dict(derivation),
+            "reason": (
+                f"{finding_code} / {finding['subject']}: operator-confirmed real-world dead end"
+            ),
+        },
+    }
+    _upsert(record)
+    return record
+
+
+def start_dead_end_exclusion_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
+    """:func:`create_dead_end_exclusion_job`, then run it on a daemon worker
+    thread through :func:`run_genesis_job` — the SAME runner every other
+    generation uses, for the same reason unit #38 states."""
+    record = create_dead_end_exclusion_job(parent_job_id, **kwargs)
     threading.Thread(
         target=run_genesis_job,
         args=(record["id"], record["workspace_id"]),
@@ -6602,12 +7486,17 @@ __all__ = [
     "PHASE_LIVE_CHECKING",
     "artifact_path",
     "attach_live_check",
+    "create_dead_end_exclusion_job",
     "create_genesis_fix_job",
     "create_genesis_job",
     "create_live_check_job",
+    "start_dead_end_exclusion_job",
+    "DEAD_END_BASIS_MAX_CHARS",
+    "DEAD_END_EXCLUSION_LINEAGE_KIND",
     "V3_CONNECTIVITY_FINDING_CODES",
     "V7_GEOMETRY_FINDING_CODES",
     "derive_fix_targets",
+    "derive_v3_dead_end_confirmation",
     "derive_v3_source_testimony",
     "derive_v6_node_evidence",
     "derive_v7_corrected_polyline",

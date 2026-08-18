@@ -5180,9 +5180,13 @@ contractTest("unit #35: a connection is never invented -- it is testified, or at
   // backend's own measured candidate array, mapped one row per candidate, with
   // the value bound to the candidate's own link id -- never a text field a
   // reader could type an arbitrary id into.
+  // RE-AIMED again, unit #42: the block now also renders when only the
+  // dead-end answer is on offer, so the candidate list is mapped defensively
+  // off an optional invitation. WHAT is offered is still the backend's own
+  // measured array and nothing this client composed.
   pin.match(
     findingRow,
-    /attestation\.candidates\.map\(\(candidate\) => \{/,
+    /\(attestation\?\.candidates \?\? \[\]\)\.map\(\(candidate\) => \{/,
     "expected the target picker to offer the backend's own measured candidates, never a free-text link id",
   );
   pin.match(
@@ -5191,7 +5195,7 @@ contractTest("unit #35: a connection is never invented -- it is testified, or at
     "expected each candidate row to submit the candidate's OWN link id, not a value this client composed",
   );
   pin.doesNotMatch(
-    sliceBetween(findingRow, "{attestation && attestation.candidates.length > 0 && (", "{t(\"근거 (필수)\""),
+    sliceBetween(findingRow, "{worldGapAsked && (", "{t(\"근거 (필수)\""),
     /type="text"/,
     "expected no free-text link-id field beside the measured candidate list",
   );
@@ -5261,13 +5265,19 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
   // whichever treatment block comes first: everything the reader meets FIRST
   // (the rationale, the reason code) still has no control of any kind.
   const treatmentMarkers = [
-    "{attestation && attestation.candidates.length > 0 && (",
+    // Unit #42 renamed this one: the world-gap block now asks ONE question with
+    // two honest answers (the road continues to X / the road ends here), so it
+    // renders when EITHER is on offer. Same rule, same slice.
+    "{worldGapAsked && (",
     "{disposition.regenerate && (",
     // Unit #40 put a THIRD in -- the widened-region proposal, whose action
     // leaves this screen entirely for the region page's own ask-first button.
     // Same rule, same slice: the refusal a reader meets FIRST still has no
     // control of any kind on it.
     "{disposition.boundary_extension && (",
+    // Unit #42's own NAMED refusal is deliberately NOT a treatment marker: it
+    // renders prose and no control, so it belongs to the refusal half of the
+    // slice and the no-<button pin below covers it.
   ];
   for (const marker of treatmentMarkers) {
     pin.match(
@@ -6778,5 +6788,154 @@ contractTest("unit #41: two findings sharing one (code, subject) are two rows, n
     sliceBetween(page, "const job = await applyGenesisFix(jobId, {", "});"),
     /instanceKey/,
     "expected the row's rendering identity never to reach the apply request",
+  );
+});
+
+contractTest("unit #42: 'the road continues to X' and 'the road ends here' cannot both be held", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // THE STRUCTURAL CLAIM OF THE UNIT. A road cannot both continue to link X and
+  // end here, so the two answers must be un-holdable together -- not by a rule
+  // some later edit forgets, but by living in ONE radio group whose value can
+  // only be one thing. The sentinel is what makes that possible: draft link ids
+  // are numeric, so it can never collide with a candidate's own value.
+  pin.match(
+    page,
+    /const DEAD_END_ANSWER = "__real_world_dead_end__";/,
+    "expected a sentinel answer value that no draft link id can ever collide with",
+  );
+  pin.match(
+    page,
+    /const deadEndChosen = Boolean\(deadEnd\) && attestTarget === DEAD_END_ANSWER;/,
+    "expected the dead-end answer to be READ OFF the same state the candidate picker writes (a second state variable is how two exclusive answers become simultaneously holdable), and gated on the offer still being present after a live-check payload swap",
+  );
+  const worldGap = sliceBetween(page, "{worldGapAsked && (", '{deadEndError && (');
+  pin.match(worldGap, /\S/, "expected to find the world-gap question block (markers moved?)");
+  // ONE group name for both answers. Two names would render two independent
+  // groups, and a reader could tick a destination AND "it ends here".
+  const radioNames = worldGap.match(/name=\{`[^`]+`\}/g) ?? [];
+  pin.match(
+    `${radioNames.length >= 2 && new Set(radioNames).size === 1}`,
+    /true/,
+    `expected every radio in the world-gap block to share ONE group name, found ${JSON.stringify(radioNames)}`,
+  );
+  pin.match(
+    worldGap,
+    /value=\{DEAD_END_ANSWER\}/,
+    "expected the dead-end answer to be an option in the candidate group, not a control beside it",
+  );
+  // Both answers are ask-first, and the SAME required basis gates both: a
+  // confirmation with no stated basis is a click, exactly as an attestation
+  // with none is.
+  pin.match(
+    worldGap,
+    /disabled=\{confirmingDeadEnd \|\| !attestBasis\.trim\(\)\}/,
+    "expected the confirm button to stay locked until the confirmer has written their basis",
+  );
+  pin.match(
+    worldGap,
+    /disabled=\{applying \|\| !attestChoice \|\| !attestBasis\.trim\(\)\}/,
+    "expected the attest button to keep its own ask-first lock beside the new one",
+  );
+});
+
+contractTest("unit #42: a confirmed dead end excludes ONE way, and the scope is shown before the signature", (pin) => {
+  const api = read("lib/api.ts");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // A DIFFERENT ROUTE from both apply and regenerate, pinned together so none
+  // of the three can quietly become another. A dead-end confirmation never
+  // edits this artifact; it starts a re-derivation without the confirmed way.
+  pin.match(
+    api,
+    /export async function confirmGenesisDeadEnd[\s\S]*?apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/dead-end-confirmation`/,
+    "expected the confirmation to go through apiMutationFetch on its own route",
+  );
+  const body = sliceBetween(api, "export async function confirmGenesisDeadEnd", "\n}\n");
+  // STRUCTURAL, not conventional: there is nowhere in this body to name the way
+  // to remove, so a client cannot widen an exclusion past the road the reader
+  // actually looked at -- the server re-derives it from the finding's own
+  // census record. And nowhere to name a confirmer, for unit #35's reason.
+  pin.doesNotMatch(
+    body,
+    /way_id:|confirmed_by|confirmed_at/,
+    "expected the confirm body to carry no way id and no confirmer -- the server derives the one and stamps the other",
+  );
+  pin.match(
+    body,
+    /acknowledged_collateral_way_ids: number\[\];/,
+    "expected the acknowledged-collateral echo to be part of the request -- the server refuses a set that differs from its own re-derivation, and that refusal is the proof the reader saw what they were removing",
+  );
+  // The scope a reader signs for is RENDERED, and the empty case is a
+  // measurement rather than a silence.
+  pin.match(
+    page,
+    /제외되는 것: way \$\{deadEnd\.way_id\} 하나/,
+    "expected the confirm panel to name the ONE way being excluded",
+  );
+  pin.match(
+    page,
+    /연결된 다른 도로는 제외되지 않습니다/,
+    "expected the panel to say out loud that roads connected to it are NOT excluded",
+  );
+  pin.match(
+    page,
+    /소스 기준으로 이 제외 때문에 새로 끊기는 도로는 없습니다/,
+    "expected zero collateral to be stated as a measurement, never left as an absence a reader must infer",
+  );
+  pin.match(
+    page,
+    /deadEnd\.collateral\.length > 0 \?[\s\S]{0,400}?text-rose-700/,
+    "expected a non-empty collateral list to render in the failure colour -- it is the one thing on this panel that can be a surprise",
+  );
+  // The two answers have different consequences, so they get different consent
+  // sentences. One line for both would be a lie about one of them.
+  pin.match(
+    page,
+    /deadEndChosen\s*\n?\s*\? t\(\s*\n?\s*"확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다/,
+    "expected the dead-end consent line to say a NEW generation starts and this artifact is not edited",
+  );
+  pin.match(
+    page,
+    /: t\(\s*\n?\s*"승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다\."/,
+    "expected the attestation consent line to keep saying that a real Vissim edit runs",
+  );
+});
+
+contractTest("unit #42: the dead-end refusal is a sentence, never a control", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const api = read("lib/api.ts");
+
+  // The evidence hierarchy is the load-bearing refusal: the source declares
+  // this road continues, so no human confirmation may delete it. The reader is
+  // TOLD that, with the backend's own measured reason -- not left to wonder
+  // where the option went.
+  const refusalBlock = sliceBetween(
+    page,
+    "{disposition.dead_end_refusal && (",
+    "{/* Unit #35 -- the ask-first QUESTION",
+  );
+  pin.match(refusalBlock, /\S/, "expected to find the dead-end refusal block (markers moved?)");
+  pin.doesNotMatch(
+    refusalBlock,
+    /<button|<input|onClick/,
+    "expected the dead-end refusal to render prose only -- a refusal with a control is not a refusal",
+  );
+  pin.match(
+    refusalBlock,
+    /disposition\.dead_end_refusal\.reason_code/,
+    "expected the refusal to quote the backend's OWN measured reason code, not a message this client wrote",
+  );
+  pin.match(
+    refusalBlock,
+    /disposition\.dead_end_refusal\.detail/,
+    "expected the measured detail to travel with the code",
+  );
+  // Presence IS the fact on both keys, so an absent one can never be read as
+  // "the disposition was considered and rejected".
+  pin.match(
+    api,
+    /dead_end_confirmation\?: GenesisFixDeadEndConfirmation;\s*\n\s*dead_end_refusal\?: GenesisFixDeadEndRefusal;/,
+    "expected both dead-end keys to be optional on the disposition -- presence is the fact",
   );
 });

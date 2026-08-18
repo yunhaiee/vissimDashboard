@@ -196,6 +196,25 @@ SKIP_REDECLARED_IDENTICALLY = "redeclared_identically_in_the_same_file"
 #: because a silent first-wins would be indistinguishable from having read the
 #: file correctly.
 SKIP_REDECLARED_DIFFERENTLY = "redeclared_differently_in_the_same_file"
+#: Unit #42. A human who knows the site CONFIRMED that the road really ends
+#: here — the source shares the gap (unit #36's ``source_shares_the_gap``), the
+#: model still holds link ends a connector could physically reach, and choosing
+#: one of them would have been false geometry. Only ever produced by
+#: ``services.genesis_jobs.create_dead_end_exclusion_job``'s declarative
+#: ``excluded_ways``, never by parsing and never by any automatic rule.
+#:
+#: The distinction from every other code on this page: those are the READER's
+#: measurements about the file, and this one is a PERSON's statement about the
+#: world. So its detail string is the whole attribution — who confirmed it, at
+#: what server-stamped time, against which finding, in their own words — which
+#: is what makes the exclusion auditable from the census and the compliance
+#: report alone, exactly as B5-1 requires of an isolated-zone exclusion.
+#:
+#: **The source file is never edited.** The exclusion is a parameter the job
+#: record carries and the runner applies to the parsed extract
+#: (:meth:`OsmExtract.without_ways`); the stored ``source.osm`` bytes stay
+#: sha-identical to the parent's, because the source is evidence.
+SKIP_CONFIRMED_REAL_WORLD_DEAD_END = "confirmed_real_world_dead_end"
 
 #: The stable id of the converter defect the two codes above repair, and the
 #: vocabulary a REGENERATION names itself by

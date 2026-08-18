@@ -1041,6 +1041,16 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       job in the project's tree, and ``derived_from.requested_by`` is stamped
       from the session precisely so the body cannot claim who asked.
 
+    **Unit #42 adds exactly one: the real-world dead-end confirmation.**
+
+    * ``POST /api/genesis/jobs/{job_id}/dead-end-confirmation`` -- records that a
+      named person checked the site and confirmed the road really ends, then
+      re-derives the generation without that way. It mints and runs a job like
+      the regeneration above, and it carries the strongest attribution reason on
+      this page: the exclusion's whole justification is WHO said the road ends
+      and why, quoted verbatim into the new job's skip ledger. A confirmation
+      nobody can be named for is not one, so an anonymous caller cannot make it.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1076,6 +1086,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs/{job_id}/live-check",
         "/api/genesis/jobs/{job_id}/live-check/run",
         "/api/genesis/jobs/{job_id}/regenerate",
+        "/api/genesis/jobs/{job_id}/dead-end-confirmation",
         "/api/genesis/phase-diagrams",
         "/api/genesis/phase-diagrams/signals-input",
         "/api/genesis/phase-diagrams/{review_id}",

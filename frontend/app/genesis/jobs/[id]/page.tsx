@@ -60,6 +60,7 @@ import { InfoTip, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   applyGenesisFix,
+  confirmGenesisDeadEnd,
   fetchGenesisArtifact,
   fetchGenesisGateReport,
   fetchGenesisJob,
@@ -371,6 +372,12 @@ function genesisRefusalText(
   return { headline: caught instanceof Error ? caught.message : String(caught), reasons: [] };
 }
 
+/** Unit #42 -- the radio value that means "no, the road ENDS here", sharing the
+ * one group with unit #35's candidate link ids. A draft link id is always
+ * numeric, so this sentinel can never collide with one; and living in the same
+ * group is what makes the two answers exclusive without a rule to enforce. */
+const DEAD_END_ANSWER = "__real_world_dead_end__";
+
 /**
  * ONE finding's disposition -- EITHER an informational mono line (never a
  * button: a refusal is information, not a disabled control) OR an approval
@@ -430,6 +437,15 @@ function FixFindingRow({
   // route: nothing about this artifact is edited.
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<GenesisError | Error | null>(null);
+  // Unit #42 -- the dead-end confirmation's own in-flight/error pair. It shares
+  // `attestTarget` (the answer) and `attestBasis` (the reason) with the
+  // attestation deliberately: "the road continues to X" and "the road ends
+  // here" are two answers to ONE question, so they live in one radio group and
+  // cannot both be held. What they do NOT share is the route, and this pair is
+  // why -- an attestation edits this artifact, a confirmation re-derives a new
+  // one, and a failure of either must not report as the other.
+  const [confirmingDeadEnd, setConfirmingDeadEnd] = useState(false);
+  const [deadEndError, setDeadEndError] = useState<GenesisError | Error | null>(null);
   // Unit #40 -- the only failure the region hand-off can have that is this
   // page's to report: a browser that refuses the session store.
   const [prefillError, setPrefillError] = useState<string | null>(null);
@@ -441,7 +457,21 @@ function FixFindingRow({
   // has been ready since the page loaded.
   const needsTargetConfirmation = disposition.verb === "add_connector";
   const attestation = disposition.attestation;
+  // Unit #42 -- the OTHER answer to the same question. `attestChoice` resolves
+  // to null whenever the sentinel is picked (no candidate is ever named that),
+  // and `deadEndChosen` is false whenever a candidate is, so the two answers
+  // are exclusive by CONSTRUCTION rather than by a rule some later edit could
+  // forget to keep. Holding both would be a contradiction: a road cannot both
+  // continue to link X and end here.
+  const deadEnd = disposition.dead_end_confirmation;
   const attestChoice = attestation?.candidates.find((c) => c.link_id === attestTarget) ?? null;
+  // Read off the SAME state the candidate picker writes (that is the
+  // exclusivity), and gated on the offer still being there: a live check
+  // replaces the payload in place (unit #41), so an answer picked against a
+  // disposition that no longer offers it must fall back to no answer rather
+  // than rendering a button whose action cannot run.
+  const deadEndChosen = Boolean(deadEnd) && attestTarget === DEAD_END_ANSWER;
+  const worldGapAsked = (attestation && attestation.candidates.length > 0) || Boolean(deadEnd);
 
   const submit = useCallback(
     async (attested?: { params: Record<string, unknown>; to_link: string; basis: string }) => {
@@ -522,6 +552,32 @@ function FixFindingRow({
     },
     [jobId, finding.code, finding.subject, router, t],
   );
+
+  // Unit #42 -- the OTHER treatment a world gap can have. Not an apply: no verb,
+  // no params, nothing about this artifact edited. The way to exclude is NOT
+  // sent -- the route re-derives it from the finding's own census record, so
+  // this client cannot widen an exclusion past the road the reader looked at --
+  // and the collateral list IS sent, because the server refuses a set that
+  // differs from its own re-derivation and that refusal is the proof the reader
+  // saw what they were removing.
+  const confirmDeadEnd = useCallback(async () => {
+    if (!deadEnd) return;
+    setConfirmingDeadEnd(true);
+    setDeadEndError(null);
+    try {
+      const job = await confirmGenesisDeadEnd(jobId, {
+        finding_code: finding.code,
+        subject: finding.subject,
+        basis: attestBasis.trim(),
+        acknowledged_collateral_way_ids: deadEnd.collateral_way_ids,
+      });
+      onApplied(job);
+    } catch (caught) {
+      setDeadEndError(caught instanceof Error ? caught : new Error(String(caught)));
+    } finally {
+      setConfirmingDeadEnd(false);
+    }
+  }, [deadEnd, jobId, finding.code, finding.subject, attestBasis, onApplied]);
 
   const regenerate = useCallback(async () => {
     setRegenerating(true);
@@ -623,7 +679,7 @@ function FixFindingRow({
             * UI's own summary of a state it already computes, never a
             * re-wording of the backend's claim. */}
           <p className="text-[15px] leading-relaxed text-slate-700">
-            {attestation && attestation.candidates.length > 0
+            {worldGapAsked
               ? t(
                   "자동 수정 없음 — 현장을 아는 사람이 확인하면 적용할 수 있습니다.",
                   "No automated fix — someone who knows the site can attest, and then it applies.",
@@ -771,12 +827,42 @@ function FixFindingRow({
             </div>
           )}
 
+          {/* Unit #42 -- a NAMED refusal, and deliberately not a control: the
+            * dead-end disposition is unavailable here and the reader is told
+            * why rather than left to wonder where the option went. The one
+            * that matters is source_testifies_the_connection — the source
+            * declares this road continues, so no confirmation may delete it. */}
+          {disposition.dead_end_refusal && (
+            <div className="mt-3 border-l-2 border-slate-300 pl-3">
+              <p className="text-[14px] leading-relaxed text-slate-600">
+                {t(
+                  "실세계 막다른 길로 확인하는 처분은 이 소견에 쓸 수 없습니다.",
+                  "The real-world dead-end disposition is not available on this finding.",
+                  "実世界の行き止まりとして確認する処分はこの検出には使えません。",
+                )}
+              </p>
+              <p className="font-mono text-[14px] leading-relaxed text-slate-500">
+                {disposition.dead_end_refusal.reason_code}
+                {disposition.dead_end_refusal.detail
+                  ? ` — ${disposition.dead_end_refusal.detail}`
+                  : ""}
+              </p>
+            </div>
+          )}
+
           {/* Unit #35 -- the ask-first QUESTION, and the ONLY thing that can
             * turn this refusal into a proposal. The refusal above is
             * unchanged and stays first: what follows is a question, not a
             * disabled button, and it appears only when the backend measured
-            * link ends a connector could actually reach. */}
-          {attestation && attestation.candidates.length > 0 && (
+            * link ends a connector could actually reach.
+            *
+            * Unit #42 -- the question got its SECOND honest answer. A world gap
+            * can be the world's: the ramp really ends, and every candidate
+            * below is a different road. So "여기서 끝납니다" joins the same
+            * radio group -- one question, one group, mutually exclusive by
+            * construction -- and the block now also renders when only that
+            * answer is on offer. */}
+          {worldGapAsked && (
             <div className="mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3">
               <p className="text-[15px] font-semibold text-slate-800">
                 {t("실제 도로가 이어집니까?", "Does the real road continue here?", "実際の道路はここで続いていますか？")}
@@ -796,7 +882,7 @@ function FixFindingRow({
                 <legend className="text-[14px] text-slate-700">
                   {t("이어지는 링크", "The link it continues to", "続く先のリンク")}
                 </legend>
-                {attestation.candidates.map((candidate) => {
+                {(attestation?.candidates ?? []).map((candidate) => {
                   const numericId = Number(candidate.link_id);
                   const focus = () => {
                     if (Number.isFinite(numericId)) onFocusElement("link", numericId);
@@ -833,7 +919,96 @@ function FixFindingRow({
                     </label>
                   );
                 })}
+                {/* Unit #42 -- the answer no candidate can express, in the SAME
+                  * group as the candidates because it is the same question's
+                  * other answer. Hovering or picking it lights the link that
+                  * would DISAPPEAR, not one that would be joined. */}
+                {deadEnd && (
+                  <label
+                    onMouseEnter={() => {
+                      if (contextLinkId !== null) onFocusElement("link", contextLinkId);
+                    }}
+                    className={`flex cursor-pointer items-baseline gap-2 rounded-md px-2 py-1 text-[14px] ${
+                      deadEndChosen ? "bg-slate-100" : ""
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name={`attest-${instanceKey}`}
+                      value={DEAD_END_ANSWER}
+                      checked={deadEndChosen}
+                      onFocus={() => {
+                        if (contextLinkId !== null) onFocusElement("link", contextLinkId);
+                      }}
+                      onChange={(event) => {
+                        setAttestTarget(event.target.value);
+                        if (contextLinkId !== null) onFocusElement("link", contextLinkId);
+                      }}
+                    />
+                    <span className="min-w-0">
+                      <span className="font-semibold text-slate-800">
+                        {t(
+                          "아니요 — 여기서 실제로 끝납니다",
+                          "No — the road really ends here",
+                          "いいえ — ここで実際に終わります",
+                        )}
+                      </span>
+                      <span className="ml-1.5 font-mono text-[14px] text-slate-500">
+                        · way {deadEnd.way_id} · {t("링크", "links", "リンク")}{" "}
+                        {deadEnd.link_ids.length} · {deadEnd.excluded_length_m} m
+                      </span>
+                    </span>
+                  </label>
+                )}
               </fieldset>
+              {/* When the model holds NO reachable end, "이어집니다" is not an
+                * answer this screen can offer -- said out loud rather than left
+                * as an empty list a reader reads as a bug. The backend's own
+                * rule (derive_v3_attestation_candidates): nothing to attest TO
+                * means the honest answer is a wider extract. */}
+              {(!attestation || attestation.candidates.length === 0) && (
+                <p className="text-[14px] leading-relaxed text-slate-500">
+                  {t(
+                    "이 모델에는 이어붙일 수 있는 링크 끝이 없습니다 — 도로가 이어진다고 답하시려면 더 넓은 영역으로 다시 생성해야 합니다.",
+                    "This model holds no reachable link end — answering that the road continues would need a regeneration over a wider extract.",
+                    "このモデルには接続可能なリンク端がありません — 道路が続くと答えるには、より広い範囲での再生成が必要です。",
+                  )}
+                </p>
+              )}
+              {/* Unit #42 -- the SCOPE, shown before the signature and never
+                * after it. What is removed is ONE way (the confirmed road), and
+                * what the source says comes loose with it is named here rather
+                * than discovered in the sibling's census afterwards. The empty
+                * case says so too: "nothing else" is a measurement, not a
+                * silence. */}
+              {deadEndChosen && deadEnd && (
+                <div className="flex flex-col gap-1 rounded-md bg-slate-50 px-2.5 py-2">
+                  <p className="text-[14px] leading-relaxed text-slate-700">
+                    {t(
+                      `제외되는 것: way ${deadEnd.way_id} 하나 (census 링크 ${deadEnd.link_ids.length}개, ${deadEnd.excluded_length_m} m). 연결된 다른 도로는 제외되지 않습니다.`,
+                      `Excluded: the one way ${deadEnd.way_id} (${deadEnd.link_ids.length} census link(s), ${deadEnd.excluded_length_m} m). No road connected to it is excluded.`,
+                      `除外されるもの: way ${deadEnd.way_id} 1本（census リンク ${deadEnd.link_ids.length} 件、${deadEnd.excluded_length_m} m）。接続する他の道路は除外されません。`,
+                    )}
+                  </p>
+                  {deadEnd.collateral.length > 0 ? (
+                    <p className="text-[14px] leading-relaxed text-rose-700">
+                      {t(
+                        `주의 — 이 제외로 소스 기준 way ${deadEnd.collateral_way_ids.join(", ")}도 함께 끊깁니다. 확인 전에 지도에서 보십시오.`,
+                        `Careful — by the source's own adjacency this also cuts loose way(s) ${deadEnd.collateral_way_ids.join(", ")}. Look at them on the map before confirming.`,
+                        `注意 — この除外により、ソースの隣接関係では way ${deadEnd.collateral_way_ids.join(", ")} も一緒に切り離されます。確認前に地図でご覧ください。`,
+                      )}
+                    </p>
+                  ) : (
+                    <p className="text-[14px] leading-relaxed text-slate-500">
+                      {t(
+                        "소스 기준으로 이 제외 때문에 새로 끊기는 도로는 없습니다.",
+                        "By the source's own adjacency this exclusion cuts nothing else loose.",
+                        "ソースの隣接関係では、この除外によって新たに切り離される道路はありません。",
+                      )}
+                    </p>
+                  )}
+                </div>
+              )}
               <label className="flex flex-col gap-1 text-[14px] text-slate-700">
                 <span>{t("근거 (필수)", "Basis (required)", "根拠（必須）")}</span>
                 <input
@@ -841,11 +1016,19 @@ function FixFindingRow({
                   value={attestBasis}
                   onChange={(event) => setAttestBasis(event.target.value)}
                   maxLength={600}
-                  placeholder={t(
-                    "예: 2026-08-10 현장 답사 — 도로가 실제로 이어집니다",
-                    "e.g. site visit 2026-08-10 — the road really does continue",
-                    "例: 2026-08-10 現地確認 — 道路は実際に続いています",
-                  )}
+                  placeholder={
+                    deadEndChosen
+                      ? t(
+                          "예: 구글맵 현장 확인 — 백화점 내부 순환로로 이어짐",
+                          "e.g. Google Maps site check — it runs into the store's internal loop",
+                          "例: Googleマップで現地確認 — 百貨店の内部循環路に続いています",
+                        )
+                      : t(
+                          "예: 2026-08-10 현장 답사 — 도로가 실제로 이어집니다",
+                          "e.g. site visit 2026-08-10 — the road really does continue",
+                          "例: 2026-08-10 現地確認 — 道路は実際に続いています",
+                        )
+                  }
                   className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
                 />
               </label>
@@ -853,13 +1036,25 @@ function FixFindingRow({
                 * button stays visible and got shorter; the two standing
                 * explanations it used to run on into (what the system
                 * constructs, and why only a person can answer) moved intact
-                * into the disclosure under it. Moved, never dropped. */}
+                * into the disclosure under it. Moved, never dropped.
+                *
+                * Unit #42 -- the two answers have DIFFERENT consequences, so
+                * they get different sentences. Attesting edits this artifact
+                * with a real Vissim turn; confirming a dead end never touches
+                * it and starts a new generation instead. One line for both
+                * would have been a lie about one of them. */}
               <p className="text-[14px] leading-relaxed text-slate-500">
-                {t(
-                  "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.",
-                  "Approving runs a real Vissim edit and re-gates the network.",
-                  "承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。",
-                )}
+                {deadEndChosen
+                  ? t(
+                      "확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다 — 이 산출물은 편집되지 않고, 확인자·시각·근거 원문이 새 작업의 원장에 남습니다.",
+                      "Confirming starts a NEW generation from the same source with this way excluded by name — this artifact is not edited, and who confirmed it, when, and their own words land in the new job's ledger.",
+                      "確認すると、このwayを名前付きで除外した新しい生成が同じ元データから開始されます — この成果物は編集されず、確認者・時刻・根拠の原文が新しいジョブの台帳に残ります。",
+                    )
+                  : t(
+                      "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.",
+                      "Approving runs a real Vissim edit and re-gates the network.",
+                      "承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。",
+                    )}
               </p>
               <CardDetails summary={moreLabel(t)}>
                 <p className="leading-relaxed">
@@ -876,26 +1071,76 @@ function FixFindingRow({
                     "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。",
                   )}
                 </p>
+                {deadEnd && (
+                  <p className="leading-relaxed">
+                    {t(
+                      "여기서 끝난다고 확인하셔도 원본 .osm은 편집되지 않습니다 — 원본은 증거이며, 제외는 새 작업에 전달되는 선언적 파라미터입니다. 판정기(gate)도 그대로입니다: 그 way가 네트워크에 없으므로 V3가 더 이상 발화하지 않을 뿐, 소견이 숨겨지는 것이 아닙니다.",
+                      "Confirming that it ends does NOT edit the source .osm — the source is evidence, and the exclusion is a declarative parameter carried into the new job. The judge is untouched too: V3 stops firing because the way is no longer in the network, never because a finding was suppressed.",
+                      "ここで終わると確認しても元の.osmは編集されません — 元データは証拠であり、除外は新しいジョブに渡される宣言的パラメータです。判定器（gate）もそのままです: そのwayがネットワークに存在しないためV3が発火しなくなるだけで、検出が隠されるわけではありません。",
+                    )}
+                  </p>
+                )}
               </CardDetails>
               <div>
-                <button
-                  type="button"
-                  disabled={applying || !attestChoice || !attestBasis.trim()}
-                  onClick={() =>
-                    attestChoice &&
-                    void submit({
-                      params: attestChoice.params,
-                      to_link: attestChoice.link_id,
-                      basis: attestBasis.trim(),
-                    })
-                  }
-                  className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
-                >
-                  {applying
-                    ? t("적용하는 중…", "Applying…", "適用中…")
-                    : t("확인하고 적용 승인", "Attest and approve", "確認して適用を承認")}
-                </button>
+                {deadEndChosen ? (
+                  <button
+                    type="button"
+                    disabled={confirmingDeadEnd || !attestBasis.trim()}
+                    onClick={() => void confirmDeadEnd()}
+                    className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
+                  >
+                    {confirmingDeadEnd
+                      ? t("다시 생성하는 중…", "Re-deriving…", "再生成中…")
+                      : t(
+                          "막다른 길로 확인하고 다시 생성",
+                          "Confirm the dead end and re-derive",
+                          "行き止まりとして確認して再生成",
+                        )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={applying || !attestChoice || !attestBasis.trim()}
+                    onClick={() =>
+                      attestChoice &&
+                      void submit({
+                        params: attestChoice.params,
+                        to_link: attestChoice.link_id,
+                        basis: attestBasis.trim(),
+                      })
+                    }
+                    className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
+                  >
+                    {applying
+                      ? t("적용하는 중…", "Applying…", "適用中…")
+                      : t("확인하고 적용 승인", "Attest and approve", "確認して適用を承認")}
+                  </button>
+                )}
               </div>
+              {deadEndError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
+                  <p className="font-semibold">
+                    {
+                      genesisRefusalText(
+                        deadEndError,
+                        t,
+                        t(
+                          "막다른 길 확인을 기록하지 못했습니다",
+                          "The dead-end confirmation could not be recorded",
+                          "行き止まりの確認を記録できませんでした",
+                        ),
+                      ).headline
+                    }
+                  </p>
+                  <ul className="mt-1 space-y-1">
+                    {genesisRefusalText(deadEndError, t, "").reasons.map((line) => (
+                      <li key={line} className="font-mono text-[14px] leading-relaxed">
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {error && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
                   <p className="font-semibold">{error.headline}</p>

@@ -282,6 +282,56 @@ class ApplyGenesisFixRequest(BaseModel):
     )
 
 
+class ConfirmDeadEndRequest(BaseModel):
+    """Unit #42 — a human's claim that the real road ENDS here, and nothing else.
+
+    The mirror image of :class:`GenesisFixAttestationRequest`, and it keeps the
+    same three disciplines for the same reasons. WHO confirmed it and WHEN are
+    deliberately NOT fields: the route stamps the signed-in session's own name
+    and the server's clock, so a caller has nowhere to put somebody else's name.
+    ``basis`` is required with no default, because a confirmation without a
+    stated basis is a click. And nothing here names what to REMOVE beyond the
+    finding itself — the way id is re-derived server-side from the finding's own
+    census record, so a caller cannot widen an exclusion past the road they
+    actually looked at.
+
+    ``acknowledged_collateral_way_ids`` is the one echo: the ways the confirming
+    reader was SHOWN would come loose with this one (empty for the ordinary leaf
+    case). The service re-derives the set and refuses a submission that does not
+    match, the same re-derive-and-compare rule unit #35 applies to connector
+    params — a stale screen must not be able to smuggle an unseen severance past
+    the person signing for it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_code: str = Field(min_length=1, description="One of gate.py's own finding codes.")
+    subject: str | None = Field(
+        default=None,
+        description=(
+            "The finding's own subject, naming WHICH finding when the same code appears more "
+            "than once in the parent's verdict. Omitting it on a duplicated code is refused by "
+            "name (genesis_fix_finding_ambiguous_without_subject), never silently resolved."
+        ),
+    )
+    basis: str = Field(
+        min_length=1,
+        max_length=genesis_jobs.DEAD_END_BASIS_MAX_CHARS,
+        description=(
+            "How the confirmer knows the road ends -- their own words, recorded verbatim into "
+            "the skip ledger (e.g. 'Google Maps site check -- the road runs inside the "
+            "department store as an internal circulation loop')."
+        ),
+    )
+    acknowledged_collateral_way_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "The OSM way ids the confirming reader was shown would ALSO be cut loose by this "
+            "exclusion. Must equal the server's own re-derivation exactly."
+        ),
+    )
+
+
 class RegenerateJobRequest(BaseModel):
     """The requester's own sentence, and nothing else.
 
@@ -943,6 +993,90 @@ def regenerate_job(
     return record
 
 
+@router.post("/jobs/{job_id}/dead-end-confirmation", status_code=202)
+def confirm_real_world_dead_end(
+    job_id: str,
+    payload: ConfirmDeadEndRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Record that a human CONFIRMED the road really ends, and re-derive without
+    that way. 202.
+
+    Unit #42, and the answer to the one V3 world gap unit #35's question cannot
+    reach. A ``v3_silent_departure_point`` whose SOURCE shares the gap gets asked
+    *does the real road continue, and to where?* — but some of those roads
+    genuinely end (measured on job ``2712071437d0``: a 6.5 m service stub into a
+    department store's car park, whose only reachable candidate is 9.7 m away on
+    a different road). Attesting to that candidate would put false geometry in
+    the model, and leaving the finding untreated leaves the artifact refused
+    forever. This route is the third door: a person who checked the site says so,
+    the confirmed way is excluded BY NAME, and the generation is re-derived
+    without it.
+
+    **The judge is untouched and no finding is suppressed.** V3 stops firing for
+    that link because the way it fired about is no longer in the network — the
+    only honest way for a finding to go away. ``gate.py`` is not edited, the
+    parent's ``gate.json`` is not rewritten, and the sibling faces the same
+    unmodified gate on its own merits.
+
+    **The source is evidence and is never edited.** The exclusion is a
+    declarative parameter on the new job's record; the copied ``source.osm``
+    hashes identically to the parent's.
+
+    **Attribution cannot be forged.** The confirmer is the signed-in session and
+    the timestamp is this server's clock, exactly as unit #35's attestation is —
+    the body has no field for either. Both, plus the basis sentence verbatim,
+    ride into the sibling's skip ledger, so the exclusion is legible from the
+    census and the compliance report alone.
+
+    Refusals are NAMED (409 ``{code, reasons}``), never a disabled button. Unit
+    #38's four shared doors keep their own codes verbatim
+    (``genesis_regenerate_parent_not_gated``, ``..._parent_has_side_inputs``,
+    ``..._source_missing``, ``..._source_sha_mismatch``), addressing keeps
+    ``genesis_fix_finding_ambiguous_without_subject``, and this path adds
+    ``genesis_dead_end_finding_not_in_parent_verdict`` and
+    ``genesis_dead_end_not_confirmable`` — the latter quoting the service's own
+    measured reason, of which the load-bearing one is
+    ``source_testifies_the_connection``: the source declares this connection, and
+    a confirmation cannot delete road the map states.
+    """
+    try:
+        record = genesis_jobs.start_dead_end_exclusion_job(
+            job_id,
+            finding_code=payload.finding_code,
+            subject=payload.subject,
+            way_id=None,
+            basis=payload.basis,
+            acknowledged_collateral_way_ids=list(payload.acknowledged_collateral_way_ids),
+            confirmed_by=str(user.get("username") or user.get("id") or "unknown"),
+        )
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except genesis_jobs.GenesisRegistryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not prepare the re-derivation's work directory. Nothing was started. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    logger.info(
+        "genesis: %s confirmed a real-world dead end on job %s (%s / %s) -> job %s",
+        user.get("username"),
+        job_id,
+        payload.finding_code,
+        payload.subject,
+        record["id"],
+    )
+    return record
+
+
 @router.post("/jobs/{job_id}/fixes/apply", status_code=202)
 def apply_genesis_fix(
     job_id: str,
@@ -1362,6 +1496,15 @@ def _render_fix_disposition(
     V3 silent-departure finding reaches the FIRST shape on its own (a real
     PROPOSAL naming ``add_connector``), and a world-gap one stays a refusal
     until somebody attests through ``POST .../fixes/apply``.
+    And, since unit #42, a V3 world-gap refusal also carries
+    ``dead_end_confirmation`` -- the OTHER thing it may be, a road that really
+    ENDS -- naming the one way a confirmation would exclude and what the source
+    says would come loose with it; or ``dead_end_refusal``, naming why that
+    disposition is unavailable (``source_testifies_the_connection`` above all:
+    a human confirmation may not delete road the source declares). Same rules as
+    every enrichment -- key-ABSENT otherwise, no tier change -- and the action is
+    a POST to ``.../dead-end-confirmation`` that starts a NEW re-derivation
+    without the confirmed way, never an edit to this artifact.
     """
     mapping = genesis_fixes.get_genesis_fix(finding["code"])
     disposition: dict[str, Any] = {
@@ -1428,6 +1571,24 @@ def _render_fix_disposition(
     invitation = (proposal.evidence or {}).get("attestation_invitation")
     if isinstance(invitation, dict):
         disposition["attestation"] = invitation
+    # Unit #42: the SECOND ask-first question on the same refusal -- the road may
+    # really END here. Present only when the source shares the gap and this
+    # module's own derivation reached an offer; it names the ONE way a
+    # confirmation would exclude, the census links carrying it, and what the
+    # source says would come loose with it, so the reader signs for a measured
+    # scope rather than a button. Never a tier change: confirming is a POST that
+    # starts a NEW re-derivation, and nothing about this artifact is edited.
+    dead_end = (proposal.evidence or {}).get("dead_end_confirmation")
+    if isinstance(dead_end, dict):
+        disposition["dead_end_confirmation"] = dead_end
+    # ... and when it is NOT on offer for a reason a reader deserves named --
+    # above all ``source_testifies_the_connection``, the evidence hierarchy that
+    # keeps a human confirmation from deleting road the source declares -- the
+    # measured reason surfaces as DATA beside the prose that already carries it.
+    # A refusal, never a control: this key renders a sentence, not a button.
+    dead_end_refusal = (proposal.evidence or {}).get("dead_end_refusal")
+    if isinstance(dead_end_refusal, dict):
+        disposition["dead_end_refusal"] = dead_end_refusal
     # Unit #38: the THIRD disposition. When the refusal's own measurement says
     # the draft already shares the defect -- so no census-derived edit exists
     # and no coordinate may be invented -- the honest treatment is a

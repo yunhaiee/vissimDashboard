@@ -1075,6 +1075,143 @@ def _v3_attestation_invitation(candidates: Any) -> tuple[str, str, str]:
     )
 
 
+#: Unit #42: the measured reason a real-world dead-end confirmation is NOT on
+#: offer, localized. Keys mirror ``genesis_jobs.derive_v3_dead_end_confirmation``'s
+#: own ``reason_code`` values. Deliberately a SUBSET of them: ``world_gap_not_measured``,
+#: ``no_draft_record`` and ``way_not_in_source`` are ABSENT because unit #36's
+#: testimony clause and unit #35's connector clause already say the same thing in
+#: the same card, and a third sentence repeating it is noise a reader learns to
+#: skip. The presence of a clause here is also what decides whether the
+#: disposition carries a machine-readable ``dead_end_refusal`` at all, so the
+#: prose and the payload can never disagree about which refusals are worth naming.
+_V3_DEAD_END_REASONS: dict[str, tuple[str, str, str]] = {
+    "source_testifies_the_connection": (
+        " 실세계 막다른 길로 확인하는 처분은 이 소견에 쓸 수 없습니다 — 원본 OSM 자신이 이 지점에서 "
+        "도로가 이어진다고 선언하고 있기 때문입니다. 증거 위계: 이 시스템이 언제든 다시 읽을 수 있는 "
+        "소스의 선언을, 다시 확인할 수 없는 사람의 확인만으로 지울 수는 없습니다. 소스가 증언하는 "
+        "끊김의 치료는 연결로(#35)이며, 소스가 틀렸다면 고칠 곳은 이 산출물이 아니라 지도입니다.",
+        " The real-world dead-end disposition is NOT available on this finding: the source OSM"
+        " itself declares that the road continues here. Evidence hierarchy -- a declaration this"
+        " system can re-read at any time is not erased by a human confirmation it can never"
+        " re-check. A testified gap's treatment is the connector (#35), and if the source is"
+        " wrong the place to fix it is the map, not this artifact.",
+        " 実世界の行き止まりとして確認する処分はこの検出には使えません — 元のOSM自身がこの地点で"
+        "道路が続くと宣言しているためです。証拠の階層: このシステムがいつでも読み直せるソースの宣言を、"
+        "再確認できない人の確認だけで消すことはできません。ソースが証言する断絶の治療はコネクタ(#35)"
+        "であり、ソースが誤っているなら直すべきは地図であってこの成果物ではありません。",
+    ),
+    "exclusion_would_empty_the_network": (
+        " 측정 결과: 이 way를 제외하면 생성할 네트워크가 남지 않습니다 — 고립 구역 처리(B5-1)가 "
+        "네트워크 전체 삭제를 거부하는 것과 같은 이유로 거부합니다.",
+        " Measured: excluding this way would leave no network to generate -- refused for the same"
+        " reason B5-1's own isolation pass refuses to delete a whole network.",
+        " 測定結果: このwayを除外すると生成すべきネットワークが残りません — 孤立区域処理(B5-1)が"
+        "ネットワーク全体の削除を拒否するのと同じ理由で拒否します。",
+    ),
+    "confirmation_without_basis": (
+        " 막다른 길 확인에 근거 문장이 없습니다 — 근거 없는 확인은 클릭일 뿐 책임지는 주장이 아닙니다.",
+        " The dead-end confirmation carries no basis sentence -- a confirmation without a stated"
+        " basis is a click, not a claim somebody is accountable for.",
+        " 行き止まり確認に根拠の記述がありません — 根拠のない確認はクリックであって、責任を伴う主張"
+        "ではありません。",
+    ),
+    "confirmation_without_attribution": (
+        " 막다른 길 확인에 확인자 또는 시각이 없습니다 — 귀속되지 않은 확인은 기록할 수 없습니다.",
+        " The dead-end confirmation carries no confirmer and/or no timestamp -- an unattributed"
+        " confirmation cannot be recorded as one.",
+        " 行き止まり確認に確認者または時刻がありません — 帰属のない確認は記録できません。",
+    ),
+    "confirmation_way_mismatch": (
+        " 확인이 지정한 way가 이 소견의 way가 아닙니다 — 제외 대상은 확인된 그 도로일 뿐, 거기에 "
+        "연결된 다른 도로가 아닙니다.",
+        " The confirmation names a way this finding is not about -- an exclusion may only remove"
+        " the road that was confirmed, never a road connected to it.",
+        " 確認が指定したwayはこの検出のwayではありません — 除外対象は確認されたその道路のみであり、"
+        "それに接続する他の道路ではありません。",
+    ),
+    "collateral_not_acknowledged": (
+        " 이 제외로 함께 끊기는 도로 목록이 확인 시점에 보신 것과 다릅니다 — 무엇을 지우는지 보지 "
+        "않은 확인은 기록하지 않고, 화면을 새로 고친 뒤 다시 확인해 주십시오.",
+        " The set of roads this exclusion would also cut loose differs from the one that was"
+        " acknowledged -- a confirmation made without seeing what it removes is not recorded."
+        " Reload the finding and confirm again.",
+        " この除外により一緒に切り離される道路の一覧が、確認時にご覧になったものと異なります — "
+        "何を消すのかを見ていない確認は記録しません。画面を更新して再度ご確認ください。",
+    ),
+}
+
+
+def _v3_dead_end_clause(provenance: Any) -> tuple[str, str, str]:
+    """The localized measured-reason sentence for a refused real-world dead-end
+    confirmation, or three empty strings when there is nothing worth a third
+    sentence (see :data:`_V3_DEAD_END_REASONS` for which codes are deliberately
+    silent). An unknown code quotes itself, the same discipline every other
+    reason table in this module keeps."""
+    if not isinstance(provenance, Mapping):
+        return "", "", ""
+    reason_code = str(provenance.get("reason_code") or "")
+    if not reason_code:
+        return "", "", ""
+    clause = _V3_DEAD_END_REASONS.get(reason_code)
+    if clause is None:
+        return "", "", ""
+    return clause
+
+
+def _v3_dead_end_invitation(offer: Any) -> tuple[str, str, str]:
+    """Unit #42's ask-first QUESTION, beside unit #35's: the road may really
+    END here, and the only thing that can say so is a person who checked.
+
+    States, in the same sentence as the ask, exactly what pressing it removes —
+    the ONE way, the census links that carry it, and (only when there is one)
+    the severance the source says would come with it. Three empty strings when
+    no confirmation is on offer: an invitation with nothing to exclude would be
+    an empty question, exactly as :func:`_v3_attestation_invitation` refuses to
+    invite an attestation with no possible target.
+    """
+    if not isinstance(offer, Mapping) or not offer.get("way_id"):
+        return "", "", ""
+    links = len(offer.get("link_ids") or [])
+    metres = offer.get("excluded_length_m")
+    collateral = list(offer.get("collateral_way_ids") or [])
+    collateral_ko = (
+        f" 이 제외로 소스 기준 way {', '.join(str(w) for w in collateral)}도 함께 끊깁니다 — "
+        "확인 전에 지도에서 반드시 보십시오."
+        if collateral
+        else " 소스 기준으로 이 제외 때문에 새로 끊기는 도로는 없습니다."
+    )
+    collateral_en = (
+        f" By the source's own adjacency this would also cut loose way(s) "
+        f"{', '.join(str(w) for w in collateral)} -- look at them on the map before confirming."
+        if collateral
+        else " By the source's own adjacency this exclusion cuts nothing else loose."
+    )
+    collateral_ja = (
+        f" ソースの隣接関係では way {', '.join(str(w) for w in collateral)} も一緒に切り離されます"
+        " — 確認前に必ず地図でご覧ください。"
+        if collateral
+        else " ソースの隣接関係では、この除外によって新たに切り離される道路はありません。"
+    )
+    return (
+        f" 아니면 실제로 여기서 도로가 끝납니까? 현장을 아는 분이 확인하시면 way "
+        f"{offer['way_id']}(링크 {links}개, {metres} m)를 명명 제외하고 같은 원본으로 다시 "
+        f"생성합니다 — 이 산출물은 편집되지 않고, 원본 바이트도 그대로입니다.{collateral_ko}"
+        " 제외는 조용한 삭제가 아니라 원장 기록입니다: 확인자와 시각과 근거 원문이 census와 준수 "
+        "리포트에 남습니다.",
+        f" Or does the road really END here? Someone who knows the site can confirm it, and way"
+        f" {offer['way_id']} ({links} census link(s), {metres} m) is then excluded BY NAME and the"
+        " generation re-derived from the same source -- this artifact is not edited and the source"
+        f" bytes are untouched.{collateral_en}"
+        " The exclusion is a ledger entry, never a silent deletion: who confirmed it, when, and"
+        " their own words land in the census and the compliance report.",
+        f" それとも実際にここで道路が終わりますか? 現場をご存じの方が確認されれば、way "
+        f"{offer['way_id']}(census リンク {links} 件、{metres} m)を名前付きで除外し、同じ元データ"
+        f"から再生成します — この成果物は編集されず、元データのバイト列もそのままです。{collateral_ja}"
+        " 除外は静かな削除ではなく台帳の記録です: 確認者と時刻と根拠の原文がcensusと準拠レポートに"
+        "残ります。",
+    )
+
+
 def _build_v3_silent_departure_connector(
     *,
     code: str,
@@ -1103,7 +1240,13 @@ def _build_v3_silent_departure_connector(
       (label + doctrine + the census's own cause quoted verbatim + unit #36's
       measured testimony clause) plus, when there was a derivation to speak
       for, its own measured reason, plus the ask-first question when the model
-      holds link ends an attestation could name.
+      holds link ends an attestation could name, plus (unit #42) the SECOND
+      ask-first question when the source shares the gap: *or does the road
+      really end here?* — naming the one way a confirmation would exclude, the
+      census links it carries, and what the source says would come loose with
+      it. When that second question is NOT available the refusal says why, and
+      the load-bearing case is ``source_testifies_the_connection``: a human may
+      not erase road the source declares.
 
     BOTH proposals carry :data:`ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED`. The
     params are never invented here — this builder does not construct a single
@@ -1269,16 +1412,41 @@ def _build_v3_silent_departure_connector(
             or _as_mapping(testimony_provenance).get("node_id"),
             "candidates": list(candidates),
         }
+    # Unit #42 -- the SECOND ask-first question, and the one that answers the
+    # findings unit #35's question cannot: a road that really ends has no
+    # to-link, so picking one of the candidates above would be false geometry.
+    # It rides on the refusal beside the attestation invitation, never instead
+    # of it (both can be true at once -- the Galleria ramp has exactly one
+    # reachable candidate AND is a real dead end, and only a person knows
+    # which), and it is suppressed for an incomplete attestation for the same
+    # reason the invitation is: a reader mid-claim is answered about that claim
+    # first. The tier is UNCHANGED -- confirming is a human act that starts a
+    # new re-derivation, never an automated fix to this artifact.
+    dead_end_offer = caller_targets.get("dead_end_confirmation")
+    dead_end_provenance = _as_mapping(caller_targets.get("dead_end_derivation"))
+    dead_end_clause = ("", "", "") if incomplete else _v3_dead_end_clause(dead_end_provenance)
+    dead_end_invitation = (
+        ("", "", "") if incomplete else _v3_dead_end_invitation(dead_end_offer)
+    )
+    if isinstance(dead_end_offer, Mapping) and dead_end_offer and not incomplete:
+        evidence["dead_end_confirmation"] = dict(dead_end_offer)
+    if any(dead_end_clause) and not incomplete:
+        # Named refusals only -- the reason table decides which are worth a
+        # sentence, and this key exists exactly when that sentence does.
+        evidence["dead_end_refusal"] = {
+            "reason_code": dead_end_provenance.get("reason_code"),
+            "detail": dead_end_provenance.get("detail"),
+        }
     return _refuse(
         code=code,
         reason_code=ATTESTATION_INCOMPLETE if incomplete else CONNECTIVITY_IS_NOT_INVENTED,
         evidence=evidence,
         ko=_V3_SILENT_LABEL[0] + _V3_DOCTRINE[0] + cause_ko + testimony_clause[0]
-        + connector_clause[0] + invitation[0],
+        + connector_clause[0] + invitation[0] + dead_end_clause[0] + dead_end_invitation[0],
         en=_V3_SILENT_LABEL[1] + _V3_DOCTRINE[1] + cause_en + testimony_clause[1]
-        + connector_clause[1] + invitation[1],
+        + connector_clause[1] + invitation[1] + dead_end_clause[1] + dead_end_invitation[1],
         ja=_V3_SILENT_LABEL[2] + _V3_DOCTRINE[2] + cause_ja + testimony_clause[2]
-        + connector_clause[2] + invitation[2],
+        + connector_clause[2] + invitation[2] + dead_end_clause[2] + dead_end_invitation[2],
     )
 
 
