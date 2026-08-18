@@ -261,6 +261,18 @@ class RealityCheckNodeTarget(BaseModel):
     interval_no: int = Field(
         default=1, ge=1, description="The time interval the counts were measured in."
     )
+    node_control: Literal["signalized", "unsignalized"] | None = Field(
+        default=None,
+        description=(
+            "Whether this node is signal-controlled (get_signal_heads / get_signal_controllers "
+            "say so; the run result does not — it is keyed by movement, not by signal). Used only "
+            "by the diagnosis ladder: when a measured-input node is short of its counted volume "
+            "AND the delay sits on a minority of approaches, a signalised node's next action is a "
+            "signal-timing review (MRWA step 6) rather than a saturation-flow measurement (step "
+            "7). Omitted, the control reads 'unknown' and the diagnosis says so instead of "
+            "assuming."
+        ),
+    )
 
 
 class ObservationSiteNode(BaseModel):
@@ -406,6 +418,26 @@ def _reality_check_targets(
                     "interval_no": entry.interval_no,
                 }
     return targets, movement_ids
+
+
+def _reality_check_node_control(
+    entries: list[RealityCheckNodeTarget] | None,
+) -> dict[str, str]:
+    """Params -> ``{node_id: "signalized"|"unsignalized"}`` for unit #43.
+
+    A SEPARATE map rather than a third key inside ``targets``: ``targets`` is
+    U4's payload and U4 reads exactly ``vehicle_input`` and ``routes`` out of
+    it, so smuggling a diagnosis-only field through there would put a value in
+    a structure whose owner has no use for it. The last non-null entry for a
+    node wins; there is no honest way to reconcile two entries that disagree
+    about whether the same node has signals, and this is a hint, not evidence,
+    so it does not deserve a refusal path of its own.
+    """
+    control: dict[str, str] = {}
+    for entry in entries or []:
+        if entry.node_control is not None:
+            control[entry.node_id] = entry.node_control
+    return control
 
 
 #: ``services.observations``' neutral problem codes -> this layer's report
@@ -636,6 +668,7 @@ def build_reality_check_report(
         targets=target_map,
         movement_ids=movement_ids,
         observed_source=observed_source,
+        node_control=_reality_check_node_control(targets),
     )
     report["workbook_warnings"] = _planner_safe_warnings(report["workbook_warnings"])
     if site_coverage is not None:
@@ -655,7 +688,7 @@ def build_reality_check_report(
     params=RunRealityCheckParams,
 )
 def run_reality_check(params: RunRealityCheckParams) -> dict[str, Any]:
-    """Compare a completed run against the observed counts node by node (GEH) and return, per node, either a concrete fix proposal or an evidenced refusal -- the modelled side is read from the RUN's own movement volumes, never from the workbook's pasted model column, and every node id that fails to join is named rather than dropped. The observed side is the base counts workbook by default, or a stored observation set when observation_set_id is given (that path also needs site_nodes, because survey site ids are not Vissim node ids and are never matched by guesswork). Read-only: it applies nothing, and any proposal it returns still goes through the normal approval loop. Supply targets (the vehicle input / routing decision per node, from get_vehicle_inputs and get_routing_decisions) to get concrete proposals; without them a real miss still comes back, as a refusal naming what was missing. Include each vehicle input's LINK (vehicle_input_link_no): an entrance the counts were taken at is data to match, not a knob, so its volume edit is refused by name and the turn-split lever is proposed instead."""
+    """Compare a completed run against the observed counts node by node (GEH) and return, per node, either a concrete fix proposal or an evidenced refusal -- the modelled side is read from the RUN's own movement volumes, never from the workbook's pasted model column, and every node id that fails to join is named rather than dropped. The observed side is the base counts workbook by default, or a stored observation set when observation_set_id is given (that path also needs site_nodes, because survey site ids are not Vissim node ids and are never matched by guesswork). Read-only: it applies nothing, and any proposal it returns still goes through the normal approval loop. Supply targets (the vehicle input / routing decision per node, from get_vehicle_inputs and get_routing_decisions) to get concrete proposals; without them a real miss still comes back, as a refusal naming what was missing. Include each vehicle input's LINK (vehicle_input_link_no): an entrance the counts were taken at is data to match, not a knob, so its volume edit is refused by name and the turn-split lever is proposed instead. Every graded node also carries a 'diagnosis': the rung its GEH miss lands on (demand level, routing split, capacity limit, signal timing, or unclassifiable) with a concrete next action and the MRWA calibration step that authorises it -- so a node with no proposable edit still tells the modeller what to do next, and an unclassifiable one names the evidence that would classify it."""
     report = build_reality_check_report(
         params.scenario_id,
         period=params.period,

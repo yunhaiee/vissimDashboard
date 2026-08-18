@@ -73,6 +73,20 @@ supplies U4's ``targets`` (the shadow model knows the geometry). Without it
 the node TOTAL is still compared in full; the per-movement splits are
 reported as ungradable, named, and no routing proposal is invented.
 
+Unit #43 gave the report a DIAGNOSIS layer, not a second grader
+---------------------------------------------------------------
+U4 recognises two causes of a GEH miss, because two are all it can propose an
+edit for. Unit D4 then made the gap visible: with a measured entrance the
+demand edit is refused by name, and a node with no routing decision named ends
+in a true refusal that tells a modeller nothing to do. ``services.agent.
+geh_ladder`` fills that paragraph — per node, one RUNG (capacity limit, signal
+timing, or an unclassifiable that names the missing evidence), each with a
+next action and the MRWA calibration step that authorises it. It reads
+``outcome`` rather than re-grading, so it cannot contradict the proposal it
+travels beside; it proposes nothing itself; and the availability of the
+evidence it rests on (queue and delay) is published in ``coverage`` whether it
+fired or not.
+
 Applies nothing, touches nothing
 --------------------------------
 No COM, no edit session, no writes. Every function here is a pure transform of
@@ -89,7 +103,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from services import results_evidence, validation
-from services.agent import anomalies, fixes
+from services.agent import anomalies, fixes, geh_ladder
 from services.agent.toolkit import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -307,6 +321,56 @@ _RUN_EVIDENCE_PREFIX = {
     "ja": "今回の実行の移動別交通量(movement_volumes)が使用できないため、実測との対照を実行"
     "できません。",
 }
+
+
+#: Unit #43 — the one sentence the CHECKED message gains when the ladder put a
+#: node on a rung that names a CONCRETE next action. Appended, never woven in:
+#: the existing sentence is pinned by tests and read by three languages of UI,
+#: and "here is what to do next" is additional information, not a correction.
+_LADDER_CLAUSE: dict[str, dict[str, str]] = {
+    geh_ladder.CAPACITY_LIMIT: {
+        "ko": " 이 중 {count}곳은 입력이 실측인데 네트워크가 그 수요를 처리하지 못하는 용량 문제로 "
+        "분류했습니다({nodes}) — 다음 행동은 핵심 교차로의 정지선 포화교통류 측정입니다"
+        "(MRWA §2.12.1 ⑦).",
+        "en": " Of these, {count} were classified as a CAPACITY limit — the input is measured and "
+        "the network is not passing it ({nodes}); the next action is to measure the stop-line "
+        "saturation flow at the key intersection(s) (MRWA §2.12.1 step 7).",
+        "ja": " このうち{count}箇所は、インプットが実測なのにネットワークが需要を処理できていない"
+        "容量の問題として分類しました({nodes}) — 次の行動は主要交差点の停止線飽和交通流の測定です"
+        "(MRWA §2.12.1 ⑦)。",
+    },
+    geh_ladder.SIGNAL_TIMING: {
+        "ko": " 이 중 {count}곳은 지체가 일부 접근로에 몰린 신호 교차로로 분류했습니다({nodes}) — "
+        "다음 행동은 신호 시간 검토입니다(MRWA §2.12.1 ⑥).",
+        "en": " Of these, {count} were classified as SIGNAL TIMING — a signalised node whose delay "
+        "sits on a minority of approaches ({nodes}); the next action is a signal-timing review "
+        "(MRWA §2.12.1 step 6).",
+        "ja": " このうち{count}箇所は、遅れが一部の流入部に集中した信号交差点として分類しました"
+        "({nodes}) — 次の行動は信号時間の確認です(MRWA §2.12.1 ⑥)。",
+    },
+}
+
+
+def _ladder_clause(by_rung: Mapping[str, Sequence[str]]) -> dict[str, str]:
+    """The appended sentence(s) for the rungs that name a concrete next action.
+
+    Only :data:`geh_ladder.SIGNAL_TIMING` and :data:`geh_ladder.CAPACITY_LIMIT`
+    appear: the other three rungs either restate what the proposal already says
+    (the two U4 arms) or ask for evidence, and an UNCLASSIFIABLE node's own ask
+    is specific to that node — collapsing several of them into one summary
+    sentence would produce a next action nobody can act on.
+    """
+    clause = {"ko": "", "en": "", "ja": ""}
+    for rung in (geh_ladder.SIGNAL_TIMING, geh_ladder.CAPACITY_LIMIT):
+        node_ids = list(by_rung.get(rung) or [])
+        if not node_ids:
+            continue
+        template = _LADDER_CLAUSE[rung]
+        for language in clause:
+            clause[language] += template[language].format(
+                count=len(node_ids), nodes=", ".join(_bound(node_ids))
+            )
+    return clause
 
 
 def _message(reason: str, **kwargs: Any) -> dict[str, str]:
@@ -545,6 +609,7 @@ def not_checkable(
         "nodes": [],
         "proposals": [],
         "refusals": [],
+        "diagnosis": _empty_diagnosis(),
         "workbook_warnings": [],
         "detail": dict(detail or {}),
     }
@@ -557,6 +622,9 @@ _SOURCES = {
     "that may describe a different run",
     "geh": "services.validation.geh / GEH_GOOD_LT",
     "mapping": "services.agent.fixes.map_node_counts (unit U4)",
+    "diagnosis": "services.agent.geh_ladder (unit #43) -- reads the mapping's own outcome plus "
+    "the run's queue/delay evidence; proposes nothing. Its next actions cite MRWA op §2.12.1's "
+    "calibration step order (services.agent.mrwa_reference.CALIBRATION_STEPS_2_12_1)",
 }
 
 
@@ -583,6 +651,12 @@ def _empty_coverage() -> dict[str, Any]:
         "unjoined_run_object_ids": [],
         "ungradable_movements": [],
         "rejected_movement_aliases": [],
+        # Unit #43: what the run carries in the way of queue and delay. It is a
+        # COVERAGE fact ("what could be looked at"), which is why it lives here
+        # and why it is present even on a report that never got as far as
+        # looking -- a diagnosis that did not fire and one that could not look
+        # are different answers, and the reader must be able to tell them apart.
+        "congestion_evidence": geh_ladder.run_congestion_evidence(None),
         "counts": {
             "observed_nodes": 0,
             "run_nodes": 0,
@@ -591,6 +665,17 @@ def _empty_coverage() -> dict[str, Any]:
             "movements_ungradable": 0,
         },
     }
+
+
+def _empty_diagnosis() -> dict[str, Any]:
+    """The ladder summary block, in the shape every report carries.
+
+    ``by_rung`` maps a rung code to the node ids that landed on it, so a
+    consumer can answer "which nodes need a saturation-flow measurement" without
+    walking every node entry — and an empty map on a NOT_CHECKABLE report says
+    honestly that no node was classified at all.
+    """
+    return {"by_rung": {}, "rungs": list(geh_ladder.RUNGS)}
 
 
 def check_run_against_counts(
@@ -603,6 +688,7 @@ def check_run_against_counts(
     geh_threshold: float = validation.GEH_GOOD_LT,
     registry: ToolRegistry | None = None,
     observed_source: str | None = None,
+    node_control: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """RUN evidence vs OBSERVED counts, per node → proposals and refusals.
 
@@ -627,9 +713,27 @@ def check_run_against_counts(
     It is network knowledge like the rest of the target, so a routes entry
     without it is refused (``EVIDENCE_INSUFFICIENT``) rather than scaled
     against the node total; see :func:`fixes._build_routing_proposal`.
+
+    ``node_control`` is ``{node_id: "signalized"|"unsignalized"}`` and is
+    caller knowledge for the SAME reason the two maps above are: a run result
+    is keyed by movement OBJECT_ID and carries no signal heads. Unit #43's
+    ladder uses it to tell a green-split story from a capacity story; omitted,
+    the node's control reads ``unknown`` and the ladder says so in the rung
+    rather than assuming either.
+
+    Unit #43 — the diagnosis ladder
+    -------------------------------
+    Every graded node additionally carries ``diagnosis``: the RUNG its GEH miss
+    lands on, with a next action and the MRWA step that authorises it. It
+    changes no proposal and no refusal — it reads ``outcome`` rather than
+    re-deriving it, so it cannot disagree with the answer this same report
+    ships — and it exists for the case D4 created: an entrance that is measured
+    data, no routing decision named, and a modeller left with a true refusal
+    and nothing to do next.
     """
     targets = targets or {}
     movement_ids = movement_ids or {}
+    node_control = node_control or {}
     # ``observed_source``, when given, names where the observed side actually
     # came from (unit U10's observation store). Every return path below carries
     # it, including the refusals -- a NOT_CHECKABLE report that misattributed
@@ -671,6 +775,10 @@ def check_run_against_counts(
         report["coverage"]["observed_nodes_absent_from_run"] = sorted(
             observed_side["nodes"], key=_node_sort_key
         )
+        # The volumes are unusable; the queue/delay tables may not be. Reporting
+        # what IS there is the point of the coverage block, and it tells a
+        # reader whether re-arming the run needs to cover one table or three.
+        report["coverage"]["congestion_evidence"] = geh_ladder.run_congestion_evidence(run_result)
         return report
 
     assert run_result is not None  # AVAILABLE implies a payload
@@ -686,6 +794,7 @@ def check_run_against_counts(
     ]
 
     coverage = _empty_coverage()
+    coverage["congestion_evidence"] = geh_ladder.run_congestion_evidence(run_result)
     coverage["nodes_compared"] = compared_ids
     coverage["observed_nodes_absent_from_run"] = observed_only
     coverage["run_nodes_without_observed"] = run_only
@@ -714,6 +823,7 @@ def check_run_against_counts(
     nodes: list[dict[str, Any]] = []
     proposals: list[dict[str, Any]] = []
     refusals: list[dict[str, Any]] = []
+    by_rung: dict[str, list[str]] = {}
     movements_compared = 0
     ungradable: list[dict[str, Any]] = []
     #: MOVEMENTS, not entries. `ungradable` collapses a detector-count node's
@@ -781,6 +891,19 @@ def check_run_against_counts(
             registry=registry,
         ).to_dict()
 
+        # Unit #43: the ladder READS the outcome above rather than re-grading,
+        # so the diagnosis and the proposal in the same entry can never tell a
+        # reader two different stories about the same node.
+        diagnosis = geh_ladder.classify_node(
+            node=merged,
+            outcome=outcome,
+            congestion=geh_ladder.node_congestion(run_result, node_id),
+            geh_threshold=geh_threshold,
+            node_control=node_control.get(node_id),
+        )
+        if diagnosis is not None:
+            by_rung.setdefault(diagnosis["rung"], []).append(node_id)
+
         entry = {
             "node_id": node_id,
             "node_name": node.get("node_name"),
@@ -788,6 +911,7 @@ def check_run_against_counts(
             "modelled_total": merged.get("modelled_total"),
             "node_total_geh": outcome["evidence"].get("node_total_geh"),
             "outcome": outcome,
+            "diagnosis": diagnosis,
         }
         nodes.append(entry)
         (proposals if outcome["outcome"] == fixes.PROPOSAL else refusals).append(entry)
@@ -798,18 +922,24 @@ def check_run_against_counts(
         {"movements_compared": movements_compared, "movements_ungradable": movements_ungradable}
     )
 
+    checked_message = _message(
+        CHECKED,
+        compared=len(compared_ids),
+        proposals=len(proposals),
+        refusals=len(refusals),
+    )
+    ladder_clause = _ladder_clause(by_rung)
+    checked_message = {
+        language: text + ladder_clause[language] for language, text in checked_message.items()
+    }
+
     return {
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "roadmap_rows": ["2.1"],
         "requirement": "R2.3",
         "status": CHECKED,
         "reason_code": None,
-        "message": _message(
-            CHECKED,
-            compared=len(compared_ids),
-            proposals=len(proposals),
-            refusals=len(refusals),
-        ),
+        "message": checked_message,
         "geh_threshold": geh_threshold,
         "period": period,
         "sources": sources,
@@ -818,6 +948,7 @@ def check_run_against_counts(
         "nodes": nodes,
         "proposals": proposals,
         "refusals": refusals,
+        "diagnosis": {**_empty_diagnosis(), "by_rung": by_rung},
         "workbook_warnings": warnings,
         "detail": {},
     }

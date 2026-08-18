@@ -450,6 +450,106 @@ WARMUP_FORMULA = {
 
 
 # =============================================================================
+# 8. The calibration ORDER — op §2.12.1's thirteen steps.
+#
+# Not a number: an ordered procedure. It is here rather than in its consumer
+# for the same reason every table above is — it is the authority's own text,
+# and a diagnosis that tells a modeller "measure the stop-line saturation
+# flow next" is making an authority claim that must carry the authority's own
+# step number and page.
+#
+# Page basis, stated so the next reader does not have to re-derive it: the
+# source PDF (client-data/operational-modelling-v2.pdf, 289 pages) is offset
+# from the document's own printed page numbers by 18 (document page = PDF page
+# - 18). Every "p.N" in this module is a DOCUMENT page, and §2.12.1 runs
+# document pages 34-42 — transcribed in docs/product/handoff-2026-08-18.md
+# §4.1(b), which is where this list comes from. Same discipline as the rest of
+# the module: the steps are transcribed, never re-ordered or re-worded to suit
+# a consumer.
+#
+# The one §5 pointer this ladder needs is beside it: §5.2.5.1 is the clause
+# that says what to do when every input is measured and GEH is still high, and
+# its page IS independently traceable in this checkout
+# (docs/product/reference/mrwa-section5-extract.md's own "5.2.5.1 General
+# (p.187-189)" heading and its Table 5-6 at p.187).
+# =============================================================================
+
+CALIBRATION_STEPS_CITATION = "op §2.12.1, p.34-42"
+
+#: op §5.2.5.1 — "default driving behaviours should generally be adopted, with
+#: the exception of car following model parameters"; the additive/multiplicative
+#: safety-distance parts "should be determined based on measured straight
+#: movement saturation flow at key intersection(s)" (→ Table 5-6, encoded above
+#: as :data:`TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW`).
+CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION = "op §5.2.5.1, p.187-188"
+
+#: ``(step number, English label, citation)`` for op §2.12.1's calibration
+#: sequence, in the guideline's own order. Steps 1-9 are the CAPACITY side and
+#: come BEFORE demand (10) and route choice (11) — which is the fact a GEH
+#: diagnosis needs: when the inputs are measured data, the next step the
+#: authority names is 7, not another demand edit.
+CALIBRATION_STEPS_2_12_1: tuple[tuple[int, str, str], ...] = (
+    (1, "basic network coding", CALIBRATION_STEPS_CITATION),
+    (2, "vehicle speeds", CALIBRATION_STEPS_CITATION),
+    (3, "unsignalised intersections", CALIBRATION_STEPS_CITATION),
+    (4, "blocking", CALIBRATION_STEPS_CITATION),
+    (5, "turn lanes", CALIBRATION_STEPS_CITATION),
+    (6, "signalised intersections", CALIBRATION_STEPS_CITATION),
+    (7, "stop-line saturation flow", CALIBRATION_STEPS_CITATION),
+    (8, "lane utilisation", CALIBRATION_STEPS_CITATION),
+    (9, "public transport", CALIBRATION_STEPS_CITATION),
+    (10, "demand calibration", CALIBRATION_STEPS_CITATION),
+    (11, "route choice", CALIBRATION_STEPS_CITATION),
+    (12, "behaviour parameters", CALIBRATION_STEPS_CITATION),
+    (13, "software-specific items", CALIBRATION_STEPS_CITATION),
+)
+
+#: The ordering principles stated alongside the steps. Kept verbatim in
+#: substance because a consumer that cites the step order is also bound by
+#: them — in particular "one parameter at a time", which is why this codebase's
+#: diagnosis ladder names ONE next action rather than a list of candidates.
+#:
+#: Each carries its OWN citation, not the step list's. Two of the three are not
+#: on the step pages at all: the first is in §2.12.1's own preamble on document
+#: p.33, and the second is in §2.12's preamble — a different section — also on
+#: p.33. Both were previously cited as "op §2.12.1, p.34-42", which is where
+#: the numbered steps are and where neither sentence appears. A page range that
+#: does not contain the text it is attached to is the failure this module
+#: exists to prevent, so the citations are per-principle and each was read off
+#: the source (printed footer "Page 33 of 271" = PDF page 51, the -18 offset
+#: this module documents above).
+CALIBRATION_PRINCIPLE_ONE_PARAMETER_CITATION = "op §2.12.1, p.33"
+CALIBRATION_PRINCIPLE_INDEPENDENT_DATA_CITATION = "op §2.12, p.33"
+CALIBRATION_PRINCIPLE_ROUTE_BEFORE_VOLUME_CITATION = "op §2.12.1.11, p.41"
+
+CALIBRATION_PRINCIPLES_2_12_1: tuple[tuple[str, str], ...] = (
+    ("change one parameter at a time", CALIBRATION_PRINCIPLE_ONE_PARAMETER_CITATION),
+    (
+        "validation data must be independent of the data used for calibration",
+        CALIBRATION_PRINCIPLE_INDEPENDENT_DATA_CITATION,
+    ),
+    (
+        "route choice (§2.12.1.11) is confirmed BEFORE volume calibration",
+        CALIBRATION_PRINCIPLE_ROUTE_BEFORE_VOLUME_CITATION,
+    ),
+)
+
+
+def calibration_step(number: int) -> tuple[int, str, str]:
+    """One §2.12.1 step by its number, or raise.
+
+    Raises rather than returning a placeholder: a diagnosis that cited a step
+    the guideline does not have would be an invented authority claim, and the
+    failure mode for that is a crash in a test, never a plausible sentence in
+    front of a client.
+    """
+    for entry in CALIBRATION_STEPS_2_12_1:
+        if entry[0] == number:
+            return entry
+    raise KeyError(f"op §2.12.1 has no step {number} (it has 1-{len(CALIBRATION_STEPS_2_12_1)})")
+
+
+# =============================================================================
 # Integrity helpers — consumed by test_agent_mrwa_reference.py.
 # =============================================================================
 
