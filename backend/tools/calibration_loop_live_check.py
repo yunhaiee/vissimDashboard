@@ -139,6 +139,53 @@ TWO MEASURED BLOCKERS, BOTH HIT ON THE FIRST LIVE ATTEMPT (2026-08-07)
    database. Use ``--label _reproof`` so that re-proof lands beside the
    original evidence instead of on top of it.
 
+THE CONGESTED SCENE (unit #49, 2026-08-19) -- a DEMO MODEL DESIGN, not a fix
+----------------------------------------------------------------------------
+``--expect car-following`` needs a node on ``geh_ladder.CAPACITY_LIMIT``, and
+that rung is a CONJUNCTION: the entrance is measured (D4), the node passes
+fewer vehicles than were counted, AND the run's own delay evidence puts at
+least one movement in the congested LOS E/F band. **Measured 2026-08-19: the
+as-built demo scene satisfies the first two and fails the third.** The observed
+workbook inflates node 8 (922 observed against 707 modelled) so the GEH misses,
+but the MODEL ITSELF is not congested -- its worst movement delay is LOS D --
+so the ladder correctly answers ``UNCLASSIFIABLE`` /
+``NO_CONGESTION_AT_THIS_NODE`` and ``--expect car-following`` stops by name.
+That refusal is right (an unblocked model must never be called a capacity
+problem; unit #43 pins it as a negative test), and it means there was no live
+scene in which #44's prescription -- diagnose → measure → Table 5-6 → guardrail
+exception -- could be walked end to end.
+
+``--scene congested --demand-factor N`` adds one. It multiplies vehicle input
+113's OWN volumes by ``N`` **on the demo copy**, before upload, exactly the way
+stage 0's numRuns preparation works and with the same full textual diff, and
+then designs the observed workbook around that raised demand:
+
+  * the entrance rows (node 8's movements entering from link 617) are given the
+    count the RAISED input releases over the simulation period,
+    ``volume x duration/3600`` -- so **the model's demand IS the workbook's
+    measurement**, which is what makes ``fixes.entrance_measurement`` answer
+    MEASURED and D4 refuse the demand edit rather than the ladder descending a
+    demand rung;
+  * every other movement's observed value is its own modelled value, rounded.
+    The node's whole miss is therefore the entrance shortfall -- the vehicles
+    the network could not pass -- and nothing else is invented.
+
+Stated in the code, in the log and on the workbook's own notes sheet, because
+it must never read as calibration: **raising the demand here is not a fix for a
+GEH miss, it is the design of a demo model that is over capacity on purpose.**
+D4's doctrine is about rewriting an OBSERVED number to fit a model; this
+rewrites a MODEL to be the congested one the demo needs, and then measures it
+honestly. The consultant original is still never touched (hashed before and
+after, as always).
+
+Stage 2 refuses rather than ship a scene that does not meet its own design
+targets: no observed row on the input link, no throughput shortfall, or a node
+total GEH below the 5.0 threshold each stop the probe with the arithmetic
+printed and the instruction to raise ``--demand-factor``. The third condition
+-- LOS E/F -- can only be measured by a live run, so stage 3 prints the demand
+node's congestion evidence and the same instruction when the rung does not
+fire.
+
 COM SAFETY
 ----------
 Every Vissim session is opened by the house entry points
@@ -164,6 +211,12 @@ Usage (from ``backend/``, with the venv python)::
     python tools/calibration_loop_live_check.py
     python tools/calibration_loop_live_check.py --duration 600
     python tools/calibration_loop_live_check.py --stages 0,1     # stop after the baseline
+
+    # the congested scene, in the two invocations the stage rules require
+    python tools/calibration_loop_live_check.py --scene congested --stages 0,1,2
+    python tools/calibration_loop_live_check.py --scene congested --stages 1,3 \\
+        --expect car-following --saturation-flow 1900 \\
+        --sf-method "..." --sf-attribution "..."
 """
 from __future__ import annotations
 
@@ -217,6 +270,50 @@ CONSULTANT_INPX = (
 DEMO_WORKSPACE_NAME = "라이브 데모 2026-08-07"
 UPLOAD_FILENAME = "DEMO_라이브데모_사본_current.inpx"
 WORKBOOK_FILENAME = "DEMO_합성_실측대조_2026-08-07.xlsx"
+
+# ---------------------------------------------------------------------------
+# Unit #49 -- the congested scene
+# ---------------------------------------------------------------------------
+
+#: The network as the consultant built it. Every default path is this one.
+SCENE_AS_BUILT = "as-built"
+#: A DEMO MODEL DESIGNED to be over capacity -- see the module docstring.
+SCENE_CONGESTED = "congested"
+SCENES = (SCENE_AS_BUILT, SCENE_CONGESTED)
+
+#: The default demand multiplier for :data:`SCENE_CONGESTED`, and why it is 2.0.
+#:
+#: MEASURED 2026-08-19: at the as-built demand the demo model's worst node-8
+#: movement delay is LOS D. On the HCM's own signalised control-delay bands that
+#: is 35-55 s -- "approaching unstable flow", i.e. an approach already close to
+#: its capacity (v/c roughly 0.85-0.95) but not past it. The rung needs LOS E
+#: (>55 s), and delay past capacity is not linear in demand, so the question is
+#: only how far past 1.0 the v/c has to be put for the answer to be unambiguous.
+#:
+#: Vehicle input 113 supplies :data:`DEMAND_INPUT_SHARE` (69.0%) of everything
+#: that can reach node 8, so a factor N raises the NODE's demand by
+#: ``1 + 0.690*(N-1)`` and the entrance approach's own demand by exactly ``N``.
+#: At N = 2.0 the approach that was already at LOS D is asked to carry twice its
+#: measured demand -- v/c ~ 1.7-1.9, deep oversaturation, LOS F on that approach
+#: with no interpretation required -- while the node total rises only ~1.69x, so
+#: the designed shortfall (what the entrance releases minus what the node
+#: passes) stays large relative to the totals and the node-total GEH lands well
+#: above the 5.0 threshold.
+#:
+#: Not lower (1.5 puts v/c at ~1.3, where LOS E/F is likely but the shortfall
+#: can be small enough that the node total GEH is marginal), and not higher
+#: (3.0+ risks the queue backing past the input point itself, where Vissim holds
+#: vehicles OUTSIDE the network -- they carry neither QLEN nor VEHDELAY, so more
+#: demand stops producing more MEASURED delay; see the orchestrator note in
+#: :func:`_congested_adjustment_guidance`).
+DEFAULT_DEMAND_FACTOR = 2.0
+
+#: The congested scene gets its OWN evidence dir, state file and demo project by
+#: default, so it can never overwrite the as-built demo's recorded run. An
+#: explicit ``--label`` still wins.
+CONGESTED_LABEL = "_congested"
+CONGESTED_UPLOAD_FILENAME = "DEMO_혼잡장면_설계사본_current.inpx"
+CONGESTED_WORKBOOK_FILENAME = "DEMO_합성_혼잡장면_실측대조_2026-08-19.xlsx"
 
 DEFAULT_DURATION_S = 900
 RUN_SEED = 42
@@ -349,6 +446,310 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Unit #49 -- the congested scene's arithmetic. PURE: no I/O, no logging, no
+# global state, so the whole design is checkable offline
+# (tests/test_calibration_harness_congested_scene.py) against a synthetic run.
+# ---------------------------------------------------------------------------
+
+#: One ``<vehicleInput>`` element, children and all (or self-closing).
+#:
+#: The two shapes are SEPARATE alternatives on purpose. Written as one branch
+#: with a shared prefix -- ``<vehicleInput\b[^>]*(?:/>|>.*?</vehicleInput>)`` --
+#: a self-closing element does not match its own ``/>``: ``[^>]*`` is greedy,
+#: gives back nothing, and the second alternative's ``>`` matches the element's
+#: own closing ``>`` before ``.*?`` runs on to the NEXT input's
+#: ``</vehicleInput>``. The "element" then spans two real inputs, and
+#: :func:`scale_vehicle_input_volumes` rewrites the OTHER one's volumes and
+#: reports them as the target's -- a completed edit with wrong numbers, silently
+#: (measured 2026-08-19 on the shapes ``tools/make_demo_data.py`` and
+#: ``tools/make_showcase_network.py`` emit, which are self-closing).
+_VEHICLE_INPUT_RE = re.compile(
+    r"<vehicleInput\b[^>]*/>|<vehicleInput\b[^>]*>.*?</vehicleInput>", re.DOTALL
+)
+#: A ``<vehicleInput>`` START tag -- ``\b`` so the ``<vehicleInputs>``
+#: container is not counted as one.
+_VEHICLE_INPUT_START_RE = re.compile(r"<vehicleInput\b")
+_INPUT_NO_ATTR_RE = re.compile(r'\bno="([^"]*)"')
+_INTERVAL_VOLUME_RE = re.compile(
+    r'(<timeIntervalVehVolume\b[^>]*?\bvolume=")([^"]*)(")'
+)
+_TIME_INT_ATTR_RE = re.compile(r'\btimeInt="([^"]*)"')
+
+
+def _format_volume(value: float) -> str:
+    """A volume attribute the way Vissim writes them: no float noise, no
+    trailing zeros (``4126.8``, ``4344``), so the diff a reader checks is about
+    the design and not about binary representation."""
+    text = f"{round(float(value), 4):.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def scale_vehicle_input_volumes(
+    text: str, input_no: str, factor: float
+) -> tuple[str, list[dict[str, Any]]]:
+    """Multiply EVERY ``<timeIntervalVehVolume>`` of ONE vehicle input by ``factor``.
+
+    Returns ``(new_text, changes)``; ``changes`` names each interval it touched
+    (``time_int``, ``before``, ``after``) so the caller can print what it did
+    rather than claim it. Nothing else in the document is rewritten -- the
+    element is located by its own ``no`` attribute and the substitution is
+    scoped to that element's text, which the caller then re-verifies with a full
+    textual diff.
+
+    Raises ``ValueError`` when the input is absent or carries no interval, which
+    is the honest outcome: a scene that silently scaled nothing would run, look
+    uncongested, and be diagnosed as a product bug.
+    """
+    matched: list[dict[str, Any]] = []
+    seen = False
+
+    def _replace(match: "re.Match[str]") -> str:
+        nonlocal seen
+        block = match.group(0)
+        no_attr = _INPUT_NO_ATTR_RE.search(block)
+        if no_attr is None or no_attr.group(1).strip() != str(input_no).strip():
+            return block
+        starts = len(_VEHICLE_INPUT_START_RE.findall(block))
+        if starts != 1:
+            # Defence in depth behind the anchored pattern above: a malformed
+            # document (an unclosed <vehicleInput>) could still hand this
+            # callback a span covering two inputs, and scaling it would rewrite
+            # a DIFFERENT input's volumes under this input's name. Refuse.
+            raise ValueError(
+                f"vehicle input {input_no!r} could not be isolated: the matched element spans "
+                f"{starts} <vehicleInput> start tags, so scaling it would rewrite another "
+                "input's volumes"
+            )
+        seen = True
+
+        def _scale(vol: "re.Match[str]") -> str:
+            try:
+                before = float(vol.group(2))
+            except (TypeError, ValueError):
+                return vol.group(0)
+            after = before * float(factor)
+            interval = _TIME_INT_ATTR_RE.search(vol.group(0))
+            matched.append(
+                {
+                    "time_int": interval.group(1) if interval else None,
+                    "before": before,
+                    "after": float(_format_volume(after)),
+                }
+            )
+            return f"{vol.group(1)}{_format_volume(after)}{vol.group(3)}"
+
+        return _INTERVAL_VOLUME_RE.sub(_scale, block)
+
+    new_text = _VEHICLE_INPUT_RE.sub(_replace, text)
+    if not seen:
+        raise ValueError(f"vehicle input {input_no!r} not found in the network file")
+    if not matched:
+        raise ValueError(
+            f"vehicle input {input_no!r} carries no <timeIntervalVehVolume> to scale"
+        )
+    return new_text, matched
+
+
+def released_vehicles(
+    volume_vph: float,
+    duration_s: float,
+    intervals: list[dict[str, Any]] | None = None,
+) -> float:
+    """Vehicles ONE vehicle input releases over ``duration_s`` at ``volume_vph``.
+
+    This is the congested scene's observed entrance count -- derived from the
+    parameter the scene SET, not from any run, which is exactly what makes the
+    workbook's entrance measurement and the model's demand the same number.
+
+    A Vissim vehicle input is a STEP FUNCTION, not one number: ``intervals`` is
+    the input's own schedule (``build_shadow_model``'s
+    ``vehicle_inputs[i]["volumes"]`` -- ``from_s`` + ``volume`` per
+    ``<timeIntervalVehVolume>``), and when it is given the count is INTEGRATED
+    over it. MEASURED 2026-08-19: consultant input 113 carries six intervals
+    (2063.4 veh/h for 0-900 s, then 2172 to 5400 s, then 1954.8), so multiplying
+    interval 1's volume by the whole duration is only right while the run stops
+    inside interval 1. At ``--duration 1800`` it understates the released count
+    by 54.3 vehicles and at 3600 s by 162.9 (-3.8%) -- and the identity the
+    scene rests on, asserted in the log and on the workbook's own notes sheet,
+    would be false by exactly that much.
+
+    ``intervals`` omitted (or carrying nothing readable) keeps the flat
+    ``volume x duration`` reading, which is what a single-interval input means.
+    """
+    duration_s = float(duration_s)
+    steps: list[tuple[float, float]] = []
+    for interval in intervals or []:
+        start = interval.get("from_s")
+        volume = interval.get("volume")
+        if start is None or volume is None:
+            continue
+        steps.append((float(start), float(volume)))
+    if not steps:
+        return float(volume_vph) * duration_s / 3600.0
+
+    steps.sort()
+    total = 0.0
+    for index, (start, volume) in enumerate(steps):
+        end = steps[index + 1][0] if index + 1 < len(steps) else duration_s
+        lo, hi = max(start, 0.0), min(end, duration_s)
+        if hi > lo:
+            total += volume * (hi - lo) / 3600.0
+    return total
+
+
+def _apportion(total: int, weights: dict[str, float]) -> dict[str, int]:
+    """Split an integer ``total`` across ``weights`` by largest remainder.
+
+    The parts sum to ``total`` EXACTLY -- per-row rounding must not move the
+    entrance count away from the released number the design is built on. All
+    weights zero (a node the model passed nothing through, which is precisely
+    the gridlock case this scene can produce) falls back to an even split.
+    """
+    keys = sorted(weights)
+    if not keys:
+        return {}
+    mass = sum(max(float(weights[key]), 0.0) for key in keys)
+    shares = (
+        {key: max(float(weights[key]), 0.0) / mass for key in keys}
+        if mass > 0
+        else {key: 1.0 / len(keys) for key in keys}
+    )
+    exact = {key: shares[key] * total for key in keys}
+    out = {key: int(math.floor(exact[key])) for key in keys}
+    remainder = total - sum(out.values())
+    for key in sorted(keys, key=lambda k: (-(exact[k] - math.floor(exact[k])), k))[
+        : max(remainder, 0)
+    ]:
+        out[key] += 1
+    return out
+
+
+def design_congested_observed(
+    *,
+    demand_rows: dict[str, float],
+    entrance_link: str,
+    released_veh: float,
+) -> dict[str, Any]:
+    """The congested scene's observed side for the demand node.
+
+    ``demand_rows`` is ``{movement OBJECT_ID: modelled VEHS}`` from the run.
+    The rule, and the whole rule:
+
+    * a movement whose OBJECT_ID enters FROM ``entrance_link`` is an ENTRANCE
+      row. Those rows share ``round(released_veh)`` between them, in proportion
+      to what the model actually passed. Their sum is the released count
+      exactly, so the workbook's entrance measurement equals the vehicle input's
+      own demand -- the identity ``fixes.entrance_measurement`` reads and D4
+      refuses on;
+    * every other movement's observed value is its own modelled value, rounded.
+      No deviation is designed anywhere else, so the node's entire GEH miss is
+      the entrance shortfall: the vehicles the network did not pass.
+
+    Pure arithmetic over two payloads. The caller decides whether the result
+    meets the scene's design targets -- see
+    :func:`congested_design_problems`.
+    """
+    from services.agent import fixes
+
+    link = fixes.canonical_link_id(entrance_link)
+    entrance_ids = sorted(
+        object_id
+        for object_id in demand_rows
+        if fixes.canonical_link_id(fixes.movement_from_link(object_id) or "") == link
+    )
+    other_ids = sorted(set(demand_rows) - set(entrance_ids))
+
+    entrance_target = int(round(released_veh))
+    observed_by_id: dict[str, int] = {
+        object_id: int(round(demand_rows[object_id])) for object_id in other_ids
+    }
+    observed_by_id.update(
+        _apportion(entrance_target, {key: demand_rows[key] for key in entrance_ids})
+    )
+
+    entrance_modelled = round(sum(demand_rows[key] for key in entrance_ids), 2)
+    modelled_total = round(sum(demand_rows.values()), 2)
+    observed_total = sum(observed_by_id.values())
+    return {
+        "entrance_link": link,
+        "entrance_rows": entrance_ids,
+        "other_rows": other_ids,
+        "released_veh": round(float(released_veh), 2),
+        "entrance_observed_total": sum(observed_by_id[key] for key in entrance_ids),
+        "entrance_modelled_total": entrance_modelled,
+        "entrance_shortfall_veh": round(entrance_target - entrance_modelled, 2),
+        "observed_by_id": observed_by_id,
+        "modelled_total": modelled_total,
+        "observed_total": observed_total,
+        "shortfall_veh": round(observed_total - modelled_total, 2),
+        "node_total_geh": _geh(modelled_total, observed_total),
+        "rule": (
+            "entrance rows (from link "
+            f"{link}) carry the count vehicle input {DEMAND_INPUT_NO} RELEASES over the "
+            "simulation period; every other movement's observed value is its own modelled "
+            "value, rounded"
+        ),
+    }
+
+
+def congested_design_problems(
+    design: dict[str, Any], *, geh_threshold: float
+) -> list[str]:
+    """The scene's design targets, checked -- every failure named, not the first.
+
+    Two of the three CAPACITY_LIMIT preconditions are decidable right here from
+    the workbook design (an observed row on the input link, and a throughput
+    shortfall big enough to miss GEH). The third -- a movement in the LOS E/F
+    band -- is a property of the RUN and can only be measured live, which is
+    why stage 3 carries its own check and its own instruction.
+    """
+    problems: list[str] = []
+    if not design["entrance_rows"]:
+        problems.append(
+            f"no movement at node {DEMAND_NODE} enters from link "
+            f"{design['entrance_link']}, so the workbook would carry no count at the "
+            "entrance and fixes.entrance_measurement could never answer MEASURED -- the "
+            "D4 refusal the capacity rung is predicated on would not fire"
+        )
+    if design["observed_total"] <= design["modelled_total"]:
+        problems.append(
+            f"the node passed {design['modelled_total']} vehicles against a designed count "
+            f"of {design['observed_total']}: there is no throughput shortfall, so "
+            "geh_ladder would answer NO_THROUGHPUT_SHORTFALL. The model is digesting the "
+            "raised demand -- raise --demand-factor"
+        )
+    geh = design["node_total_geh"]
+    if geh is None or geh < geh_threshold:
+        problems.append(
+            f"the designed node total GEH is {geh} against a threshold of {geh_threshold}: "
+            "the node would not even register a miss, so nothing is diagnosed at all. "
+            "Raise --demand-factor"
+        )
+    return problems
+
+
+def _congested_adjustment_guidance(factor: float) -> list[str]:
+    """What the operator reads OUT of a run that did not reach the rung, and
+    what to change. Printed by stage 3, and quoted in the handoff, so the live
+    lane is not left interpreting a silence."""
+    return [
+        f"current --demand-factor is {factor}.",
+        "If the demand node's diagnosis is UNCLASSIFIABLE / NO_CONGESTION_AT_THIS_NODE and its",
+        "worst_los is A-D: the model is still digesting the demand. Raise --demand-factor by 0.5",
+        "and REDO BOTH invocations (0,1,2 then 1,3) -- the workbook is derived from the run, so a",
+        "new factor needs a new design run.",
+        "If worst_los stops rising as the factor rises AND the entrance's modelled total FALLS:",
+        "the queue has backed past the input point, so Vissim is holding the overflow",
+        "outside the network, where it carries neither QLEN nor VEHDELAY. More demand cannot then",
+        "produce more MEASURED delay -- step the factor back down and report the ceiling.",
+        "If the diagnosis is NO_QUEUE_OR_DELAY_EVIDENCE: node evaluation was not armed for this",
+        "run. That is not a factor problem and raising it will not help.",
+        "If the diagnosis is ROUTING_SPLIT or NO_THROUGHPUT_SHORTFALL: the GRADED run diverged from",
+        "the design run the workbook was built from -- check stage 1's reproduces_design_run line.",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +942,12 @@ def _admin_bearer_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
+def stage_0_workspace(
+    client,
+    skip_numruns_prep: bool = True,
+    scene: str = SCENE_AS_BUILT,
+    demand_factor: float | None = None,
+) -> None:
     _banner("[STAGE 0] Demo workspace + a COPY of the consultant network")
     entry = _stage("0_workspace")
     entry["started_at"] = _now()
@@ -635,6 +1041,62 @@ def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
         if n_runs != 1:
             raise SystemExit(f"Expected exactly one numRuns attribute, replaced {n_runs}.")
 
+    # ---- UNIT #49: the DEMO MODEL DESIGN, applied to the copy --------------
+    # This is NOT a calibration and the code says so out loud. D4's doctrine is
+    # about rewriting an OBSERVED number so a model agrees with it; what happens
+    # here is the opposite direction and a different object: the DEMO MODEL is
+    # designed to be over capacity, and stage 2 then measures it honestly and
+    # reports what it actually passed. The consultant original is untouched
+    # (hashed either side of this block, below); only the demo copy carries it,
+    # the diff is printed in full, and the workbook that grades it says the same
+    # thing on its own notes sheet.
+    entry["scene"] = scene
+    entry["demand_factor"] = demand_factor
+    if scene == SCENE_CONGESTED:
+        factor = float(demand_factor if demand_factor is not None else DEFAULT_DEMAND_FACTOR)
+        designed_text, changes = scale_vehicle_input_volumes(
+            prepared_text, DEMAND_INPUT_NO, factor
+        )
+        diff = _one_line_diff(prepared_text, designed_text)
+        entry["preparation"]["superseded_by_scene_design"] = True
+        entry["scene_design"] = {
+            "what": (
+                f"vehicle input {DEMAND_INPUT_NO}'s own volumes x {factor} on the DEMO COPY only "
+                f"({len(changes)} time interval(s))"
+            ),
+            "this_is_not_a_calibration": (
+                "The demand is being RAISED to design a demo model that is over capacity, so the "
+                "capacity rung has a live scene to fire on. It is not a fix for a GEH miss and it "
+                "is not applied to any observed number: unit D4 forbids rewriting a measurement to "
+                "fit a model, and nothing here rewrites a measurement. Stage 2 then derives the "
+                "observed workbook FROM this raised demand, so the model's own input is what the "
+                "workbook reports as counted at the entrance."
+            ),
+            "demand_factor": factor,
+            "input_no": DEMAND_INPUT_NO,
+            "intervals_scaled": changes,
+            "diff": diff,
+            "bytes_before": len(prepared_text.encode("utf-8")),
+            "bytes_after": len(designed_text.encode("utf-8")),
+        }
+        prepared_text = designed_text
+        prepared_bytes = designed_text.encode("utf-8")
+        _log(f"[0.2b] SCENE = {SCENE_CONGESTED!r}: DEMO MODEL DESIGN on the copy — vehicle input "
+             f"{DEMAND_INPUT_NO}'s volumes x {factor}.")
+        _log("       This SUPERSEDES the byte-identical claim above: the uploaded copy is no "
+             "longer the consultant's bytes.")
+        _log("       It is a MODEL DESIGN, not a calibration — no observed number is touched, and "
+             "the observed")
+        _log("       workbook stage 2 builds is DERIVED FROM this raised demand (D4 stays intact).")
+        for change in changes:
+            _log(f"       interval {change['time_int']}: {change['before']} -> {change['after']} veh/h")
+        for line in diff:
+            _log(f"        {line}")
+        # A re-designed dataset invalidates the design run an earlier factor
+        # recorded; keeping it would make stage 1 compare this scene's run
+        # against a run of a different network and report a false mismatch.
+        _state.pop("_design_run_by_node", None)
+
     # Unit P④: a non-default workspace is now behind membership, and creating
     # one requires a signed-in user. This probe therefore has to authenticate.
     # It borrows an EXISTING enabled admin rather than creating an account or
@@ -662,8 +1124,11 @@ def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
     _state["headers"] = headers
     from urllib.parse import quote
 
+    upload_filename = (
+        CONGESTED_UPLOAD_FILENAME if scene == SCENE_CONGESTED else UPLOAD_FILENAME
+    )
     upload = client.post(
-        f"/api/datasets/upload?filename={quote(UPLOAD_FILENAME)}",
+        f"/api/datasets/upload?filename={quote(upload_filename)}",
         content=prepared_bytes,
         headers=headers,
     )
@@ -834,6 +1299,16 @@ def stage_1_baseline(duration_s: int) -> None:
          f"in working copy={entry['under_scen_mngm_working']}")
     _log("      trajectory (.fzp) recording is disabled for this probe via")
     _log(f"      AGENT_RUN_TRAJECTORY_MAX_S={os.environ.get('AGENT_RUN_TRAJECTORY_MAX_S')!r}")
+    if _state.get("scene") == SCENE_CONGESTED:
+        # Read off the network that is ABOUT TO RUN, not off the flag: the scene
+        # is a property of these bytes, and if the clone lost it the run would
+        # look uncongested for a reason nobody could see.
+        scene_vi = _shadow_vehicle_input(working, DEMAND_INPUT_NO)
+        entry["scene"] = SCENE_CONGESTED
+        entry["scene_demand_factor"] = _state.get("demand_factor")
+        entry["scene_input_volume_vph"] = scene_vi.get("volume") if scene_vi else None
+        _log(f"      SCENE {SCENE_CONGESTED!r} (x{_state.get('demand_factor')}): the working copy's "
+             f"vehicle input {DEMAND_INPUT_NO} carries {entry['scene_input_volume_vph']} veh/h")
     _save_state()
 
     result = _run_through_agent_job_path(working, duration_s, "baseline")
@@ -944,8 +1419,18 @@ def _build_demo_workbook(
     refusal_rows: dict[str, float],
     factor: float,
     design: dict[str, Any],
+    *,
+    scene: str = SCENE_AS_BUILT,
+    demand_observed: dict[str, int] | None = None,
 ) -> bytes:
     """The observed side, in the exact layout ``load_base_workbook`` accepts.
+
+    ``scene``/``demand_observed`` are unit #49's seam and nothing else changes
+    with them: the congested scene hands in the demand node's observed values
+    already designed (:func:`design_congested_observed`) instead of having them
+    scaled by one factor here, and the notes sheet says which scene it is. With
+    the default arguments every row this function writes is the row it wrote
+    before #49.
 
     Counts columns are the shipped template's own
     (``validation.create_base_workbook_template``): SimRun / TimeInt / Period /
@@ -975,10 +1460,20 @@ def _build_demo_workbook(
 
     time_int = design["time_int"]
 
-    def _emit(node_id: str, label: str, rows: dict[str, float], scale: float) -> dict[str, Any]:
+    def _emit(
+        node_id: str,
+        label: str,
+        rows: dict[str, float],
+        scale: float,
+        designed: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
         observed_by_id: dict[str, int] = {}
         for object_id, modelled in sorted(rows.items()):
-            observed = int(round(modelled * scale))
+            observed = (
+                int(round(modelled * scale))
+                if designed is None
+                else int(designed[object_id])
+            )
             observed_by_id[object_id] = observed
             counts.append(
                 ["Average", time_int, "AM", label, object_id, None, None, modelled, observed]
@@ -1001,12 +1496,20 @@ def _build_demo_workbook(
             },
         }
 
+    demand_label = (
+        f"{DEMAND_NODE}: DEMO 합성 혼잡장면 노드{DEMAND_NODE}"
+        if scene == SCENE_CONGESTED
+        else f"{DEMAND_NODE}: DEMO 합성 실측 노드{DEMAND_NODE}"
+    )
+    refusal_label = (
+        f"{REFUSAL_NODE}: DEMO 합성 혼잡장면 노드{REFUSAL_NODE}"
+        if scene == SCENE_CONGESTED
+        else f"{REFUSAL_NODE}: DEMO 합성 실측 노드{REFUSAL_NODE}"
+    )
     design["demand"] = _emit(
-        DEMAND_NODE, f"{DEMAND_NODE}: DEMO 합성 실측 노드{DEMAND_NODE}", demand_rows, factor
+        DEMAND_NODE, demand_label, demand_rows, factor, demand_observed
     )
-    design["refusal"] = _emit(
-        REFUSAL_NODE, f"{REFUSAL_NODE}: DEMO 합성 실측 노드{REFUSAL_NODE}", refusal_rows, 1.0
-    )
+    design["refusal"] = _emit(REFUSAL_NODE, refusal_label, refusal_rows, 1.0)
 
     # TravelTimes: relabel the template's sample measurement names so nobody
     # can read them as field data.
@@ -1016,6 +1519,84 @@ def _build_demo_workbook(
         if cell is not None and isinstance(cell.value, str) and ":" in cell.value:
             if cell.value.strip().lower() != "vehicletraveltimemeasurement":
                 cell.value = f"DEMO 합성 {cell.value}"
+
+    if scene == SCENE_CONGESTED:
+        congested = design.get("congested") or {}
+        node_lines = [
+            [
+                f"장면 / SCENE: {SCENE_CONGESTED} — 이 데모 모델은 용량을 넘도록 '설계'되었습니다."
+            ],
+            [
+                "  차량입력 "
+                f"{DEMAND_INPUT_NO} 의 교통량을 x{design.get('demand_factor')} 로 올린 데모 사본에서 "
+                "실행했습니다. 이것은 보정이 아니라 모델 설계입니다:"
+            ],
+            [
+                "  실측치를 모델에 맞춰 고쳐 쓴 것이 아니라(D4 금지 사항), 혼잡한 데모 모델을 만든 뒤 "
+                "그 결과를 그대로 측정했습니다."
+            ],
+            [
+                "  This demo model was DESIGNED to be over capacity: vehicle input "
+                f"{DEMAND_INPUT_NO}'s volume was multiplied by {design.get('demand_factor')} on the "
+                "demo copy. That is a MODEL design, not a calibration —"
+            ],
+            [
+                "  no observed number was rewritten to fit a model (which unit D4 forbids); a "
+                "congested model was built and then measured as it ran."
+            ],
+            [],
+            [
+                f"노드 {DEMAND_NODE} (수요/용량 노드): 진입 이동류(링크 "
+                f"{congested.get('entrance_link')} 에서 진입)의 관측치 = 상향된 차량입력이 "
+                f"{design.get('duration_s')} 초 동안 방출하는 대수"
+            ],
+            [
+                f"  = {congested.get('released_veh')} 대 "
+                f"(모델 처리 {congested.get('entrance_modelled_total')} 대, 부족 "
+                f"{congested.get('entrance_shortfall_veh')} 대)"
+            ],
+            [
+                "  => 워크북의 진입 실측치와 모델의 진입 수요는 '같은 수'입니다. 그래서 "
+                "fixes.entrance_measurement 가 MEASURED 로 판정하고,"
+            ],
+            [
+                "     D4 가 수요 편집을 거부하며, 남는 설명은 '네트워크가 그 수요를 통과시키지 "
+                "못한다'(용량) 뿐입니다."
+            ],
+            [
+                "  진입 외 이동류의 관측치 = 그 이동류의 모델값(반올림). 다른 편차는 설계하지 "
+                "않았으므로 노드의 GEH 미스 전부가 진입 부족분입니다."
+            ],
+            [
+                "  주의/CAVEAT: 비혼잡 모델에서도 주행시간과 이산 방출 때문에 방출 대수와 노드 통과 "
+                "대수는 수 % 어긋납니다."
+            ],
+            [
+                "  이 장면의 설계 부족분은 그보다 훨씬 커야 하며, 그 판정은 stage 2 의 "
+                "congested_design_problems() 가 GEH 기준으로 수행합니다."
+            ],
+            [
+                f"노드 {REFUSAL_NODE} (거부 노드 / refusal node): 관측 = 모델 (반올림) -> GEH ~ 0"
+            ],
+        ]
+    else:
+        node_lines = [
+            [f"노드 {DEMAND_NODE} (수요 제안 노드 / demand-proposal node): 관측 = 모델 x {factor:.6f}"],
+            [
+                f"  목표 GEH {TARGET_BEFORE_GEH} 를 노드 총량에서 달성하도록 배율을 역산 "
+                f"(modelled_total={design['demand']['modelled_total']}, observed_total={design['demand']['observed_total']})"
+            ],
+            [
+                f"  노드 {DEMAND_NODE} 은 차량입력 {DEMAND_INPUT_NO}(link 617, Murdoch Dr_NB)가 "
+                f"도달 가능 수요의 약 {DEMAND_INPUT_SHARE*100:.1f}% 를 차지 -> "
+                "fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL 에 가장 근접한 노드"
+            ],
+            [f"노드 {REFUSAL_NODE} (거부 노드 / refusal node): 관측 = 모델 (반올림) -> GEH ~ 0"],
+            [
+                f"  링크 617 에서 전진 도달 가능한 노드는 3,4,8 뿐 -> 노드 {REFUSAL_NODE} 은 "
+                "이번 수정의 대조군 / control"
+            ],
+        ]
 
     notes = wb.create_sheet("DEMO_NOTES")
     for line in [
@@ -1031,21 +1612,7 @@ def _build_demo_workbook(
         ["따라서 관측값은 위 실행의 자체 movement 교통량에서 유도했고, 편차는 의도적으로 설계했습니다."],
         ["Observed values are DERIVED from that run's own movement volumes; the deviations are designed."],
         [],
-        [f"노드 {DEMAND_NODE} (수요 제안 노드 / demand-proposal node): 관측 = 모델 x {factor:.6f}"],
-        [
-            f"  목표 GEH {TARGET_BEFORE_GEH} 를 노드 총량에서 달성하도록 배율을 역산 "
-            f"(modelled_total={design['demand']['modelled_total']}, observed_total={design['demand']['observed_total']})"
-        ],
-        [
-            f"  노드 {DEMAND_NODE} 은 차량입력 {DEMAND_INPUT_NO}(link 617, Murdoch Dr_NB)가 "
-            f"도달 가능 수요의 약 {DEMAND_INPUT_SHARE*100:.1f}% 를 차지 -> "
-            "fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL 에 가장 근접한 노드"
-        ],
-        [f"노드 {REFUSAL_NODE} (거부 노드 / refusal node): 관측 = 모델 (반올림) -> GEH ~ 0"],
-        [
-            f"  링크 617 에서 전진 도달 가능한 노드는 3,4,8 뿐 -> 노드 {REFUSAL_NODE} 은 "
-            "이번 수정의 대조군 / control"
-        ],
+        *node_lines,
         [],
         ["Direction 열 = Vissim movement OBJECT_ID (실행 결과와 1:1 조인)"],
         ["Vehs(All) 열 = 해당 실행의 모델 값 (reality check 는 이 열을 사용하지 않음)"],
@@ -1058,10 +1625,16 @@ def _build_demo_workbook(
     return buf.getvalue()
 
 
-def stage_2_workbook(client, inject_path: Path | None = None) -> None:
+def stage_2_workbook(
+    client,
+    inject_path: Path | None = None,
+    scene: str = SCENE_AS_BUILT,
+    demand_factor: float | None = None,
+) -> None:
     _banner("[STAGE 2] The observed side -- designed synthetic, honestly labelled")
     entry = _stage("2_workbook")
     entry["started_at"] = _now()
+    entry["scene"] = scene
     started = time.monotonic()
 
     if inject_path is not None:
@@ -1094,6 +1667,10 @@ def stage_2_workbook(client, inject_path: Path | None = None) -> None:
             "against an absent modelled side."
         )
 
+    if scene == SCENE_CONGESTED:
+        _stage_2_congested(client, entry, demand_rows, refusal_rows, demand_factor, started)
+        return
+
     demand_modelled = sum(demand_rows.values())
     target_observed = _observed_total_for_geh(demand_modelled, TARGET_BEFORE_GEH)
     factor = target_observed / demand_modelled
@@ -1125,6 +1702,130 @@ def stage_2_workbook(client, inject_path: Path | None = None) -> None:
          f"modelled {design['refusal']['modelled_total']} -> GEH {design['refusal']['geh_designed']}")
 
     _upload_workbook(client, entry, WORKBOOK_FILENAME, content, started)
+
+
+def _stage_2_congested(
+    client,
+    entry: dict[str, Any],
+    demand_rows: dict[str, float],
+    refusal_rows: dict[str, float],
+    demand_factor: float | None,
+    started: float,
+) -> None:
+    """Unit #49's observed side: the entrance count IS the raised demand.
+
+    Everything numeric here comes from :func:`design_congested_observed`, which
+    is pure and tested offline. This function reads the two inputs it needs (the
+    raised vehicle input, from the dataset the run was cloned from; the run's own
+    demand-node movement volumes), states the design targets it must meet, and
+    REFUSES with the arithmetic printed if it does not meet them -- a scene that
+    cannot fire the rung must not be shipped to the live lane as if it could.
+    """
+    from services import validation
+    from services.agent import fixes
+
+    baseline = _stage("1_baseline")
+    duration_s = int(baseline.get("duration_s") or DEFAULT_DURATION_S)
+    factor = float(demand_factor if demand_factor is not None else DEFAULT_DEMAND_FACTOR)
+
+    demo_inpx = Path(_state["demo_inpx"])
+    vi = _shadow_vehicle_input(demo_inpx, DEMAND_INPUT_NO)
+    if vi is None or vi.get("volume") is None:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            f"STAGE 2 REFUSAL: vehicle input {DEMAND_INPUT_NO} is absent (or carries no interval "
+            f"volume) in {demo_inpx}. The congested scene's whole observed side is derived from "
+            "that input's volume, so there is nothing to design against."
+        )
+    raised_volume = float(vi["volume"])
+    entrance_link = fixes.canonical_link_id(vi.get("link"))
+    # The input's OWN schedule, not just interval 1: this input is a step
+    # function and the run may stop in any of its steps -- see
+    # :func:`released_vehicles`.
+    schedule = vi.get("volumes") or []
+    released = released_vehicles(raised_volume, duration_s, intervals=schedule)
+
+    _log(f"[2.1] SCENE {SCENE_CONGESTED!r}: the observed side is derived from the RAISED demand, "
+         "not from a designed GEH target.")
+    _log(f"      vehicle input {DEMAND_INPUT_NO} on link {entrance_link}: {raised_volume} veh/h "
+         f"(x{factor} of the as-built volume)")
+    if len(schedule) > 1:
+        _log(f"      that input is a STEP FUNCTION of {len(schedule)} interval(s); the released "
+             f"count is integrated over the {duration_s} s the run covers, not taken flat from "
+             "interval 1:")
+        for interval in schedule:
+            _log(f"        from {interval.get('from_s')} s: {interval.get('volume')} veh/h")
+    _log(f"      over {duration_s} s that releases {released:.2f} vehicles — THAT is the number "
+         "the workbook reports as counted")
+    _log(f"      at the entrance, so the model's demand and the workbook's measurement are the "
+         "same number by construction.")
+
+    congested = design_congested_observed(
+        demand_rows=demand_rows, entrance_link=entrance_link, released_veh=released
+    )
+    congested["demand_factor"] = factor
+    congested["raised_input_volume_vph"] = raised_volume
+    congested["raised_input_intervals"] = schedule
+    congested["duration_s"] = duration_s
+    entry["congested_design"] = congested
+    _state["congested_design"] = congested
+
+    _log(f"[2.2] node {DEMAND_NODE}: {len(demand_rows)} movements; "
+         f"{len(congested['entrance_rows'])} enter from link {entrance_link} "
+         f"({congested['entrance_rows']})")
+    _log(f"      entrance  : observed {congested['entrance_observed_total']} vs modelled "
+         f"{congested['entrance_modelled_total']} -> shortfall "
+         f"{congested['entrance_shortfall_veh']} veh (the vehicles the network did not pass)")
+    _log(f"      other rows: observed = modelled (rounded); no deviation designed anywhere else")
+    _log(f"      node total: observed {congested['observed_total']} vs modelled "
+         f"{congested['modelled_total']} -> GEH {congested['node_total_geh']}")
+    _log(f"[2.3] node {REFUSAL_NODE}: {len(refusal_rows)} movements, modelled total "
+         f"{sum(refusal_rows.values()):.2f} veh -- observed = modelled (rounded), f = 1.0")
+
+    problems = congested_design_problems(congested, geh_threshold=validation.GEH_GOOD_LT)
+    entry["design_problems"] = problems
+    if problems:
+        entry["ok"] = False
+        _save_state()
+        for line in _congested_adjustment_guidance(factor):
+            _log(f"      {line}")
+        raise SystemExit(
+            f"STAGE 2 REFUSAL ({SCENE_CONGESTED} scene): this design cannot reach "
+            "geh_ladder.CAPACITY_LIMIT, so it is not uploaded:\n  - "
+            + "\n  - ".join(problems)
+        )
+
+    design: dict[str, Any] = {
+        "time_int": f"0-{duration_s}",
+        "scene": SCENE_CONGESTED,
+        "demand_factor": factor,
+        "duration_s": duration_s,
+        "congested": congested,
+        "source_job_id": baseline.get("job_id"),
+        "source_db": (baseline.get("result_db_paths") or [None])[0],
+    }
+    content = _build_demo_workbook(
+        demand_rows,
+        refusal_rows,
+        1.0,
+        design,
+        scene=SCENE_CONGESTED,
+        demand_observed=congested["observed_by_id"],
+    )
+    for key in ("demand", "refusal"):
+        block = design[key]
+        block["geh_designed"] = _geh(block["modelled_total"], block["observed_total"])
+    entry["design"] = design
+    _log(f"[2.4] workbook designed: node {DEMAND_NODE} GEH {design['demand']['geh_designed']} "
+         f">= {validation.GEH_GOOD_LT}, node {REFUSAL_NODE} GEH "
+         f"{design['refusal']['geh_designed']}")
+    _log("      Two of the three CAPACITY_LIMIT preconditions are now met by construction "
+         "(measured entrance, throughput")
+    _log("      shortfall). The third — a movement in the LOS E/F band — is a property of the RUN "
+         "and stage 3 measures it.")
+
+    _upload_workbook(client, entry, CONGESTED_WORKBOOK_FILENAME, content, started)
 
 
 def _upload_workbook(client, entry: dict[str, Any], filename: str, content: bytes, started: float) -> None:
@@ -1415,13 +2116,55 @@ def _stage_3_expect_car_following(
     entry["capacity_limit_node_ids"] = [str(n["node_id"]) for n in capacity_nodes]
     _log(f"[3+.1] nodes on the CAPACITY_LIMIT rung: {entry['capacity_limit_node_ids'] or 'none'}")
     if not capacity_nodes:
+        # Unit #49: a rung that did not fire must say WHAT it was waiting on,
+        # or the live lane is left guessing at a silence. Everything printed
+        # here is read off the report the server just produced.
         entry["ok"] = False
+        entry["rung_not_reached"] = _congested_rung_diagnostics(report)
+        _banner("[STAGE 3+] THE RUNG DID NOT FIRE -- what the run actually measured")
+        for node_id, block in sorted(entry["rung_not_reached"].items()):
+            _log(f"  node {node_id}: rung={block.get('rung')} "
+                 f"missing_evidence={block.get('missing_evidence')}")
+            _log(f"    observed_total={block.get('observed_total')} "
+                 f"modelled_total={block.get('modelled_total')} "
+                 f"node_total_geh={block.get('node_total_geh')} "
+                 f"shortfall={block.get('throughput_shortfall_veh')}")
+            _log(f"    entrance={block.get('entrance_status')} "
+                 f"availability={block.get('availability')} "
+                 f"movements_with_delay={block.get('movements_with_delay')} "
+                 f"congested_movements={block.get('congested_movements')}")
+            _log(f"    worst_delay_s={block.get('worst_delay_s')} "
+                 f"worst_los={block.get('worst_los')} "
+                 f"worst_qlenmax_m={block.get('worst_qlenmax_m')}")
+        _log("")
+        if _state.get("scene") == SCENE_CONGESTED:
+            _log("  HOW TO ADJUST:")
+            for line in _congested_adjustment_guidance(
+                float(_state.get("demand_factor") or DEFAULT_DEMAND_FACTOR)
+            ):
+                _log(f"    {line}")
+        else:
+            _log(f"  This is the {SCENE_AS_BUILT} scene. MEASURED 2026-08-19: this model's worst")
+            _log("  node-8 movement delay is LOS D, so no movement reaches the congested band and")
+            _log("  the rung cannot fire here however the workbook is designed — calling an")
+            _log("  unblocked model a capacity problem is precisely what #43 refuses. Use")
+            _log(f"  --scene {SCENE_CONGESTED} (unit #49), which designs a demo model that is over")
+            _log("  capacity on purpose and says so in its own dataset, log and workbook.")
         _save_state()
+        scene_tail = (
+            ""
+            if _state.get("scene") != SCENE_CONGESTED
+            else (
+                f" This is the {SCENE_CONGESTED} scene at --demand-factor "
+                f"{_state.get('demand_factor')}: the evidence and the adjustment rule are printed "
+                "above, and a new factor needs BOTH invocations re-run."
+            )
+        )
         raise SystemExit(
             "--expect car-following, but no node reached geh_ladder.CAPACITY_LIMIT in this run. "
             "Unit #44's treatment answers exactly that rung, so there is nothing to propose. "
             "Check that the entrance graded as MEASURED and that node evaluation was armed "
-            "(the rung needs per-movement delay)."
+            "(the rung needs per-movement delay)." + scene_tail
         )
 
     node = capacity_nodes[0]
@@ -1703,6 +2446,39 @@ def _stage_3_car_following_guardrail_exception(
         _log(f"[3+.12] exception correctly UNAVAILABLE (reference_count={reference_count}, radius "
              "not fully nameable): every path refuses, including the approved one. The "
              "guardrail's pre-#44-b behaviour is what this network gets.")
+
+
+def _congested_rung_diagnostics(report: dict[str, Any]) -> dict[str, Any]:
+    """Per graded node: the rung it DID land on and the evidence behind it.
+
+    Pure read of the report the server produced -- nothing is re-derived here,
+    so this block can never disagree with the diagnosis the same run shipped.
+    """
+    out: dict[str, Any] = {}
+    for node in report.get("nodes") or []:
+        diagnosis = node.get("diagnosis")
+        if not isinstance(diagnosis, dict):
+            continue
+        evidence = diagnosis.get("evidence") or {}
+        congestion = evidence.get("congestion") or {}
+        entrance = evidence.get("entrance_measurement") or {}
+        out[str(node.get("node_id"))] = {
+            "rung": diagnosis.get("rung"),
+            "missing_evidence": diagnosis.get("missing_evidence"),
+            "next_action": (diagnosis.get("next_action") or {}).get("code"),
+            "observed_total": evidence.get("observed_total"),
+            "modelled_total": evidence.get("modelled_total"),
+            "node_total_geh": evidence.get("node_total_geh"),
+            "throughput_shortfall_veh": evidence.get("throughput_shortfall_veh"),
+            "entrance_status": entrance.get("status"),
+            "availability": congestion.get("availability"),
+            "movements_with_delay": congestion.get("movements_with_delay"),
+            "congested_movements": congestion.get("congested_movements"),
+            "worst_delay_s": congestion.get("worst_delay_s"),
+            "worst_los": congestion.get("worst_los"),
+            "worst_qlenmax_m": congestion.get("worst_qlenmax_m"),
+        }
+    return out
 
 
 def _shadow_driving_behavior(inpx: Path) -> dict[str, Any]:
@@ -2399,7 +3175,8 @@ def stage_7_teardown(pids_before: set[int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI, extracted so ``--demand-factor``'s guards are testable offline."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=int, default=DEFAULT_DURATION_S)
     parser.add_argument("--stages", default="0,1,2,3,4,5,6,7")
@@ -2481,19 +3258,75 @@ def main() -> int:
         help="--expect car-following: vehicles per sample. Checked against the same table's "
         "minimum of 5 when given.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--scene",
+        choices=SCENES,
+        default=SCENE_AS_BUILT,
+        help="which DEMO MODEL to run. 'as-built' (default): the consultant network exactly "
+        "as exported. 'congested' (unit #49): the same network with vehicle input "
+        f"{DEMAND_INPUT_NO}'s volumes multiplied by --demand-factor ON THE DEMO COPY, so the "
+        "model is over capacity and geh_ladder.CAPACITY_LIMIT has a live scene to fire on. "
+        "That is a MODEL DESIGN, not a calibration: no observed number is rewritten, and "
+        "the observed workbook is then DERIVED from the raised demand so the entrance count "
+        "and the model's own input are the same number. Gets its own evidence dir, state "
+        "file and demo project (label '_congested') unless --label says otherwise.",
+    )
+    parser.add_argument(
+        "--demand-factor",
+        type=float,
+        default=None,
+        metavar="N",
+        help=f"--scene congested: the multiplier applied to vehicle input {DEMAND_INPUT_NO}'s "
+        f"volumes. Default {DEFAULT_DEMAND_FACTOR} -- see DEFAULT_DEMAND_FACTOR for the "
+        "measurement it is chosen from. Must be > 1.0 (a factor of 1 designs nothing).",
+    )
+    return parser
+
+
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Every CLI guard, in one place so the tests can exercise them."""
     if args.expect == "car-following" and args.saturation_flow is None:
         parser.error(
             "--expect car-following requires --saturation-flow PCU (a measured value). "
             "Unit #44 refuses to enter MRWA Table 5-6 without one, and so does this probe."
         )
+    if args.demand_factor is not None and args.scene != SCENE_CONGESTED:
+        parser.error(
+            f"--demand-factor only means anything with --scene {SCENE_CONGESTED}; on the "
+            f"{SCENE_AS_BUILT} scene it would be silently ignored, which is how a run gets "
+            "reported as congested when nothing was raised."
+        )
+    if args.scene == SCENE_CONGESTED and args.demand_factor is not None:
+        if not args.demand_factor > 1.0:
+            parser.error(
+                f"--demand-factor must be > 1.0 (got {args.demand_factor}). The congested scene "
+                "exists to put the model PAST its capacity; a factor of 1 or less designs no "
+                "scene at all and would ship an as-built run under a congested name."
+            )
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    validate_args(parser, args)
     inject_workbook = Path(args.workbook).resolve() if args.workbook else None
     if inject_workbook is not None and not inject_workbook.is_file():
         parser.error(f"--workbook does not exist: {inject_workbook}")
 
     stages = {int(s) for s in args.stages.split(",") if s.strip()}
-    if args.label:
-        _apply_label(args.label)
+    demand_factor = (
+        None
+        if args.scene != SCENE_CONGESTED
+        else float(args.demand_factor if args.demand_factor is not None else DEFAULT_DEMAND_FACTOR)
+    )
+    # The congested scene NEVER shares evidence, a state file or a demo project
+    # with the as-built demo: its dataset is a different network, so a shared
+    # workspace would silently invalidate the as-built demo's recorded runs.
+    label = args.label
+    if args.scene == SCENE_CONGESTED and not label:
+        label = CONGESTED_LABEL
+    if label:
+        _apply_label(label)
 
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2501,22 +3334,61 @@ def main() -> int:
     _log("#" * 78)
     _log(f"# CALIBRATION-LOOP LIVE CHECK  {_now()}")
     _log(f"# duration={args.duration}s seed={RUN_SEED} stages={sorted(stages)}")
-    _log(f"# label={args.label!r} skip_numruns_prep={args.skip_numruns_prep} "
+    _log(f"# label={label!r} skip_numruns_prep={args.skip_numruns_prep} "
          f"workspace_name={DEMO_WORKSPACE_NAME!r}")
     _log(f"# expect={args.expect!r} workbook={str(inject_workbook) if inject_workbook else 'generated'}")
+    _log(f"# scene={args.scene!r} demand_factor={demand_factor}")
+    if args.scene == SCENE_CONGESTED:
+        _log("# The congested scene RAISES the demo model's entrance demand. That is a MODEL")
+        _log("# DESIGN, not a calibration: no observed number is rewritten, and the observed")
+        _log("# workbook is derived FROM the raised demand so the entrance count and the model's")
+        _log("# own input are the same number (which is what makes D4 refuse the demand edit).")
+        if not args.label:
+            _log(f"# --label defaulted to {CONGESTED_LABEL!r} so this scene cannot overwrite the")
+            _log("# as-built demo's evidence, state file or demo project.")
     _log("#" * 78)
 
     # Bounded runs: never write gigabytes of vehicle records for a probe.
     os.environ.setdefault("AGENT_RUN_TRAJECTORY_MAX_S", "1")
 
     _state.update(_load_state())
+    # Read BEFORE the args overwrite it: a resumed invocation (--stages 1,3)
+    # runs against the dataset an EARLIER invocation uploaded, so if the scene
+    # names disagree the flags describe one network and the probe grades
+    # another. Only checked when stage 0 is skipped -- when it runs, it is the
+    # thing that establishes the scene.
+    stored_scene = _state.get("scene")
+    stored_factor = _state.get("demand_factor")
+    if 0 not in stages and stored_scene is not None and stored_scene != args.scene:
+        raise SystemExit(
+            f"SCENE MISMATCH: {STATE_PATH.name} was produced with --scene {stored_scene!r} and "
+            f"this invocation says --scene {args.scene!r}, but stage 0 is not in {sorted(stages)} "
+            "so the uploaded dataset is still the earlier scene's. Re-run with the same --scene, "
+            "or include stage 0 to upload a new one."
+        )
+    if (
+        0 not in stages
+        and stored_scene == SCENE_CONGESTED
+        and args.scene == SCENE_CONGESTED
+        and stored_factor is not None
+        and demand_factor != stored_factor
+    ):
+        raise SystemExit(
+            f"DEMAND-FACTOR MISMATCH: the uploaded dataset was designed at --demand-factor "
+            f"{stored_factor} and this invocation says {demand_factor}. The factor lives in the "
+            "network's own bytes, so changing it needs stage 0 to re-upload -- re-run BOTH "
+            "invocations (0,1,2 then 1,3)."
+        )
+
     _state["run_started_at"] = _now()
     _state["duration_s"] = args.duration
     _state["random_seed"] = RUN_SEED
     _state["stages_requested"] = sorted(stages)
-    _state["label"] = args.label
+    _state["label"] = label
     _state["skip_numruns_prep"] = args.skip_numruns_prep
     _state["expect"] = args.expect
+    _state["scene"] = args.scene
+    _state["demand_factor"] = demand_factor
     _state["workbook_injected"] = str(inject_workbook) if inject_workbook else None
     # Unit #44's measurement, carried on the state so it lands in the saved
     # artifact alongside the proposals it produced -- a run whose numbers cannot
@@ -2543,7 +3415,12 @@ def main() -> int:
 
         with TestClient(app_main.app) as client:
             if 0 in stages:
-                stage_0_workspace(client, skip_numruns_prep=args.skip_numruns_prep)
+                stage_0_workspace(
+                    client,
+                    skip_numruns_prep=args.skip_numruns_prep,
+                    scene=args.scene,
+                    demand_factor=demand_factor,
+                )
             # Every direct (non-HTTP) service call below must be scoped to the
             # DEMO project: start_agent_simulation_job stamps the submitting
             # thread's workspace onto the job record, and
@@ -2554,7 +3431,12 @@ def main() -> int:
                 with workspaces.bind_workspace(_state["workspace_id"]):
                     stage_1_baseline(args.duration)
             if 2 in stages:
-                stage_2_workbook(client, inject_path=inject_workbook)
+                stage_2_workbook(
+                    client,
+                    inject_path=inject_workbook,
+                    scene=args.scene,
+                    demand_factor=demand_factor,
+                )
             if 3 in stages:
                 with workspaces.bind_workspace(_state["workspace_id"]):
                     stage_3_reality_check(expect=args.expect)
