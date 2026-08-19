@@ -86,10 +86,12 @@ MRWA 가이드라인 289쪽 전체가 서가에 올라갔습니다(전에는 손
 
 ```
 cd backend
-.venv\Scripts\python.exe tools\calibration_loop_live_check.py --stages 0,2 --label demo47
+.venv\Scripts\python.exe tools\calibration_loop_live_check.py --stages 0,1,2 --label demo47
 ```
+(스테이지 0 격리 워크스페이스 → 1 실 Vissim 기준 런 → 2 워크북 설계·업로드. `0,2`로 줄이면
+스테이지 2가 같은 프로세스의 런 결과를 못 찾아 죽습니다 — 2026-08-19 라이브 실측으로 확인.)
 ```
-.venv\Scripts\python.exe tools\calibration_loop_live_check.py --stages 1,3 --label demo47 ^
+.venv\Scripts\python.exe tools\calibration_loop_live_check.py --stages 1,3 --label demo47 ^  # 채점 런 + 진단
     --expect car-following --saturation-flow 1780 ^
     --sf-method "정지선 방출 헤드웨이 측정 (MRWA Appendix B §B.3 on-site)" ^
     --sf-attribution "Dochak 현장조사팀" --sf-measured-at "2026-08-14 07:30-08:30" ^
@@ -105,6 +107,18 @@ cd backend
   3건 1세트 제안. 근거문에 "MRWA Table 5-6, 측정 포화교통류 1780 pcu" + 측정 출처·표본
   + 양쪽 이웃 행(감사 가능) + 적용 범위 문장.
 - ✓ 하네스는 **적용 직전에 멈춤**(RefusedByDesign) — 여기까지가 COM 없는 데모.
+
+**정직한 주의 (2026-08-19 라이브 실측)**: 현 데모 장면은 실측 워크북을 부풀려 GEH 미스를
+설계한 것이라 **모델 자체는 혼잡하지 않습니다**(최대 지체 LOS D). 그래서 사다리는
+CAPACITY_LIMIT을 발화하지 않고 `--expect car-following`은 3+에서 명명 정지합니다 — 모델이
+막히지 않았는데 "용량 문제"라 부르지 않는 것이 정답(#43의 핀된 부정 테스트). 라이브로 나오는
+것은 D4 거부 2종(실측 입구 편집 거부 + 대조군 무제안)까지이고, **Table 5-6 처방의 전 과정은
+실제 사다리 출력 픽스처로 오프라인 실증됩니다**(아래 스니펫 — 하네스에 혼잡 장면을 추가하는
+것이 후보 유닛):
+```
+cd backend && .venv\Scripts\python.exe -c "import sys; sys.path[:0]=['.','tests']; from test_agent_saturation_flow import _capacity_rung; from services.agent import saturation_flow as sf; r=_capacity_rung(); m=sf.observed_measurement(saturation_flow_pcu=1780, method='정지선 방출 헤드웨이 측정', attribution='Dochak 현장조사팀', measured_at='2026-08-14 07:30-08:30', samples=8, vehicles_per_sample=11, intersection='데모'); [print(a.params['parameter'],'=',a.params['value']) or print(a.rationale()['ko'][:300],'
+') for a in sf.propose_car_following_parameters(rung=r, measurement=m, behavior={'no':'2','reference_count':4,'referenced_by':[{'lbt_no':'1','veh_class':'','link_count':4}]})]"
+```
 
 **라이브 완주(Vissim 필요, 선택)**: 위에서 멈춘 지점 이후 — 승인 → 실 COM 적용 → 재실행 →
 GEH 전후. #44-b 가드레일 예외가 착지해 공유 행태 적용이 더 이상 막히지 않습니다(승인 카드가
