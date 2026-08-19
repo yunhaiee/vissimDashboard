@@ -27,7 +27,12 @@
 // ---------------------------------------------------------------------------
 
 import { useLanguage } from "@/components/LanguageProvider";
-import type { CalibrationRail, CalibrationRailStep, CalibrationStepStatus } from "@/lib/api";
+import type {
+  CalibrationRail,
+  CalibrationRailStep,
+  CalibrationRailTrack,
+  CalibrationStepStatus,
+} from "@/lib/api";
 
 type Translate = (ko: string, en: string, ja?: string) => string;
 
@@ -64,6 +69,92 @@ function pick(text: { ko: string; en: string; ja: string } | undefined, lang: st
   if (lang === "ko") return text.ko;
   if (lang === "ja") return text.ja;
   return text.en;
+}
+
+// ---------------------------------------------------------------------------
+// Unit #51's step-⑫ track. Two states, and the LOCKED one is the important one.
+//
+// A lock that says only "locked" teaches nothing. The server sends the
+// precondition gate's own named refusals, each with what would open it, so this
+// renders the LIST — a modeller reads which door to open instead of learning
+// that a door exists. It is the same ladder grammar the #43 diagnosis uses.
+//
+// Unlocked, this shows the ask-first card and NO start button. That is not an
+// omission: the search needs live Vissim COM, which belongs to the job queue on
+// the user's own machine, and `card.runner.wired` is false in this build. A
+// button that could not do what it says would be worse than no button, so the
+// card states the runner's real state instead of implying one.
+//
+// Three-colour rule (see the header): the open track is sky, because it is a
+// proposal — exactly what NEXT is. The locked one stays on the neutral ramp.
+// ---------------------------------------------------------------------------
+export function ParameterSearchTrack({
+  track,
+  lang,
+  t,
+}: {
+  track: CalibrationRailTrack;
+  lang: string;
+  t: Translate;
+}) {
+  const card = track.card;
+  const refusals = track.refusals ?? [];
+  if (track.locked || !card) {
+    return (
+      <span className="mt-1 block rounded-md border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-[13px] leading-5 text-slate-500">
+        <span className="font-semibold">
+          {pick(track.label, lang)}
+          <span className="ml-1 font-mono font-normal">{track.unit}</span>
+          <span className="ml-1.5 font-normal">{t("잠김", "locked", "ロック中")}</span>
+        </span>
+        <span className="mt-0.5 block">{pick(track.why, lang)}</span>
+        <span className="mt-1 block border-l border-slate-300 pl-2">
+          {refusals.map((refusal) => (
+            <span key={refusal.code} className="mt-0.5 block">
+              <span className="font-mono text-[13px] text-slate-400">{refusal.code}</span>{" "}
+              {pick(refusal.why, lang)}{" "}
+              <span className="text-slate-600">{pick(refusal.opens_when, lang)}</span>
+            </span>
+          ))}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="mt-1 block rounded-md border border-sky-300 bg-sky-50/60 px-2 py-1 text-[13px] leading-5 text-slate-700">
+      <span className="font-semibold text-slate-800">
+        {pick(track.label, lang)}
+        <span className="ml-1 font-mono font-normal text-slate-500">{track.unit}</span>
+      </span>
+      <span className="mt-0.5 block font-semibold">{pick(card.question, lang)}</span>
+      <span className="mt-0.5 block">{pick(card.because, lang)}</span>
+      <span className="mt-1 block font-mono text-[13px] text-slate-500">
+        {card.plan.space.map((band) => `${band.parameter} ${band.low}–${band.high}`).join(" · ")}
+        {card.plan.space[0] ? ` · ${card.plan.space[0].citation}` : ""}
+      </span>
+      <span className="mt-0.5 block font-mono text-[13px] text-slate-500">
+        {t("보정", "calibrate", "補正")} {card.plan.calibration_nodes.join(",")} ·{" "}
+        {t("홀드아웃", "holdout", "ホールドアウト")} {card.plan.holdout_nodes.join(",")} ·{" "}
+        {Math.round(card.plan.budget_s / 60)}
+        {t("분", "min", "分")}
+        {card.plan.resumable ? t(" (이어하기 가능)", " (resumable)", " (再開可)") : ""}
+      </span>
+      {/* The honest half. Never hidden behind a disclosure. */}
+      <span className="mt-1 block border-l border-sky-300 pl-2 text-slate-600">
+        {card.runner.wired
+          ? t(
+              "실행기가 연결되어 있습니다.",
+              "A runner is wired.",
+              "実行機が接続されています。",
+            )
+          : t(
+              "이 빌드에는 실행기가 연결되어 있지 않습니다 — 탐색 실행은 Vissim COM이 필요해 잡 큐(사용자 실행 환경)의 몫입니다. 이 카드는 시작 여부를 묻기만 합니다.",
+              "No runner is wired in this build — running a search needs Vissim COM and belongs to the job queue on your own machine. This card only asks whether to start one.",
+              "このビルドには実行機が接続されていません — 探索の実行にはVissim COMが必要で、ジョブキュー(ユーザーの実行環境)の担当です。このカードは開始の可否を尋ねるだけです。",
+            )}
+      </span>
+    </span>
+  );
 }
 
 export default function FlowRail({
@@ -159,19 +250,7 @@ export default function FlowRail({
                   </span>
                   <span className="mt-0.5 block text-[13px] leading-5 text-slate-600">{pick(step.basis, lang)}</span>
                   {step.tracks?.map((track) => (
-                    <span
-                      key={track.key}
-                      className="mt-1 block rounded-md border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-[13px] leading-5 text-slate-500"
-                    >
-                      <span className="font-semibold">
-                        {pick(track.label, lang)}
-                        <span className="ml-1 font-mono font-normal">{track.unit}</span>
-                        <span className="ml-1.5 font-normal">
-                          {t("잠김", "locked", "ロック中")}
-                        </span>
-                      </span>
-                      <span className="mt-0.5 block">{pick(track.why, lang)}</span>
-                    </span>
+                    <ParameterSearchTrack key={track.key} track={track} lang={lang} t={t} />
                   ))}
                 </span>
               </button>

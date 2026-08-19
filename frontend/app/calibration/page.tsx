@@ -36,7 +36,7 @@ import BaseValidationMap, { type BaseValidationMapNode } from "@/components/Base
 import { useLanguage } from "@/components/LanguageProvider";
 import BaseModelStation from "@/components/calibration/BaseModelStation";
 import BehaviourStation from "@/components/calibration/BehaviourStation";
-import FlowRail from "@/components/calibration/FlowRail";
+import FlowRail, { ParameterSearchTrack } from "@/components/calibration/FlowRail";
 import NodeScoreTable, { NodeScoreDetail } from "@/components/calibration/NodeScoreTable";
 import ProposalRail from "@/components/calibration/ProposalRail";
 import {
@@ -109,7 +109,7 @@ function toMapNodes(report: CalibrationRealityCheck | null): BaseValidationMapNo
 }
 
 export default function CalibrationWorkspacePage() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
 
   const [scenarios, setScenarios] = useState<ScenarioMeta[]>([]);
   const [scenarioId, setScenarioId] = useState<string>("");
@@ -146,6 +146,12 @@ export default function CalibrationWorkspacePage() {
     error: appliedError,
     loading: appliedLoading,
   } = resolve(appliedLoaded, APPLIED_ROWS_KEY);
+
+  // Unit #51's track, read off the rail the server already sent. Derived, never
+  // fetched separately: two requests would let the behaviour station and the
+  // rail show different lock states on the same screen.
+  const parameterSearchTrack =
+    rail?.steps.find((step) => step.number === 12)?.tracks?.[0] ?? null;
 
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -512,23 +518,17 @@ export default function CalibrationWorkspacePage() {
           <BehaviourStation rows={appliedRows} loading={appliedLoading} error={appliedError} />
         </div>
 
-        {/* Unit #51's slot. A placeholder that promises nothing: the rail's
-            own locked track carries the preconditions, and this says only
-            that the second track is not built. */}
-        <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-[13px] leading-5 text-slate-600">
-          <p className="font-semibold text-slate-700">
-            {t("범위-구속 파라미터 탐색", "Range-bounded parameter search", "範囲拘束パラメータ探索")}
-            <span className="ml-1.5 font-mono font-normal text-slate-500">#51</span>
-            <span className="ml-1.5 font-normal">{t("잠김", "locked", "ロック中")}</span>
-          </p>
-          <p className="mt-0.5">
-            {t(
-              "아직 만들어지지 않았습니다. 이 자리는 표시일 뿐이며, 지금 할 수 있는 일은 없습니다.",
-              "Not built yet. This slot is a marker only — there is nothing to do here today.",
-              "まだ実装されていません。この枠は表示のみで、現在できる作業はありません。",
-            )}
-          </p>
-        </div>
+        {/* Unit #51's slot. It renders the RAIL's own step-⑫ track — the same
+            component, from the same server payload — rather than a second copy
+            of the locked/available sentence. A second copy is exactly how the
+            two would eventually disagree about whether a search may start, in
+            two places on one screen. When the rail has not loaded there is
+            simply nothing here to say. */}
+        {parameterSearchTrack && (
+          <div className="mt-3">
+            <ParameterSearchTrack track={parameterSearchTrack} lang={lang} t={t} />
+          </div>
+        )}
       </section>
 
       {/* ---------------------------------------------------------------- */}

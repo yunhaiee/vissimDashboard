@@ -60,7 +60,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from services.agent import mrwa_reference, saturation_flow
+from services.agent import mrwa_reference, parameter_search, saturation_flow
 from services.genesis.gate import GateVerdict
 
 #: The gate's OWN word for "every refuse-tier check genuinely passed", taken
@@ -876,9 +876,13 @@ _DERIVERS = {
     12: _step_12,
 }
 
-#: Unit #51 (범위-구속 파라미터 탐색) will hang a SECOND track off step 12,
-#: after Table 5-6. It does not exist yet, so the rail shows the slot LOCKED
-#: with its own preconditions named — a placeholder that promises nothing.
+#: Unit #51 (범위-구속 파라미터 탐색) hangs a SECOND track off step 12, after
+#: Table 5-6. This is the track's LOCKED shape — the default the rail shows
+#: whenever the precondition gate has not opened, which is most of the time and
+#: is meant to be. #51 shipped, so the "why" no longer says "not built yet"; it
+#: says what the gate is waiting for, which is the sentence a modeller can act
+#: on. :func:`parameter_search_track` replaces the ``why`` with the gate's own
+#: named refusals as soon as a scored run exists to evaluate them against.
 PARAMETER_SEARCH_TRACK = {
     "key": "parameter_search",
     "unit": "#51",
@@ -889,12 +893,66 @@ PARAMETER_SEARCH_TRACK = {
         "範囲拘束パラメータ探索",
     ),
     "why": _text(
-        "아직 만들어지지 않았습니다. 실측 고정·용량 처방·신호 검증이 코드로 증명된 뒤에만 시작할 수 있습니다.",
-        "Not built yet. It may only start once measured inputs, capacity prescriptions and signal "
-        "verification are proven in code.",
-        "まだ実装されていません。実測固定・容量処方・信号検証がコードで証明された後にのみ開始できます。",
+        "사다리를 다 쓴 뒤에만 열립니다. 실측 고정(D4)·Table 5-6 처방 적용·신호 단계 검증이 모두 "
+        "확인되고, 실측과 조인되는 노드가 홀드아웃을 나눌 만큼 있어야 합니다.",
+        "It opens only after the ladder is exhausted: measured entrances (D4), the Table 5-6 "
+        "prescription applied, the signal step verified, and enough joined nodes to split a holdout.",
+        "はしごを使い切った後にのみ開きます。実測固定(D4)・Table 5-6処方の適用・信号段階の検証がすべて"
+        "確認され、実測と結合するノードがホールドアウトを分割できるだけ必要です。",
     ),
+    "refusals": [],
+    "card": None,
 }
+
+
+def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Step ⑫'s second track, LOCKED or AVAILABLE, from the same evidence bundle.
+
+    The lock is not decorative and it is not this module's opinion: it is
+    ``parameter_search.evaluate_preconditions`` run over the reality check, the
+    Table 5-6 verdicts and this very rail's own step 6, and it carries that
+    gate's NAMED refusals so a reader learns which door to open rather than that
+    a door exists.
+
+    Unlocked, the track carries the ask-first trigger card — the user's decision
+    ② — and nothing starts on its own. The card is a question with its evidence
+    attached; it is never a search in progress.
+
+    The rail's own step 6 is passed to the gate rather than re-derived, so "the
+    rail says signals are done" and "the gate says signals are done" cannot
+    disagree on the same screen.
+    """
+    reality = evidence.get("reality_check")
+    if not isinstance(reality, Mapping):
+        return dict(PARAMETER_SEARCH_TRACK)
+    preconditions = parameter_search.evaluate_preconditions(
+        reality_check=reality,
+        applied_rows=evidence.get("applied_rows"),
+        rail=evidence.get("_rail_so_far"),
+    )
+    if not preconditions["ok"]:
+        return {
+            **PARAMETER_SEARCH_TRACK,
+            "locked": True,
+            "refusals": [
+                {"code": item["code"], "why": item["why"], "opens_when": item["opens_when"]}
+                for item in preconditions["refusals"]
+            ],
+        }
+    return {
+        **PARAMETER_SEARCH_TRACK,
+        "locked": False,
+        "why": _text(
+            "사다리가 소진되어 탐색을 시작할 수 있는 상태입니다. 시작 여부는 사람이 정합니다 — "
+            "자동으로 시작하지 않습니다.",
+            "The ladder is exhausted, so a search may now be started. Whether to start it is a "
+            "human's call — nothing starts on its own.",
+            "はしごが尽き、探索を開始できる状態です。開始するかどうかは人が決めます — 自動では"
+            "開始しません。",
+        ),
+        "refusals": [],
+        "card": parameter_search.trigger_card(preconditions),
+    }
 
 
 def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -941,7 +999,12 @@ def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
             **verdict,
         }
         if number == 12:
-            step["tracks"] = [PARAMETER_SEARCH_TRACK]
+            # The track's gate reads this rail's OWN step 6 rather than
+            # re-deriving the signal verdict — one opinion per screen. Steps are
+            # built in order, so everything before 12 is already in the list.
+            step["tracks"] = [
+                parameter_search_track({**bundle, "_rail_so_far": {"steps": steps}})
+            ]
         steps.append(step)
 
     counts = {status: sum(1 for step in steps if step["status"] == status) for status in STATUSES}
@@ -967,6 +1030,7 @@ __all__ = [
     "POSITIVE_STATUSES",
     "STEPS_WITHOUT_EVIDENCE_SOURCE",
     "PARAMETER_SEARCH_TRACK",
+    "parameter_search_track",
     "derive_rail",
     "summarize_applied_rows",
 ]

@@ -26,7 +26,7 @@ from __future__ import annotations
 import pytest
 
 from services import calibration_rail
-from services.agent import geh_ladder, mrwa_reference, saturation_flow
+from services.agent import geh_ladder, mrwa_reference, parameter_search, saturation_flow
 from services.genesis import gate
 
 
@@ -481,6 +481,88 @@ def test_only_step_12_carries_a_second_track():
     rail = calibration_rail.derive_rail({})
     with_tracks = [step["number"] for step in rail["steps"] if "tracks" in step]
     assert with_tracks == [12]
+
+
+# ---------------------------------------------------------------------------
+# Unit #51 — the second track's lock is the precondition gate, not a constant
+# ---------------------------------------------------------------------------
+
+
+def _search_evidence(*, entrance="measured", rung="CAPACITY_LIMIT", signals="DONE", nodes=6):
+    """A bundle that opens #51's gate, with one knob per way of shutting it."""
+    node_ids = [str(n) for n in range(1, nodes + 1)]
+    return {
+        "reality_check": {
+            "status": "CHECKED",
+            "geh_threshold": 5.0,
+            "nodes": [
+                {
+                    "node_id": node_id,
+                    "node_total_geh": 8.0,
+                    "outcome": {"evidence": {"entrance": {"status": entrance}}},
+                    "diagnosis": {"rung": rung, "missing_evidence": []},
+                }
+                for node_id in node_ids
+            ],
+        },
+        "applied_rows": [_behavior("1", *_GUIDELINE_1950)],
+        "signal_controller_count": 1,
+        # Step 6 reads DONE from the phase-diagram evidence the rail already uses.
+        "phase_diagrams": [{"confirmed": True}] if signals == "DONE" else [],
+    }
+
+
+def _search_track(evidence):
+    return calibration_rail.derive_rail(evidence)["steps"][11]["tracks"][0]
+
+
+def test_the_search_track_is_locked_with_named_refusals_when_the_gate_is_shut():
+    track = _search_track({})
+    assert track["locked"] is True
+    assert track["card"] is None
+    # No reality check at all: the track still says what would open it, which is
+    # the sentence a modeller can act on.
+    for language in ("ko", "en", "ja"):
+        assert track["why"][language].strip()
+
+
+def test_a_shut_gate_surfaces_the_precondition_codes_on_the_track():
+    track = _search_track(_search_evidence(entrance="unverified"))
+    codes = {refusal["code"] for refusal in track["refusals"]}
+    assert parameter_search.ENTRANCE_NOT_MEASURED in codes
+    for refusal in track["refusals"]:
+        for language in ("ko", "en", "ja"):
+            assert refusal["why"][language].strip()
+            assert refusal["opens_when"][language].strip()
+
+
+def test_too_few_nodes_locks_the_track_on_the_holdout_principle():
+    track = _search_track(_search_evidence(nodes=2))
+    assert track["locked"] is True
+    assert parameter_search.HOLDOUT_NOT_AVAILABLE in {
+        refusal["code"] for refusal in track["refusals"]
+    }
+
+
+def test_the_track_unlocks_with_an_ask_first_card_when_the_ladder_is_exhausted():
+    track = _search_track(_search_evidence())
+    assert track["locked"] is False
+    assert track["refusals"] == []
+    card = track["card"]
+    assert card["ask_first"] is True and card["auto_start"] is False
+    assert card["plan"]["holdout_nodes"] and card["plan"]["calibration_nodes"]
+
+
+def test_the_track_reads_this_rails_own_step_6_rather_than_a_second_opinion():
+    """One screen, one verdict about signals: the gate is handed the steps this
+    rail just built, so the ⑥ chip and the ⑫ lock cannot disagree."""
+    rail = calibration_rail.derive_rail(_search_evidence(signals="MISSING"))
+    step_6 = rail["steps"][5]
+    track = rail["steps"][11]["tracks"][0]
+    assert step_6["status"] != calibration_rail.DONE
+    assert parameter_search.SIGNAL_STEP_UNVERIFIED in {
+        refusal["code"] for refusal in track["refusals"]
+    }
 
 
 # ===========================================================================

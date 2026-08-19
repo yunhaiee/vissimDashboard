@@ -60,6 +60,12 @@ _ALLOWED_EXACT_PAGE_CITATIONS = {
     # which is why this is an exact page and Tables 5-8/5-9/5-10 (which the
     # extract carries no caption page for) still say PAGE_CITE_PENDING.
     "op §5.2.5.1, Table 5-6, p.187",
+    # The merging-area lane-change/lateral bands, added by unit #51. Same
+    # evidence class again: docs/product/reference/mrwa-section5-extract.md
+    # prints the whole bullet list with its own "(p.188)" marker, inside the
+    # "5.2.5.1 General (p.187-189)" section — so the page is read off the
+    # extract, not inferred from the section range.
+    "op §5.2.5.1, p.188",
 }
 
 # Citations that mention a page-ISH token (e.g. "Table B-3") but are section

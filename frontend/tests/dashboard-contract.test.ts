@@ -8430,6 +8430,159 @@ contractTest("unit #50: every new calibration string carries its own Japanese", 
 });
 
 // ---------------------------------------------------------------------------
+// Unit #51 — the range-bounded parameter search's step-⑫ track.
+//
+// The client's whole job here is to render two server-decided states and add
+// nothing. The pins below exist because the two most tempting client-side
+// "helpfulnesses" would each be a lie: deciding the lock locally, and offering
+// a start button for a runner that is not wired.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #51: the search track renders the server's lock, and never decides it", (pin) => {
+  const rail = read("components/calibration/FlowRail.tsx");
+
+  pin.match(
+    rail,
+    /export function ParameterSearchTrack\(/,
+    "expected the #51 track to be one exported component, so the rail and the behaviour station share it",
+  );
+  // The lock is the SERVER's. A client that recomputed it would be a second
+  // opinion about whether a search may start -- the same failure #50 pinned
+  // against for step statuses.
+  pin.match(rail, /track\.locked \|\| !card/, "expected the lock to come from the server's own field");
+  pin.doesNotMatch(
+    withoutComments(rail),
+    /exhaust|preconditions|geh\s*[<>]=?\s*\d/i,
+    "expected no client-side precondition logic -- the gate lives in parameter_search.py",
+  );
+
+  // A locked track must NAME what would open it. "Locked" alone teaches nothing,
+  // and the server already sends the ladder-grammar refusals.
+  //
+  // MUTATION-CHECKED (2026-08-19): pinning only `track.refusals` was NOT enough —
+  // wrapping the block in `{false && (...)}` left both the field reference and
+  // the `pick(...)` call in the source and the pin still passed. So the pin is on
+  // the RENDER — the mapped element and the binding it comes from — which a dead
+  // branch cannot satisfy.
+  pin.match(
+    rail,
+    /const refusals = track\.refusals \?\? \[\];/,
+    "expected the refusal list to be bound from the server payload",
+  );
+  pin.match(
+    rail,
+    /\{refusals\.map\(\(refusal\) => \(/,
+    "expected every named refusal to be rendered, unconditionally -- not behind a branch that can be turned off",
+  );
+  pin.match(
+    rail,
+    /pick\(refusal\.opens_when, lang\)/,
+    "expected each refusal to show what would open it",
+  );
+});
+
+contractTest("unit #51: the trigger card asks, and offers no button it cannot honour", (pin) => {
+  const rail = read("components/calibration/FlowRail.tsx");
+  const source = withoutComments(rail);
+
+  // ask-first (the user's decision (2)): a question, never an auto-start and
+  // never a start control. The runner is not wired in this build, so a button
+  // would promise something no code here can do.
+  pin.match(rail, /pick\(card\.question, lang\)/, "expected the ask-first question to be rendered");
+  pin.match(rail, /pick\(card\.because, lang\)/, "expected the card to show WHY the ladder is exhausted");
+  pin.doesNotMatch(
+    source,
+    /<button[^>]*>[\s\S]{0,200}?card\./,
+    "expected NO start control on the trigger card -- the runner is not wired in this build",
+  );
+  pin.doesNotMatch(
+    source,
+    /startParameterSearch|runParameterSearch|POST[^\n]*parameter-search/,
+    "expected no client-side search kick-off -- a search needs COM and belongs to the job queue",
+  );
+
+  // The honest half is rendered, not tucked behind a disclosure -- and not
+  // behind an `&&` a later edit could flip to `false` while leaving the field
+  // reference in place (the mutation that got past the first cut of the refusal
+  // pin above). A ternary always renders one of the two branches.
+  pin.match(
+    rail,
+    /card\.runner\.wired\s*\?/,
+    "expected the runner's real state to be stated in both directions, never conditionally hidden",
+  );
+  pin.match(
+    rail,
+    /No runner is wired in this build/,
+    "expected the unwired-runner sentence to say so plainly",
+  );
+
+  // The published band and its page travel together. A range with no citation
+  // would be this product asserting bounds of its own -- and a citation with no
+  // range is a page cited for nothing.
+  //
+  // MUTATION-CHECKED (2026-08-19, refuter): pinning only the citation was NOT
+  // enough. Replacing `card.plan.space.map(` with `card.plan.space.slice(0, 0)
+  // .map(` emptied the band line and left `op §5.2.5.1, p.188` standing alone,
+  // and every pin still passed. So the band RENDER is pinned beside it.
+  pin.match(
+    rail,
+    /card\.plan\.space\[0\]\.citation/,
+    "expected the MRWA citation to be printed beside the searched bands",
+  );
+  pin.match(
+    rail,
+    /\{card\.plan\.space\.map\(\(band\) =>/,
+    "expected every searched band to be rendered, unsliced -- a citation with no range cites nothing",
+  );
+  pin.match(
+    rail,
+    /band\.low\}[^\n]*\$\{band\.high\}/,
+    "expected both ends of each published band to be shown",
+  );
+  // Both sides of the holdout are shown -- a split a reader cannot see is a
+  // split they cannot check.
+  pin.match(rail, /card\.plan\.holdout_nodes/, "expected the held-out nodes to be named on the card");
+  pin.match(
+    rail,
+    /card\.plan\.calibration_nodes/,
+    "expected the calibration nodes to be named beside the held-out ones",
+  );
+});
+
+contractTest("unit #51: the behaviour station shows the rail's track, not a second copy", (pin) => {
+  const page = read("app/calibration/page.tsx");
+
+  pin.match(
+    page,
+    /import FlowRail, \{ ParameterSearchTrack \}/,
+    "expected the page to import the shared track component",
+  );
+  pin.match(
+    page,
+    /rail\?\.steps\.find\(\(step\) => step\.number === 12\)\?\.tracks\?\.\[0\]/,
+    "expected the track to be read off the rail payload the page already has",
+  );
+  // ...and read off it ONLY. MUTATION-CHECKED (2026-08-19, refuter): appending
+  // `?? ({ ... locked: false ... } as CalibrationRailTrack)` to that very
+  // expression passed every pin here, which is precisely the hand-written
+  // second copy of the lock state the next pin refuses. So the binding is
+  // pinned WHOLE, ending at `?? null`.
+  pin.match(
+    page,
+    /\?\.tracks\?\.\[0\] \?\? null;/,
+    "expected the track binding to end at `?? null` -- an absent rail is nothing to say, never a locally invented track",
+  );
+  // The pre-#51 placeholder claimed the unit was not built. Now that it is, that
+  // sentence would be false -- and a hand-written second copy of the lock state
+  // is how the page and the rail would come to disagree on one screen.
+  pin.doesNotMatch(
+    page,
+    /Not built yet|아직 만들어지지 않았습니다/,
+    "expected no 'not built yet' placeholder -- #51 shipped, and the track states its real state",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // The convention for state that comes from outside React (2026-08-19).
 //
 // `react-hooks/set-state-in-effect` used to have THREE answers living side by

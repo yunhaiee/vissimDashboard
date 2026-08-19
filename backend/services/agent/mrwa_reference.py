@@ -442,6 +442,161 @@ def table_5_6_saturation_flow_range() -> tuple[float, float]:
 
 
 # =============================================================================
+# 5b. §5.2.5.1's OTHER numeric list — the merging driving behaviour's
+#     lane-change and lateral parameters, op §5.2.5.1 p.188.
+#
+# Added by unit #51 (범위-구속 파라미터 탐색). Table 5-6 gives one measured
+# input -> one published row; this bullet list is the only place in §5 that
+# publishes a RANGE for a driving-behaviour parameter, and a range is what a
+# bounded search needs. Encoded here rather than in the search module for the
+# same reason every number above is here: a search that says "within the
+# guideline's published range" is making an authority claim, and the claim has
+# to carry the authority's own page.
+#
+# The page IS independently traceable in this checkout, on the same footing as
+# Table 5-6's p.187: docs/product/reference/mrwa-section5-extract.md prints the
+# whole bullet list under the "(p.188)" marker inside the "5.2.5.1 General
+# (p.187-189)" section. So a real page, not PAGE_CITE_PENDING.
+#
+# TWO HONESTY NOTES THE SOURCE ITSELF FORCES, both carried on the data so no
+# consumer can quietly drop them:
+#
+#   - SCOPE. The list's own sentence is "Driving behaviour for a MERGING AREA
+#     should be defined based on the updated urban (motorized) car following
+#     model parameters, WITH CHANGES MADE TO the lane-change and the lateral
+#     parameters". These bands are therefore MRWA's published envelope for a
+#     merging-area behaviour. They are the only published range this guideline
+#     states for these Vissim fields at all — but applying them to a behaviour
+#     that is not a merging-area behaviour is a WIDER claim than the source
+#     supports. :data:`MERGING_RANGE_SCOPE_NOTE` says so, and unit #51 prints it
+#     in every rationale rather than letting "within the published range" imply
+#     the guideline blessed the search's own target.
+#   - THE GUIDELINE PREFERS OBSERVATION. The same page closes with "The factors
+#     should be determined based on driving behaviours observed on-site."
+#     (:data:`MERGING_RANGE_OBSERVATION_NOTE`). A parameter search inside these
+#     bands is therefore a LAST RESORT after the §2.12.1 ladder is exhausted,
+#     never a first move — which is exactly the precondition gate #51 ships.
+#
+# WRITE-VERB REALITY, measured 2026-08-19 against
+# ``vissim_com.VissimController.DRIVING_BEHAVIOR_PARAM_FIELDS``: three of the
+# four numeric bullets map onto a whitelisted, writable field
+# (saf_dist_fact_ln_chg / lat_dist_stand_def / lat_dist_driv_def). The fourth,
+# maximum deceleration for cooperative braking, has NO write verb anywhere in
+# this codebase — it is recorded here anyway, with ``vissim_parameter=None``, so
+# that a reader can see the guideline publishes it and this product cannot apply
+# it. A gap that is visible is a gap that can be closed.
+# =============================================================================
+
+MERGING_BEHAVIOUR_CITATION = "op §5.2.5.1, p.188"
+
+#: Why a band published for a MERGING area is not automatically a band for
+#: every behaviour. Printed by consumers, never paraphrased.
+MERGING_RANGE_SCOPE_NOTE = (
+    "op §5.2.5.1 publishes these bands for a MERGING-AREA driving behaviour. They are the only "
+    "range the guideline states for these Vissim fields, so a bounded search uses them — but the "
+    "guideline did not publish them for a non-merging behaviour, and a consumer must say so."
+)
+
+#: The sentence that makes a search a last resort rather than a method.
+MERGING_RANGE_OBSERVATION_NOTE = (
+    "op §5.2.5.1, p.188: 'The factors should be determined based on driving behaviours observed "
+    "on-site.' A search inside these bands never replaces an on-site observation; it is what is "
+    "left when the §2.12.1 ladder is exhausted and no observation exists."
+)
+
+#: ``(vissim_parameter | None, low, high, unit, the guideline's own wording)``,
+#: in the source's own bullet order — the single source of truth the
+#: ReferenceTable below is BUILT from, so the structured lookup a search reads
+#: and the self-citing form the integrity test iterates over cannot drift apart
+#: (same discipline as :data:`TABLE_5_6_ROWS`).
+MERGING_BEHAVIOUR_ROWS: tuple[tuple[str | None, float, float, str, str], ...] = (
+    ("saf_dist_fact_ln_chg", 0.25, 0.45, "", "Safety distance reduction factor"),
+    (
+        None,
+        -9.0,
+        -5.0,
+        "m/s2",
+        "Maximum deceleration for cooperative braking",
+    ),
+    (
+        "lat_dist_stand_def",
+        0.1,
+        0.4,
+        "m",
+        "Minimum lateral distance standing at 0 km/h",
+    ),
+    (
+        "lat_dist_driv_def",
+        0.2,
+        1.0,
+        "m",
+        "Minimum lateral distance driving at 50 km/h",
+    ),
+)
+
+_NO_WRITE_VERB_NOTE = (
+    "no write verb exists for this parameter anywhere in this codebase "
+    "(vissim_com.DRIVING_BEHAVIOR_PARAM_FIELDS has no entry for it), so it is published here but "
+    "cannot be applied — recorded rather than silently dropped"
+)
+
+MERGING_BEHAVIOUR_PARAMETER_RANGES = ReferenceTable(
+    name="op §5.2.5.1 — merging-area lane-change / lateral parameter ranges",
+    source=MERGING_BEHAVIOUR_CITATION,
+    entries=tuple(
+        ReferenceValue(
+            "RANGE",
+            (low, high),
+            unit,
+            MERGING_BEHAVIOUR_CITATION,
+            context=f"{wording} (Vissim '{parameter}')" if parameter else f"{wording} (no Vissim write verb)",
+            note=MERGING_RANGE_SCOPE_NOTE if parameter else f"{MERGING_RANGE_SCOPE_NOTE} — {_NO_WRITE_VERB_NOTE}",
+        )
+        for parameter, low, high, unit, wording in MERGING_BEHAVIOUR_ROWS
+    ),
+    complete=True,
+    coverage_note=(
+        "All FOUR numeric bullets the p.188 list prints are encoded, in the source's own order. "
+        "The list's other four bullets carry no range and are therefore not ReferenceValues: two "
+        "point back at Table 5-6 (average standstill distance 2.5 m; the updated additive and "
+        "multiplicative parts of safety distance) and two are TICK-BOXES with no number at all "
+        "('Cooperative lane change to be ticked', 'Observe adjacent lane(s) to be ticked'). "
+        "Nothing from the list is missing; nothing was invented to fill it."
+    ),
+)
+
+
+def merging_behaviour_range(parameter: str) -> tuple[float, float] | None:
+    """``(low, high)`` for one Vissim driving-behaviour parameter, or ``None``.
+
+    ``None`` for every parameter the p.188 list does not publish a band for —
+    including the cooperative-braking bullet, which has a band but no Vissim
+    write verb and is therefore deliberately keyed to ``None`` in
+    :data:`MERGING_BEHAVIOUR_ROWS`. A consumer that gets ``None`` has no
+    published range to search inside, which unit #51 treats as "not a
+    candidate", never as "pick something sensible".
+
+    Read from :data:`MERGING_BEHAVIOUR_ROWS` rather than re-typed, so a
+    consumer's bounds and this module's citation can never disagree.
+    """
+    wanted = str(parameter or "")
+    for vissim_parameter, low, high, _unit, _wording in MERGING_BEHAVIOUR_ROWS:
+        if vissim_parameter and vissim_parameter == wanted:
+            return (low, high)
+    return None
+
+
+def merging_behaviour_wording(parameter: str) -> str:
+    """The guideline's OWN name for one parameter (''): for a rationale that
+    quotes the source instead of this codebase's canonical field name."""
+    wanted = str(parameter or "")
+    for vissim_parameter, _low, _high, _unit, wording in MERGING_BEHAVIOUR_ROWS:
+        if vissim_parameter and vissim_parameter == wanted:
+            return wording
+    return ""
+
+
+# =============================================================================
 # 6. Reduced-speed-area design speed by turn radius — op §5 Table 5-8.
 #    DELIBERATELY EMPTY: no radius/speed breakpoints were supplied by any
 #    source available to this module. See module docstring.
@@ -661,6 +816,7 @@ ALL_TABLES: tuple[ReferenceTable, ...] = (
     TABLE_5_10_CONFLICT_AREA_GAP,
     ROUNDABOUT_CRITICAL_GAP_MINIMUM,
     TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW,
+    MERGING_BEHAVIOUR_PARAMETER_RANGES,
     TABLE_5_8_RSA_DESIGN_SPEED,
     PT_DWELL_DEFAULTS,
     SIMULATION_DISCIPLINE,

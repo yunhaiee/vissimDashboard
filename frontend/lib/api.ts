@@ -2381,6 +2381,49 @@ export type CalibrationStepStatus =
   | "NOT_APPLICABLE"
   | "NO_EVIDENCE";
 
+/** Unit #51's step-⑫ second track: the range-bounded parameter search.
+ *
+ * `locked` is the normal state and carries the precondition gate's own NAMED
+ * refusals — each says what is wrong and what would open it. Unlocked, `card`
+ * carries the ask-first trigger: a question with its evidence attached, never a
+ * search already running. The client renders both; it decides neither. */
+export interface CalibrationRailTrack {
+  key: string;
+  unit: string;
+  locked: boolean;
+  label: { ko: string; en: string; ja: string };
+  why: { ko: string; en: string; ja: string };
+  /** Why the gate refused, one entry per unmet precondition. Empty when open. */
+  refusals: {
+    code: string;
+    why: { ko: string; en: string; ja: string };
+    opens_when: { ko: string; en: string; ja: string };
+  }[];
+  /** Present only when `locked` is false. */
+  card: {
+    key: string;
+    unit: string;
+    ask_first: boolean;
+    auto_start: boolean;
+    question: { ko: string; en: string; ja: string };
+    because: { ko: string; en: string; ja: string };
+    plan: {
+      budget_s: number;
+      resumable: boolean;
+      objective: string;
+      space: { parameter: string; low: number; high: number; citation: string }[];
+      calibration_nodes: string[];
+      holdout_nodes: string[];
+      algorithm: string;
+      algorithm_citation: string;
+    };
+    caveats: string[];
+    /** The runner seam's honest state: `wired: false` in this build — live
+     * execution needs Vissim COM and belongs to the job queue, not the browser. */
+    runner: { interface: string; wired: boolean; requires: string[]; why_not_here: string };
+  } | null;
+}
+
 export interface CalibrationRailStep {
   number: number;
   /** MRWA op §2.12.1's own English label, verbatim. */
@@ -2399,14 +2442,8 @@ export interface CalibrationRailStep {
   source: string;
   basis: { ko: string; en: string; ja: string };
   detail: Record<string, unknown>;
-  /** Unit #51's locked second track. Present on step 12 only. */
-  tracks?: {
-    key: string;
-    unit: string;
-    locked: boolean;
-    label: { ko: string; en: string; ja: string };
-    why: { ko: string; en: string; ja: string };
-  }[];
+  /** Unit #51's second track. Present on step 12 only. */
+  tracks?: CalibrationRailTrack[];
 }
 
 export interface CalibrationRail {
