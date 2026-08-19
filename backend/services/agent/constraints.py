@@ -43,13 +43,20 @@ comment.
 
 This module is intentionally stdlib-only, like trace.py, and does not import
 state.py or trace.py — it only consumes the shadow-model dict shape they
-produce/agree on. ONE exception, added in Phase 0.3 (the MRWA constraint/
-defaults pack, docs/product/master-roadmap-2026-07.md item 0.3):
-``services.agent.mrwa_reference`` is itself stdlib-only pure data (no state,
-no side effects, no COM/session dependency — see its own module docstring),
-so importing it does not reintroduce the coupling this rule exists to avoid;
-it exists so the MRWA table numbers a handful of checks below cite live in
-exactly one place, not copy-pasted into this file a second time.
+produce/agree on. TWO exceptions, each a pure-data/pure-function leaf with no
+state, no side effects and no COM/session dependency, so neither reintroduces
+the coupling this rule exists to avoid:
+
+- ``services.agent.mrwa_reference`` (Phase 0.3, the MRWA constraint/defaults
+  pack, docs/product/master-roadmap-2026-07.md item 0.3) — so the MRWA table
+  numbers a handful of checks below cite live in exactly one place, not
+  copy-pasted into this file a second time.
+- ``services.agent.car_following_grant`` (unit #44-b, 2026-08-19) — the
+  structural key to ``driving_behavior_shared_object_edit``'s one narrow
+  exception. It is pure dataclass + pure functions and imports only
+  ``gates.signature`` (whose own runtime dependency is ``json``), so the
+  stdlib-only property survives. See its module docstring for why the
+  exception could not be a flag on the action.
 
 M3.1 CATALOG-GAP convention (docs/phase2/02-ROADMAP.md M3.1): a check that
 depends on a datum the shadow model / ``extra["run_result"]`` cannot supply
@@ -228,7 +235,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from services.agent import mrwa_reference
+from services.agent import car_following_grant, mrwa_reference
 
 Phase = str  # "preflight" | "postwrite" | "postrun" | "dataset"
 # "dataset" (health-check unit, 2026-07-28): a constraint that only ever
@@ -4507,6 +4514,38 @@ register(
 # this unit's own task brief. Degrades silently only when the shadow model
 # has no driving_behaviors data at all or the target itself does not exist
 # (the latter is #1 object_not_found's job).
+#
+# ONE NARROW EXCEPTION, unit #44-b (2026-08-19). DECISIONS.md 2026-08-18
+# recorded the collision: MRWA §5.2.5.1 calibrates the urban driving behaviour
+# NETWORK-WIDE from one measured stop-line saturation flow, and every W74
+# behaviour in the real consultant model is referenced at least once, so this
+# guardrail refused exactly the edit the guideline prescribes. DECISIONS.md
+# 2026-08-19 is the user's call on it, quoted:
+#
+#   "ask-first 승인 카드가 적용 범위를 문장으로 명시하고 ('행태 N을 참조하는
+#   링크 M곳에 함께 적용됩니다') 사람이 읽고 승인하는 구조이므로, 이는 가드레일이
+#   막으려던 '모르고 저지르는 광역 편집'이 아니라 '알고 승인하는 광역 편집'이다.
+#   가드레일의 원래 목적(의도치 않은 공유 객체 편집 방지)은 예외 밖 전 경로에서
+#   그대로 유지된다."
+#
+# The exception is keyed on STRUCTURE, never on a self-reported flag -- the
+# same lesson this check's own rewrite above records. It stands down ONLY when
+# ``services.agent.car_following_grant.evaluate`` returns GRANTED, which
+# requires all of: a grant minted from a complete, measurement-backed Table 5-6
+# proposal set; that grant naming THIS write by its canonical signature (so the
+# exception reaches ax/bx_add/bx_mult at the table's own values and nothing
+# else -- the other five whitelisted parameters and every W99 cc* name are
+# uncovered by construction); the grant arriving through ``extra``, a channel
+# written only by orchestrator.py from the write gate, never by any planner
+# payload; a consent state from that gate; a blast radius that could be named in
+# FULL, because a radius whose consumer list is truncated or absent is not a
+# sentence a human can have read (refuter, #44-b — an un-named consumer's links
+# can change by any amount without the drift check seeing it); and that radius,
+# re-derived from the live shadow model, still equalling the one consent was
+# given for. Anything short of that refuses here exactly as before, with THIS
+# check's own message and no new name. The two constraints registered
+# after this one are the exception's other half: one NAMES the consented radius
+# (warn), one refuses BY NAME when the radius has drifted.
 # ---------------------------------------------------------------------------
 
 
@@ -4518,25 +4557,44 @@ def _driving_behavior_consumer_label(consumer: dict[str, Any]) -> str:
     return label
 
 
-def _check_driving_behavior_shared_object_edit(
-    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
-) -> Finding | None:
+def _driving_behavior_target(
+    action: dict[str, Any], shadow_model: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The shadow model's OWN entry for a ``set_driving_behavior_parameter``
+    target, or ``None`` when this action/model pair has nothing to say.
+
+    Shared by the shared-object refusal and #44-b's two grant constraints so
+    all three resolve the same target the same way — the drift check's
+    right-hand side must come from the live model, never from the action or
+    the grant.
+    """
     if action.get("tool") != "set_driving_behavior_parameter":
         return None
-
-    params = action.get("params", {})
-    behavior_no = str(params.get("behavior_no", ""))
-
     behaviors = shadow_model.get("driving_behaviors")
     if not behaviors:
         return None  # no reference data to check against yet
-    behavior = _find_by_field(behaviors, "no", behavior_no)
+    # missing target is object_not_found's job (#1)
+    return _find_by_field(behaviors, "no", str(action.get("params", {}).get("behavior_no", "")))
+
+
+def _check_driving_behavior_shared_object_edit(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    behavior = _driving_behavior_target(action, shadow_model)
     if behavior is None:
-        return None  # missing target is object_not_found's job (#1)
+        return None
+    behavior_no = str(action.get("params", {}).get("behavior_no", ""))
 
     reference_count = behavior.get("reference_count", 0) or 0
     if reference_count == 0:
         return None  # a fresh, unshared (e.g. just-duplicated) copy is safe to edit in place
+
+    # #44-b's narrow exception (see the section comment above). GRANTED is the
+    # ONLY verdict that stands this refusal down; RADIUS_DRIFTED deliberately
+    # does not, so a drifted blast radius is refused twice -- once generically
+    # here, once by name below -- rather than resting on one new code path.
+    if car_following_grant.evaluate(action, behavior, extra)["verdict"] == car_following_grant.GRANTED:
+        return None
 
     consumers = (behavior.get("referenced_by") or {}).get("consumers", [])
     labels = [_driving_behavior_consumer_label(c) for c in consumers]
@@ -4582,6 +4640,245 @@ register(
         "グローバルオブジェクトです({consumers_ja})。その場で編集すると、これを使用するすべての"
         "箇所が同時に変更されます — 先にduplicate_driving_behaviorで複製し、そのコピー(参照0件)"
         "のみを編集して、意図したリンク行動タイプにのみ再適用してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #44-b car_following_shared_edit_consented (warn, preflight)
+# #44-b car_following_consent_radius_drifted  (refuse, preflight)
+#
+# The other half of the exception documented in #40's section comment above.
+# The decision (DECISIONS.md 2026-08-19) rests its entire safety argument on
+# one thing: a human read a SENTENCE naming what the edit touches, and clicked.
+# So the exception is not allowed to be silent, and it is not allowed to
+# outlive the sentence:
+#
+# - ``car_following_shared_edit_consented`` is that sentence, emitted as a
+#   warn-tier finding every time the exception fires. It rides both moments the
+#   engine sees the write -- while the approval card is being BUILT (so the
+#   radius is on the card the human reads) and again at dispatch -- and names
+#   the behaviour, the consumers, the link total, the measured saturation flow
+#   and the row. A guardrail that steps aside without saying so would be a
+#   worse product than one that refuses.
+# - ``car_following_consent_radius_drifted`` refuses when the reference graph
+#   re-derived from the LIVE shadow model no longer equals the one named when
+#   consent was given: consent was to a named radius, not to whatever the
+#   behaviour happens to reach now. It carries both numbers so the refusal says
+#   "동의는 N개였는데 지금은 M개" rather than merely "something changed".
+#
+# Both are inert outside the exception: with no grant in ``extra`` (every
+# direct tool call, every ``fixes.preflight_findings`` call, every other unit)
+# ``evaluate`` returns NO_GRANT and neither check produces anything.
+# ---------------------------------------------------------------------------
+
+
+def _radius_phrases(radius: dict[str, Any] | None) -> tuple[str, str, str]:
+    """One blast radius as a ko/en/ja clause: consumers, links, and whether the
+    link count is the WHOLE of it.
+
+    ``car_following_grant.consent_radius``'s ``link_total`` sums only the consumers
+    that were actually named, so on an INCOMPLETE radius it is a lower bound and has
+    to read like one — printing it as a flat total is how a human ends up approving
+    "링크 145개" for an edit that lands on 208. ``evaluate`` no longer GRANTS an
+    incomplete radius at all, so this shape reaches a reader only through the
+    drifted-radius refusal, which quotes both sides.
+    """
+    payload = radius or {}
+    consumers = payload.get("reference_count", 0)
+    links = payload.get("link_total", 0)
+    if payload.get("complete"):
+        return (
+            f"참조 {consumers}곳 · 링크 {links}개",
+            f"{consumers} consumer(s) · {links} link(s)",
+            f"参照 {consumers}件 · リンク {links}本",
+        )
+    return (
+        f"참조 {consumers}곳 · 명단에 오른 참조처만 합산해 링크 {links}개 이상 (전체 명단 확인 불가)",
+        f"{consumers} consumer(s) · at least {links} link(s) (named consumers only — the "
+        "full list could not be read)",
+        f"参照 {consumers}件 · 名簿に載った参照先のみで リンク {links}本以上 (全体の名簿は確認不可)",
+    )
+
+
+def _car_following_grant_context(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """``(behavior, verdict)`` for a driving-behaviour write, or ``None`` when
+    the action/model pair is not one this pair of checks can speak about."""
+    behavior = _driving_behavior_target(action, shadow_model)
+    if behavior is None:
+        return None
+    return behavior, car_following_grant.evaluate(action, behavior, extra)
+
+
+def _check_car_following_shared_edit_consented(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    context = _car_following_grant_context(action, shadow_model, extra)
+    if context is None:
+        return None
+    behavior, verdict = context
+    if verdict["verdict"] != car_following_grant.GRANTED:
+        return None
+    if (behavior.get("reference_count", 0) or 0) == 0:
+        # Nothing was ever refused here, so there is no exception to announce:
+        # an unshared behaviour is plain-vanilla editable and always was.
+        return None
+
+    grant = verdict["grant"]
+    radius = verdict["consented_radius"]
+    radius_ko, radius_en, radius_ja = _radius_phrases(radius)
+    labels = [
+        _driving_behavior_consumer_label(c)
+        for c in (behavior.get("referenced_by") or {}).get("consumers", [])
+    ]
+    consumers_ko, consumers_en, consumers_ja = _capped_join(labels, "곳", "consumer(s)", "件")
+    measurement = grant.measurement or {}
+    attribution = str(measurement.get("attribution") or "-")
+    method = str(measurement.get("method") or "-")
+
+    return Finding(
+        constraint_id="car_following_shared_edit_consented",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "car_following_shared_edit_consented",
+            behavior_id=str(action.get("params", {}).get("behavior_no", "")),
+            parameter=str(action.get("params", {}).get("parameter", "")),
+            value=action.get("params", {}).get("value"),
+            radius_ko=radius_ko,
+            radius_en=radius_en,
+            radius_ja=radius_ja,
+            consumers_ko=consumers_ko,
+            consumers_en=consumers_en,
+            consumers_ja=consumers_ja,
+            saturation_flow_pcu=f"{grant.saturation_flow_pcu:g}",
+            attribution=attribution,
+            method=method,
+        ),
+        suggested_fix={
+            "hint": "no fix required — this is the approved network-wide calibration; "
+            "duplicate_driving_behavior instead if the intent is local after all",
+            "set_id": grant.set_id,
+        },
+        details={
+            "behavior_id": grant.behavior_no,
+            "set_id": grant.set_id,
+            "consent": verdict["consent"],
+            "consented_radius": radius,
+            "consumers": labels,
+            "saturation_flow_pcu": grant.saturation_flow_pcu,
+            "measurement": dict(measurement),
+            "decision": "DECISIONS.md 2026-08-19",
+        },
+    )
+
+
+register(
+    Constraint(
+        id="car_following_shared_edit_consented",
+        applies_to=["set_driving_behavior_parameter"],
+        phase="preflight",
+        tier="warn",
+        check=_check_car_following_shared_edit_consented,
+        message_ko="행동유형 '{behavior_id}'의 {parameter}를 {value}로 바꾸는 이 편집은 공유 객체 "
+        "편집입니다: {radius_ko}에 함께 적용됩니다 ({consumers_ko}). 거부하지 않는 이유는 이것이 "
+        "MRWA §5.2.5.1의 의도 자체이기 때문입니다 — 측정된 정지선 포화교통류 "
+        "{saturation_flow_pcu} pcu({attribution}, {method})로 Table 5-6의 한 행을 읽어 도심 "
+        "주행 행태를 네트워크 전역에 보정하는 것. 즉 '모르고 저지르는 광역 편집'이 아니라 "
+        "'알고 승인하는 광역 편집'입니다(DECISIONS.md 2026-08-19). 이 승인된 세트 밖에서는 "
+        "공유 행태의 제자리 편집이 종전대로 거부됩니다.",
+        message_en="This edit — {parameter} = {value} on behavior '{behavior_id}' — IS a "
+        "shared-object edit: it applies to {radius_en} together ({consumers_en}). It is not "
+        "refused because that is precisely MRWA §5.2.5.1's intent — one measured stop-line "
+        "saturation flow of {saturation_flow_pcu} pcu ({attribution}, {method}) reading one row "
+        "of Table 5-6 to calibrate the urban driving behaviour across the network. This is the "
+        "'network-wide edit made knowingly', not the 'network-wide edit made by accident' the "
+        "guardrail exists to stop (DECISIONS.md 2026-08-19). Outside this approved set, in-place "
+        "edits of a shared behaviour are refused exactly as before.",
+        message_ja="行動タイプ '{behavior_id}' の {parameter} を {value} に変更するこの編集は共有"
+        "オブジェクトの編集です: {radius_ja}に同時に適用されます({consumers_ja})。拒否しないのは、"
+        "これがMRWA §5.2.5.1の意図そのものだからです — 測定された停止線飽和交通流 "
+        "{saturation_flow_pcu} pcu({attribution}、{method})でTable 5-6の一行を読み、都市の走行"
+        "挙動をネットワーク全体に補正する。つまり「知らずに行う広域編集」ではなく「承知のうえで"
+        "承認された広域編集」です(DECISIONS.md 2026-08-19)。この承認された組の外では、共有挙動の"
+        "その場編集は従来どおり拒否されます。",
+    )
+)
+
+
+def _check_car_following_consent_radius_drifted(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    context = _car_following_grant_context(action, shadow_model, extra)
+    if context is None:
+        return None
+    _, verdict = context
+    if verdict["verdict"] != car_following_grant.RADIUS_DRIFTED:
+        return None
+
+    grant = verdict["grant"]
+    consented_ko, consented_en, consented_ja = _radius_phrases(verdict["consented_radius"])
+    current_ko, current_en, current_ja = _radius_phrases(verdict["current_radius"])
+
+    return Finding(
+        constraint_id="car_following_consent_radius_drifted",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "car_following_consent_radius_drifted",
+            behavior_id=grant.behavior_no,
+            set_id=grant.set_id,
+            consented_ko=consented_ko,
+            consented_en=consented_en,
+            consented_ja=consented_ja,
+            current_ko=current_ko,
+            current_en=current_en,
+            current_ja=current_ja,
+        ),
+        suggested_fix={
+            "hint": "rebuild the Table 5-6 proposal against the current network so a human "
+            "reads and approves the radius as it is now",
+            "consented_radius": verdict["consented_radius"],
+            "current_radius": verdict["current_radius"],
+        },
+        details={
+            "behavior_id": grant.behavior_no,
+            "set_id": grant.set_id,
+            "consent": verdict["consent"],
+            "consented_radius": verdict["consented_radius"],
+            "current_radius": verdict["current_radius"],
+            "decision": "DECISIONS.md 2026-08-19",
+        },
+    )
+
+
+register(
+    Constraint(
+        id="car_following_consent_radius_drifted",
+        applies_to=["set_driving_behavior_parameter"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_car_following_consent_radius_drifted,
+        message_ko="동의한 적용 범위가 달라져 이 편집을 거부합니다. 승인 시점에 명명된 범위는 "
+        "{consented_ko}였는데, 지금 모델에서 다시 계산한 범위는 {current_ko}입니다. Table 5-6 "
+        "차량추종 예외가 성립하는 근거는 사람이 '어디에 함께 적용되는지'를 읽고 승인했다는 "
+        "사실뿐이므로, 그 반경이 바뀌면 동의는 더 이상 이 편집을 덮지 않습니다 — 현재 네트워크로 "
+        "제안을 다시 만들어 바뀐 범위를 다시 승인받으십시오 (행동유형 '{behavior_id}', 세트 "
+        "{set_id}).",
+        message_en="Refusing this edit: the consented blast radius has drifted. When approval was "
+        "given the radius named was {consented_en}; re-derived from the model now it is "
+        "{current_en}. The Table 5-6 car-following exception stands on exactly one thing — that a "
+        "human read where the edit lands and approved THAT — so once the radius moves, the "
+        "consent no longer covers this write. Rebuild the proposal against the current network "
+        "and have the new radius approved (behavior '{behavior_id}', set {set_id}).",
+        message_ja="同意された適用範囲が変化したため、この編集を拒否します。承認時に示された範囲は"
+        "{consented_ja}でしたが、現在のモデルから再導出した範囲は{current_ja}です。Table 5-6 の"
+        "追従モデル例外が成り立つ根拠は、人が「どこに同時に適用されるか」を読んで承認したという"
+        "事実だけであるため、その半径が変われば同意はこの書き込みを覆いません — 現在のネット"
+        "ワークで提案を作り直し、変わった範囲を改めて承認してください(行動タイプ "
+        "'{behavior_id}'、セット {set_id})。",
     )
 )
 

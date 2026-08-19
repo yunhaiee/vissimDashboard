@@ -123,7 +123,7 @@ import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
 import services.agent.tools_sweep  # noqa: F401 - Phase 0.1: run_demand_stress_sweep
-from services.agent import approval_focus, complexity, session_store
+from services.agent import approval_focus, car_following_grant, complexity, session_store
 from services.agent.constraints import explain_unsupported_tool
 from services.agent.gates import ApprovalRequired, signature
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
@@ -509,6 +509,29 @@ class RefuseAllWriteGate:
     def authorize(self, action: dict[str, Any], spec: ToolSpec) -> bool:
         del action, spec
         return False
+
+
+def _preflight_extra(gate: WriteGate, action: dict[str, Any]) -> dict[str, Any]:
+    """Approval-machinery provenance for ``action``, as the constraint
+    engine's ``extra`` (unit #44-b).
+
+    ``write_provenance`` is an optional protocol extension in the same shape
+    as ``PreapprovedWriteGate.refusal_reason`` — probed via ``getattr``, so a
+    gate that does not define it (``RefuseAllWriteGate``, and every
+    caller-supplied gate) yields ``{}`` and preflight behaves exactly as it
+    did before this unit. This function is the ONLY way anything reaches
+    preflight's ``extra``, and it reads exclusively from the GATE: the
+    planner's ``{"tool", "params"}`` cannot contribute to it, which is what
+    makes the Table 5-6 exception a structural key rather than a claim a
+    payload makes about itself (see ``car_following_grant``'s docstring).
+    """
+    provenance_fn = getattr(gate, "write_provenance", None)
+    if provenance_fn is None:
+        return {}
+    provenance = provenance_fn(action)
+    if not provenance:
+        return {}
+    return {car_following_grant.PROVENANCE_KEY: provenance}
 
 
 #: M2.4: the tiers that go through the WriteGate/ApprovalRequired/preflight
@@ -1148,7 +1171,17 @@ def run_agent_turn(
                 approval_preflight_model = (
                     artifact_manager.shadow_model if artifact_manager is not None else {}
                 )
-                preflight_report = target_engine.preflight(action, approval_preflight_model)
+                # #44-b: the gate's own provenance rides along, so a Table 5-6
+                # car-following set that a grant covers survives THIS preflight
+                # and the approval card actually gets built. Without it, a
+                # blocking finding here means the human is never asked at all
+                # (see the `if preflight_report.blocking` branch just below) —
+                # the dead end DECISIONS.md 2026-08-18 recorded. Nothing can
+                # dispatch from this branch regardless: ProposeWriteGate's
+                # authorize() never returns a verdict.
+                preflight_report = target_engine.preflight(
+                    action, approval_preflight_model, _preflight_extra(target_gate, action)
+                )
                 tracer.write(
                     "preflight",
                     {
@@ -1291,7 +1324,14 @@ def run_agent_turn(
                     before_model = (
                         (artifact_manager.shadow_model or {}) if artifact_manager is not None else {}
                     )
-                    preflight_report = target_engine.preflight(action, before_model)
+                    # #44-b: the gate has ALREADY consumed this action's
+                    # approved signature by the time we get here (authorize()
+                    # ran above), so the provenance it reports now carries
+                    # CONSUMED_APPROVAL — the only consent state a real write
+                    # dispatches under.
+                    preflight_report = target_engine.preflight(
+                        action, before_model, _preflight_extra(target_gate, action)
+                    )
                     tracer.write(
                         "preflight",
                         {

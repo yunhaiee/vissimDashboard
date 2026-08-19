@@ -6573,3 +6573,30 @@ Roads figure, and is now attributed as such in all three languages; partial appr
 ax/bx_add/bx_mult set is detected and named by `verify_applied_row` (detection chosen over
 structural locking, which would have meant editing gates.py/routers shared with every unit) —
 the same check also names the real model's unsourced 'flyt updated' hand-tunings.
+
+
+---
+
+## 2026-08-19 — 사용자 결정: #44 가드레일 충돌은 (a) 좁은 예외로 해소한다
+
+**Context:** 위 2026-08-18 항목의 3선택지에 대해 사용자가 **(a) 예외 허용**을 결정.
+원문 지시: "a로 해" (2026-08-19, 설명 확인 후).
+
+**Decision:** `driving_behavior_shared_object_edit` 가드레일에 **Table 5-6 차량추종 제안
+경로에 한정된** 예외를 낸다. 근거: ask-first 승인 카드가 적용 범위를 문장으로 명시하고
+("행태 N을 참조하는 링크 M곳에 함께 적용됩니다") 사람이 읽고 승인하는 구조이므로, 이는
+가드레일이 막으려던 "모르고 저지르는 광역 편집"이 아니라 "알고 승인하는 광역 편집"이다.
+가드레일의 원래 목적(의도치 않은 공유 객체 편집 방지)은 예외 밖 전 경로에서 그대로 유지된다.
+
+**Constraints on the exception (구현 유닛 #44-b의 수용 조건):**
+- 예외의 열쇠는 자기 신고가 아니라 **구조**여야 한다 — B5-2 승인 기계(PreapprovedWriteGate,
+  1회 소모·대상 교차검증)에 결속된 Table 5-6 제안 출처만 통과. 직접 도구 호출·위장 페이로드는
+  이전과 동일하게 거부.
+- 파라미터는 **ax/bx_add/bx_mult만** — 화이트리스트의 나머지 5개와 W99 CC0–CC9는 예외 무관.
+- **동의한 폭발 반경의 드리프트 검사**: 승인 시점에 명명된 참조 링크 집합과 적용 시점의 집합이
+  다르면 명명 거부(동의는 명명된 반경에 대한 것).
+- `preflight_forecast`는 엔진과 계속 일치해야 한다(#44 refuter의 핀 불변식) — 승인 경로는
+  clean 예보, 그 외는 여전히 refuse 예보.
+
+**Consequence:** 이 예외가 착지하면 #44 라이브 COM 실행(핸드오프 §6.2 커맨드)이 가드레일에서
+멈추지 않고 끝까지 간다. 예외 밖 공유 행태 편집은 전부 종전대로 거부된다.

@@ -1510,13 +1510,20 @@ def _stage_3_expect_car_following(
 
     forecast = actions[0].evidence.get("preflight_forecast") or {}
     entry["preflight_forecast"] = forecast
-    _log(f"[3+.6] shared-object forecast: expected_to_refuse={forecast.get('expected_to_refuse')} "
-         f"(reference_count={forecast.get('reference_count')})")
-    if forecast.get("expected_to_refuse"):
-        _log("       NOTE: constraints.driving_behavior_shared_object_edit will refuse an "
-             "in-place edit of this behaviour. MRWA §5.2.5.1's intent here is network-wide, "
-             "which is what that guardrail's local-intent premise collides with. Resolving it "
-             "is a human decision -- see the unit report.")
+    paths = forecast.get("paths") or {}
+    _log(f"[3+.6] shared-object forecast (reference_count={forecast.get('reference_count')}): "
+         f"direct_edit refuses={(paths.get(saturation_flow.PATH_DIRECT_EDIT) or {}).get('expected_to_refuse')} "
+         f"| approved_set refuses="
+         f"{(paths.get(saturation_flow.PATH_APPROVED_SET) or {}).get('expected_to_refuse')}")
+
+    # -- unit #44-b: the guardrail exception, verified against the REAL engine
+    #
+    # DECISIONS.md 2026-08-19 resolved #44's collision with a narrow exception:
+    # this set, dispatched through the approval machinery, passes the
+    # shared-object guardrail; everything else still does not. That claim is
+    # worth nothing asserted, so it is measured here -- both directions, on the
+    # same proposals and the same shadow model the run just produced.
+    _stage_3_car_following_guardrail_exception(entry, actions, shadow)
 
     entry["elapsed_s"] = round(time.monotonic() - started, 2)
     entry["ok"] = True
@@ -1527,9 +1534,175 @@ def _stage_3_expect_car_following(
          "probe does not open. Nothing was applied.")
     raise RefusedByDesign(
         f"unit #44: node {node_id} is on CAPACITY_LIMIT and the three Table 5-6 car-following "
-        "proposals were built, cited and preflight-checked offline. Applying them is the COM "
-        "lane. This is the designed stopping point, not a failure."
+        "proposals were built, cited and preflight-checked offline; unit #44-b's approval-bound "
+        "guardrail exception was exercised in both directions against the real constraint "
+        "engine. Applying them is the COM lane. This is the designed stopping point, not a "
+        "failure."
     )
+
+
+def _stage_3_car_following_guardrail_exception(
+    entry: dict[str, Any], actions: tuple[Any, ...], shadow: dict[str, Any]
+) -> None:
+    """Unit #44-b: prove the exception opens for the approved set and for nothing else.
+
+    Runs the REAL ``GuardrailEngine`` (not ``fixes.preflight_findings``, which
+    deliberately carries no approval context) four ways against the same three
+    proposals and the same shadow model this run just built:
+
+    1. **direct edit** -- no gate, no grant. Must still be refused by
+       ``driving_behavior_shared_object_edit`` when the behaviour is shared.
+       This is the half of the guardrail that did NOT change.
+    2. **approval card** -- ``ProposeWriteGate`` carrying the set's grant. Must
+       be non-blocking, so the card can be shown, and must carry the warn-tier
+       ``car_following_shared_edit_consented`` naming the radius. Nothing
+       dispatches here: that gate's ``authorize`` only ever raises.
+    3. **dispatch** -- ``PreapprovedWriteGate`` built from the same signatures a
+       human would have approved. Each of the three writes authorizes once and
+       preflights clean-of-refusals.
+    4. **reuse** -- the same write again. Must be refused at the gate
+       (``approval_consumed``), never reaching preflight at all.
+
+    Still applies nothing: the engine is being asked what it WOULD say. The COM
+    lane is unchanged and still the user's.
+    """
+    from services.agent import car_following_grant, guardrails, saturation_flow
+    from services.agent.gates import PreapprovedWriteGate, ProposeWriteGate, signature
+
+    _banner("[STAGE 3+] UNIT #44-b -- the approval-bound guardrail exception")
+
+    grant = saturation_flow.grant_from_proposals(actions)
+    engine = guardrails.GuardrailEngine(disabled=False)
+    payloads = [{"tool": a.verb, "params": dict(a.params or {})} for a in actions]
+    radius = car_following_grant.radius_phrase(grant.consent_radius)
+    _log(f"[3+.7] grant minted: set {grant.set_id}")
+    _log(f"       consented radius: {radius}")
+    _log(f"       signatures: {len(grant.signatures)} (ax/bx_add/bx_mult, values pinned)")
+
+    def _preflight(payload: dict[str, Any], gate: Any) -> Any:
+        provenance_fn = getattr(gate, "write_provenance", None)
+        provenance = provenance_fn(payload) if provenance_fn is not None else None
+        extra = {car_following_grant.PROVENANCE_KEY: provenance} if provenance else {}
+        return engine.preflight(payload, shadow, extra)
+
+    results: dict[str, Any] = {"consented_radius": dict(grant.consent_radius)}
+
+    # 1. direct edit -- the unchanged half
+    direct = engine.preflight(payloads[0], shadow)
+    results["direct_edit"] = {
+        "blocking": direct.blocking,
+        "findings": [(f.constraint_id, f.tier) for f in direct.findings],
+    }
+    _log(f"[3+.8] direct edit (no approval): blocking={direct.blocking} "
+         f"{results['direct_edit']['findings']}")
+
+    # 2. approval card
+    card = _preflight(payloads[0], ProposeWriteGate(grant=grant))
+    named = [f for f in card.findings if f.constraint_id == "car_following_shared_edit_consented"]
+    results["approval_card"] = {
+        "blocking": card.blocking,
+        "findings": [(f.constraint_id, f.tier) for f in card.findings],
+    }
+    _log(f"[3+.9] approval card: blocking={card.blocking} {results['approval_card']['findings']}")
+    for finding in named:
+        for lang in ("ko", "en", "ja"):
+            _log(f"       radius[{lang}]: {finding.messages[lang]}")
+
+    # 3. dispatch, once each
+    gate = PreapprovedWriteGate({signature(p["tool"], p["params"]) for p in payloads}, grant=grant)
+    dispatched: list[dict[str, Any]] = []
+    for payload in payloads:
+        authorized = gate.authorize(payload, None)
+        report = _preflight(payload, gate)
+        dispatched.append(
+            {
+                "parameter": payload["params"].get("parameter"),
+                "authorized": authorized,
+                "blocking": report.blocking,
+                "findings": [(f.constraint_id, f.tier) for f in report.findings],
+            }
+        )
+        _log(f"[3+.10] dispatch {payload['params'].get('parameter'):8s}: authorized={authorized} "
+             f"blocking={report.blocking} {dispatched[-1]['findings']}")
+    results["dispatch"] = dispatched
+
+    # 4. reuse
+    reuse_authorized = gate.authorize(payloads[0], None)
+    reuse_reason = gate.refusal_reason(payloads[0], None)
+    results["reuse"] = {"authorized": reuse_authorized, "refusal_reason": reuse_reason}
+    _log(f"[3+.11] approval reuse: authorized={reuse_authorized} reason={reuse_reason!r}")
+
+    entry["guardrail_exception"] = results
+
+    reference_count = (grant.consent_radius or {}).get("reference_count", 0)
+    shared = reference_count > 0
+    # Is the exception even AVAILABLE on this behaviour? It is not when the blast
+    # radius cannot be named in full -- ``tools_network`` caps the named consumer
+    # list at 10, and a radius that names only part of itself is not a sentence a
+    # human can have read (refuter, #44-b). Then the correct outcome is the ordinary
+    # refusal at every stage, and asserting the opposite would turn a designed
+    # refusal into a reported defect on exactly the big networks this harness runs
+    # against.
+    available = bool((grant.consent_radius or {}).get("complete"))
+    results["exception_available"] = available
+    if not available:
+        _log("[3+.9b] the exception is NOT available on this behaviour: its consumer list "
+             f"is truncated or absent ({radius}), so the radius a human would read would "
+             "understate where the edit lands. Every stage must refuse, exactly as before "
+             "#44-b.")
+
+    problems: list[str] = []
+    if shared and not direct.blocking:
+        problems.append(
+            "the DIRECT (unapproved) edit of a shared behaviour was NOT refused -- the exception "
+            "has leaked outside the approval path, which is exactly what #44-b must not do"
+        )
+    if available and card.blocking:
+        problems.append(
+            "the approval card's own preflight is blocking, so the human is never asked -- this "
+            "is the dead end DECISIONS 2026-08-18 recorded and 2026-08-19 decided to end"
+        )
+    if not available and shared and not card.blocking:
+        problems.append(
+            "the approval card passed preflight on a behaviour whose blast radius cannot be "
+            "named in full -- the exception is only as good as the sentence the human reads, "
+            "so a partly-named radius must refuse"
+        )
+    if shared and available and not named:
+        problems.append(
+            "the exception fired without naming the blast radius "
+            "(car_following_shared_edit_consented missing) -- consent needs a sentence to be "
+            "consent to anything"
+        )
+    expected_blocking = shared and not available
+    if any(
+        step["blocking"] is not expected_blocking or not step["authorized"]
+        for step in dispatched
+    ):
+        problems.append(
+            f"a dispatch-stage write did not behave as this behaviour's radius requires "
+            f"(expected blocking={expected_blocking}): {dispatched!r}"
+        )
+    if reuse_authorized or reuse_reason != "approval_consumed":
+        problems.append(
+            "a consumed approval was granted a SECOND time -- the one-shot property the "
+            "exception is bound to has regressed"
+        )
+    if problems:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            "--expect car-following: unit #44-b's guardrail exception is not behaving as "
+            "DECISIONS.md 2026-08-19 specifies:\n  - " + "\n  - ".join(problems)
+        )
+    if available:
+        _log(f"[3+.12] exception verified in both directions (reference_count={reference_count}): "
+             "approved set passes and names its radius; the unapproved edit, a reused approval "
+             "and every payload the grant does not name are refused.")
+    else:
+        _log(f"[3+.12] exception correctly UNAVAILABLE (reference_count={reference_count}, radius "
+             "not fully nameable): every path refuses, including the approved one. The "
+             "guardrail's pre-#44-b behaviour is what this network gets.")
 
 
 def _shadow_driving_behavior(inpx: Path) -> dict[str, Any]:
@@ -1541,6 +1714,15 @@ def _shadow_driving_behavior(inpx: Path) -> dict[str, Any]:
     empty-ish dict when the model has none, which the builder then refuses with
     ``NO_DRIVING_BEHAVIOR_TARGET`` -- the honest outcome, not a fabricated
     target.
+
+    ``referenced_by`` rides along since unit #44-b: it is what
+    ``saturation_flow`` fingerprints into ``evidence["consent_radius"]``, i.e.
+    the blast radius a human is shown and consents to, and the left-hand side
+    of ``car_following_consent_radius_drifted``'s comparison at apply time.
+    Passing a target WITHOUT it would name an empty radius, which then fails
+    the drift check against this same model and refuses -- safe, but it would
+    look like a bug in the exception rather than a missing field, so the field
+    is supplied here at the one place the target is read.
     """
     from services.agent import tools_network
 
@@ -1557,6 +1739,7 @@ def _shadow_driving_behavior(inpx: Path) -> dict[str, Any]:
         "no": str(behavior.get("no")),
         "name": behavior.get("name"),
         "reference_count": behavior.get("reference_count", 0),
+        "referenced_by": behavior.get("referenced_by") or {},
     }
 
 

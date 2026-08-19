@@ -40,8 +40,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from services.agent import constraints, fixes, geh_ladder, mrwa_reference  # noqa: E402
+from services.agent import car_following_grant, constraints, fixes  # noqa: E402
+from services.agent import geh_ladder, guardrails, mrwa_reference, tools_network  # noqa: E402
 from services.agent import saturation_flow as sf  # noqa: E402
+from services.agent.gates import PreapprovedWriteGate, signature  # noqa: E402
 from test_agent_geh_ladder import _diagnosis, _report  # noqa: E402
 
 
@@ -79,6 +81,27 @@ def _measurement(**overrides: Any) -> dict[str, Any]:
 
 def _behavior(reference_count: int = 0) -> dict[str, Any]:
     return {"no": "2", "name": "Urban (motorized)", "reference_count": reference_count}
+
+
+def _behavior_with_refs(reference_count: int = 0) -> dict[str, Any]:
+    """``_behavior`` plus the reference graph, i.e. the same entry :func:`_shadow`
+    publishes. Unit #44-b's grant fingerprints this into the proposal's
+    ``consent_radius``, so the approved-path half of the forecast matrix needs a target
+    whose named radius actually equals the one in the shadow model it is checked
+    against."""
+    return {**_behavior(reference_count), **{
+        "referenced_by": _shadow(reference_count)["driving_behaviors"][0]["referenced_by"]
+    }}
+
+
+def _truncated_behavior(reference_count: int = 13) -> dict[str, Any]:
+    """``_behavior_with_refs`` past ``tools_network``'s 10-name consumer cap, capped by
+    that module's own helper so the truncation is real rather than hand-set."""
+    behavior = _behavior_with_refs(reference_count)
+    behavior["referenced_by"] = tools_network._bounded_driving_behavior_consumers(
+        list(behavior["referenced_by"]["consumers"])
+    )
+    return behavior
 
 
 def _shadow(reference_count: int = 0) -> dict[str, Any]:
@@ -779,7 +802,14 @@ def test_the_forecast_never_says_clean_where_the_engine_refuses():
     The pre-existing forecast test swept ``reference_count`` but only at the
     default scope, which is exactly the half of the matrix that held. This
     sweeps BOTH axes, and asserts the safe direction explicitly: a forecast may
-    be pessimistic, never optimistic."""
+    be pessimistic, never optimistic.
+
+    UNCHANGED IN MEANING by unit #44-b, which added a second path: the
+    top-level ``expected_to_refuse`` still answers "what happens if this write
+    is issued on its own", which is what ``fixes.preflight_findings`` (no
+    approval context, ever) measures. The approved path is a separate key and
+    has its own half of the matrix in
+    ``test_the_forecast_and_the_engine_agree_on_both_paths``."""
     for scope in (None, sf.SCOPE_NETWORK_WIDE, sf.SCOPE_LOCALIZED, "local", "nonsense"):
         for reference_count in (0, 1, 4):
             actions = _propose(behavior=_behavior(reference_count), behavior_scope=scope)
@@ -791,6 +821,7 @@ def test_the_forecast_never_says_clean_where_the_engine_refuses():
                 f.constraint_id == "driving_behavior_shared_object_edit" for f in findings
             )
             assert forecast["expected_to_refuse"] == refused, (scope, reference_count)
+            assert forecast["paths"][sf.PATH_DIRECT_EDIT]["expected_to_refuse"] == refused
             # The direction that matters, stated as its own claim.
             assert not (refused and not forecast["expected_to_refuse"]), (scope, reference_count)
 
@@ -800,6 +831,122 @@ def test_the_forecast_never_says_clean_where_the_engine_refuses():
     why = localized.evidence["preflight_forecast"]["why"]
     assert "does NOT avoid this refusal" in why
     assert "duplicate_driving_behavior" in why
+
+
+def test_the_forecast_and_the_engine_agree_on_both_paths():
+    """Unit #44-b's extension of the invariant above, on the axis it added.
+
+    There are now two answers to "will this be refused" — the write issued on its
+    own, and the write dispatched through the approval machinery under this set's
+    grant — and the forecast carries both. The refuter's rule has to hold on each
+    independently, so both are measured against the REAL engine, with each path's
+    own provenance supplied exactly the way ``orchestrator._preflight_extra``
+    supplies it: from the gate, never from the payload.
+
+    Reference counts 0/1/4 cover the three cases that behave differently: nothing
+    to excuse, the smallest sharing that already refused before #44-b, and the
+    multi-consumer case the real consultant model looks like.
+    """
+    for reference_count in (0, 1, 4):
+        actions = _propose(behavior=_behavior_with_refs(reference_count))
+        forecast = actions[0].evidence["preflight_forecast"]
+        shadow = _shadow(reference_count)
+        payload = {"tool": actions[0].verb, "params": dict(actions[0].params)}
+        engine = guardrails.GuardrailEngine(disabled=False)
+
+        # (a) direct edit — no gate, no grant, no approval.
+        direct = engine.preflight(payload, shadow)
+        assert forecast["paths"][sf.PATH_DIRECT_EDIT]["expected_to_refuse"] == direct.blocking
+
+        # (b) approved set — the gate that a human's click produced.
+        gate = PreapprovedWriteGate(
+            {signature(a.verb, dict(a.params)) for a in actions},
+            grant=sf.grant_from_proposals(actions),
+        )
+        assert gate.authorize(payload, None) is True
+        approved = engine.preflight(
+            payload, shadow, {car_following_grant.PROVENANCE_KEY: gate.write_provenance(payload)}
+        )
+        assert forecast["paths"][sf.PATH_APPROVED_SET]["expected_to_refuse"] == approved.blocking
+        assert approved.blocking is False, reference_count
+
+        # The direction that matters, on both paths at once: a path that says
+        # clean must be a path the engine does not refuse.
+        for path, report in (
+            (sf.PATH_DIRECT_EDIT, direct),
+            (sf.PATH_APPROVED_SET, approved),
+        ):
+            assert not (
+                report.blocking and not forecast["paths"][path]["expected_to_refuse"]
+            ), (path, reference_count)
+
+
+def test_the_approved_path_forecast_names_the_exception_it_rides():
+    """"Clean" is not enough on its own: a modeller reading the forecast has to be
+    able to see WHY the shared-object refusal will not fire, and that the exception
+    is bound to this approved set rather than to car-following writes in general."""
+    approved = _propose(behavior=_behavior_with_refs(4))[0].evidence["preflight_forecast"][
+        "paths"
+    ][sf.PATH_APPROVED_SET]
+
+    assert approved["expected_to_refuse"] is False
+    assert approved["constraint_id"] == "car_following_shared_edit_consented"
+    assert approved["refuses_if_radius_drifts"] == "car_following_consent_radius_drifted"
+    assert "DECISIONS.md 2026-08-19" in approved["why"]
+    # And the direct path still says, in its own words, that it is still refused.
+    direct = _propose(behavior=_behavior_with_refs(4))[0].evidence["preflight_forecast"]["paths"][
+        sf.PATH_DIRECT_EDIT
+    ]
+    assert direct["expected_to_refuse"] is True
+    assert "still refused" in direct["why"]
+
+
+def test_the_approved_path_forecast_stops_saying_clean_when_the_radius_is_partial():
+    """BROKEN → FIXED (refuter, #44-b). The approved path reported
+    ``expected_to_refuse: False`` unconditionally, so once ``evaluate`` started refusing a
+    radius it could not name in full, the forecast was optimistic exactly where the
+    guardrail bites — the one direction this forecast has never been allowed to be wrong
+    in. Measured against the REAL engine on both shapes the fix covers."""
+    for behavior, complete in (
+        (_behavior_with_refs(4), True),                       # every consumer named
+        (_truncated_behavior(13), False),                     # past tools_network's cap
+        (_behavior(7), False),                                # counted, never named
+    ):
+        # The live entry is the SAME behaviour, carrying the rest of the shadow-model
+        # shape (car_following_model) so no unrelated constraint decides the verdict.
+        live = {**_shadow(0)["driving_behaviors"][0], **behavior}
+        live.pop("referenced_by", None)
+        live.update(behavior)
+
+        actions = _propose(behavior=behavior)
+        approved = actions[0].evidence["preflight_forecast"]["paths"][sf.PATH_APPROVED_SET]
+        assert approved["expected_to_refuse"] is not complete, behavior
+
+        payload = {"tool": actions[0].verb, "params": dict(actions[0].params)}
+        gate = PreapprovedWriteGate(
+            {signature(a.verb, dict(a.params)) for a in actions},
+            grant=sf.grant_from_proposals(actions),
+        )
+        gate.authorize(payload, None)
+        report = guardrails.GuardrailEngine(disabled=False).preflight(
+            payload, {"driving_behaviors": [live]},
+            {car_following_grant.PROVENANCE_KEY: gate.write_provenance(payload)},
+        )
+        assert report.blocking == approved["expected_to_refuse"], behavior
+        if not complete:
+            assert "cannot be named in full" in approved["why"]
+
+
+def test_an_unshared_behaviour_does_not_credit_the_exception_for_being_clean():
+    """A behaviour with no consumers was always editable. Saying the approved path is
+    clean "via the exception" there would misreport what the guardrail is doing and
+    make the exception look broader than it is."""
+    approved = _propose(behavior=_behavior_with_refs(0))[0].evidence["preflight_forecast"][
+        "paths"
+    ][sf.PATH_APPROVED_SET]
+
+    assert approved["expected_to_refuse"] is False
+    assert "NOT via the exception" in approved["why"]
 
 
 def test_a_measurement_cannot_declare_itself_valid():

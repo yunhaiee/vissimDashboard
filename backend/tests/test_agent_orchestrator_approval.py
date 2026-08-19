@@ -481,3 +481,207 @@ def test_preapproved_gate_refuses_a_same_turn_reissue_of_an_already_consumed_act
     # The first (legitimate) dispatch still fully landed and postwrite-
     # verified: version advanced, and the volume is actually persisted.
     assert artifact_manager.version == 1
+
+
+# ---------------------------------------------------------------------------
+# (f) unit #44-b: the write gate's own provenance reaches the constraint engine
+#
+# The Table 5-6 guardrail exception is keyed on something the planner cannot
+# reach: approval-machinery provenance arriving through the constraint engine's
+# `extra`. `car_following_grant`'s tests prove what the ENGINE does with that
+# provenance; what has to be pinned HERE is the channel itself -- that
+# `orchestrator._preflight_extra` is actually wired into BOTH preflight call
+# sites (the ApprovalRequired/card branch and the authorized/dispatch branch),
+# with the real gates and a real grant, and that a gate carrying no grant still
+# preflights with an empty `extra` exactly as before.
+#
+# The demo network carries no driving behaviours at all, so a real
+# `set_driving_behavior_parameter` turn against it is refused by #1
+# object_not_found long before anything #44-b does. `_ArtifactManagerWithSharedBehaviour`
+# supplies exactly one shared W74 behaviour -- the same fixture the grant is
+# minted against -- stably enough that the postwrite before/after diff still
+# sees one unchanged object.
+# ---------------------------------------------------------------------------
+
+
+def _register_rigged_driving_behavior_tool(registry: ToolRegistry) -> dict[str, int]:
+    calls = {"count": 0}
+
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        behavior_no: str
+        parameter: str
+        value: float
+
+    @tool(
+        name="set_driving_behavior_parameter",
+        tier="write",
+        provider="edit",
+        params=Params,
+        registry=registry,
+    )
+    def _set_parameter(params: Params) -> dict[str, Any]:
+        """Set a driving-behaviour parameter (fake/test double)."""
+        calls["count"] += 1
+        return {"verification": {"written_value": params.value, "readback_value": params.value}}
+
+    return calls
+
+
+class _ArtifactManagerWithSharedBehaviour(ArtifactManager):
+    """The real manager over the real demo network, plus ONE shared W74 driving
+    behaviour on every shadow-model read.
+
+    Injected via the property rather than by writing ``_shadow_model`` once,
+    because the manager reparses the working copy after a dispatch: a one-shot
+    injection would vanish between preflight and postwrite and the "nothing else
+    moved" diff would then see a whole object disappear. This way before and
+    after agree, and the only thing under test is the approval channel.
+    """
+
+    @property
+    def shadow_model(self) -> dict[str, Any] | None:
+        from test_agent_car_following_grant import _behavior
+
+        return {**(super().shadow_model or {}), "driving_behaviors": [_behavior(4)]}
+
+
+class _RecordingEngine(GuardrailEngine):
+    """A real engine that also records the ``extra`` each preflight was handed."""
+
+    def __init__(self) -> None:
+        super().__init__(disabled=False)
+        self.preflights: list[dict[str, Any]] = []
+
+    def preflight(self, action, shadow_model, extra=None):  # type: ignore[override]
+        self.preflights.append({"tool": action.get("tool"), "extra": dict(extra or {})})
+        return super().preflight(action, shadow_model, extra)
+
+
+def _car_following_grant_fixture() -> tuple[Any, dict[str, Any]]:
+    """One real grant, minted the only way there is, plus the write it names."""
+    from services.agent import saturation_flow
+    from test_agent_car_following_grant import _behavior, _measurement
+    from test_agent_geh_ladder import _diagnosis, _report
+
+    proposals = saturation_flow.propose_car_following_parameters(
+        rung=_diagnosis(_report()), measurement=_measurement(), behavior=_behavior(4)
+    )
+    grant = saturation_flow.grant_from_proposals(proposals)
+    return grant, {"tool": proposals[0].verb, "params": dict(proposals[0].params)}
+
+
+def test_the_card_stage_preflight_is_handed_the_gates_grant(tmp_path: Path):
+    from services.agent import car_following_grant
+
+    registry = ToolRegistry()
+    work_dir = tmp_path / "session"
+    artifact_manager = _ArtifactManagerWithSharedBehaviour(
+        source_inpx=DEMO_INPX, work_dir=work_dir
+    )
+    artifact_manager.clone()
+    calls = _register_rigged_driving_behavior_tool(registry)
+    grant, action = _car_following_grant_fixture()
+
+    engine = _RecordingEngine()
+    result = run_agent_turn(
+        "측정한 포화교통류로 차량추종 파라미터를 보정해줘",
+        provider=FakeStructuredProvider(
+            [_action("set_driving_behavior_parameter", summary="Table 5-6 적용 제안", **action["params"])]
+        ),
+        work_dir=work_dir,
+        session_id="s-44b-card",
+        language="ko",
+        registry=registry,
+        gate=ProposeWriteGate(grant=grant),
+        engine=engine,
+        artifact_manager=artifact_manager,
+    )
+
+    assert result.kind == "approval_request"
+    assert calls["count"] == 0  # the card stage never dispatches
+    provenance = engine.preflights[-1]["extra"][car_following_grant.PROVENANCE_KEY]
+    assert provenance["grant"] is grant
+    assert provenance["consent"] == car_following_grant.AWAITING_APPROVAL
+
+
+def test_the_dispatch_stage_preflight_is_handed_a_consumed_approval(tmp_path: Path):
+    from services.agent import car_following_grant
+
+    registry = ToolRegistry()
+    work_dir = tmp_path / "session"
+    artifact_manager = _ArtifactManagerWithSharedBehaviour(
+        source_inpx=DEMO_INPX, work_dir=work_dir
+    )
+    artifact_manager.clone()
+    calls = _register_rigged_driving_behavior_tool(registry)
+    grant, action = _car_following_grant_fixture()
+
+    engine = _RecordingEngine()
+    result = run_agent_turn(
+        "승인했으니 적용해줘",
+        provider=FakeStructuredProvider(
+            [
+                _action("set_driving_behavior_parameter", summary="Table 5-6 적용", **action["params"]),
+                _action("respond", summary="완료 보고", answer="적용했습니다."),
+            ]
+        ),
+        work_dir=work_dir,
+        session_id="s-44b-dispatch",
+        language="ko",
+        registry=registry,
+        gate=PreapprovedWriteGate({signature(action["tool"], action["params"])}, grant=grant),
+        engine=engine,
+        artifact_manager=artifact_manager,
+    )
+
+    assert result.kind == "answer"
+    # The gate consumed the human's click BEFORE preflight ran, so the engine is
+    # told this is a real dispatch, not a card being built.
+    provenance = engine.preflights[-1]["extra"][car_following_grant.PROVENANCE_KEY]
+    assert provenance["grant"] is grant
+    assert provenance["consent"] == car_following_grant.CONSUMED_APPROVAL
+
+    # And the consequence DECISIONS.md 2026-08-19 was written to produce, at
+    # turn level rather than in a unit: an in-place edit of a driving behaviour
+    # with reference_count 4 -- which every W74 behaviour in the real
+    # consultant model resembles, and which this guardrail refused outright
+    # before this unit -- actually dispatched, having announced its radius
+    # rather than gone quiet.
+    assert calls["count"] == 1
+    assert artifact_manager.shadow_model["driving_behaviors"][0]["reference_count"] == 4
+    records = read_trace(result.trace_path)
+    preflight_record = next(r for r in records if r["kind"] == "preflight")
+    assert preflight_record["payload"]["blocking"] is False
+    assert preflight_record["payload"]["findings"] == ["car_following_shared_edit_consented"]
+    warning_record = next(r for r in records if r["kind"] == "warning")
+    assert "car_following_shared_edit_consented" in warning_record["payload"]["findings"]
+
+
+def test_a_gate_carrying_no_grant_preflights_with_an_empty_extra(tmp_path: Path):
+    """The unchanged world, pinned: every other unit's approvals hand the engine
+    nothing at all, so preflight behaves byte-for-byte as it did before #44-b."""
+    registry = ToolRegistry()
+    work_dir = tmp_path / "session"
+    artifact_manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=work_dir)
+    artifact_manager.clone()
+    _register_rigged_write_tool(registry)
+
+    engine = _RecordingEngine()
+    result = run_agent_turn(
+        "1번 입력 교통량을 600으로 바꿔줘",
+        provider=FakeStructuredProvider(
+            [_action("set_vehicle_input_volume", summary="변경 제안", input_no="1", volume=600)]
+        ),
+        work_dir=work_dir,
+        session_id="s-44b-no-grant",
+        language="ko",
+        registry=registry,
+        gate=ProposeWriteGate(),
+        engine=engine,
+        artifact_manager=artifact_manager,
+    )
+
+    assert result.kind == "approval_request"
+    assert [record["extra"] for record in engine.preflights] == [{}]

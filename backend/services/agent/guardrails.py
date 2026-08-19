@@ -1159,13 +1159,29 @@ class GuardrailEngine:
         self.disabled = _env_says_disabled() if disabled is None else bool(disabled)
 
     def preflight(
-        self, action: dict[str, Any], shadow_model: dict[str, Any] | None
+        self,
+        action: dict[str, Any],
+        shadow_model: dict[str, Any] | None,
+        extra: dict[str, Any] | None = None,
     ) -> GuardrailReport:
-        """Preflight checks against the current shadow model, before dispatch."""
+        """Preflight checks against the current shadow model, before dispatch.
+
+        ``extra`` (unit #44-b, optional) is the same evidence channel
+        ``postwrite``/``postrun`` already pass down — approval-machinery
+        provenance rather than COM results in this case. It exists so a
+        constraint can tell "this write is the one a human approved off a cited
+        proposal" from "this write claims to be": ``orchestrator.py`` fills it
+        from the write GATE (see ``gates.write_provenance``), which is
+        machinery the planner cannot reach, and the planner's own
+        ``{"tool", "params"}`` never lands here. Omitted by every other caller
+        and defaulting to ``{}``, so preflight is byte-identical everywhere
+        else — including ``fixes.preflight_findings`` and the health check,
+        which deliberately carry no approval context at all.
+        """
         if self.disabled:
             return _empty_report("preflight")
         findings = list(
-            constraints.run_checks("preflight", action, shadow_model or {}, {})
+            constraints.run_checks("preflight", action, shadow_model or {}, dict(extra or {}))
         )
         return GuardrailReport(
             phase="preflight", findings=findings, blocking=_blocking(findings), disabled=False

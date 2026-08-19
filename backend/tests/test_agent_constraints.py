@@ -5399,8 +5399,18 @@ def test_registry_size_matches_m3_1_catalog_port():
     # 14-interval network), and pedestrian_area_edit_unsupported (refuse --
     # names the deliberate gap, because RemoveArea silently cascade-deletes
     # pedestrian routes and leaves Vissim's own load/init oracle GREEN).
+    #
+    # Unit #44-b (2026-08-19) adds TWO more (113 -> 115), both halves of the ONE
+    # narrow exception DECISIONS.md 2026-08-19 decided on:
+    # car_following_shared_edit_consented (warn -- the shared-object refusal
+    # stands down for a Table 5-6 set dispatched under an approval-bound grant,
+    # and this names the blast radius that was consented to, because an
+    # exception nobody is told about is worse than a refusal), and
+    # car_following_consent_radius_drifted (refuse -- the consent was to a NAMED
+    # radius, so if the reference graph moves between approval and apply the
+    # edit is refused by name, quoting both numbers).
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 113
+    assert len(get_registry()) == 115
 
 
 def test_registry_has_unique_ids():

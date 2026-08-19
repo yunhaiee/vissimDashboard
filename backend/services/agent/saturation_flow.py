@@ -128,7 +128,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from services.agent import fixes, geh_ladder, mrwa_reference
+from services.agent import car_following_grant, fixes, geh_ladder, mrwa_reference
+from services.agent.gates import signature
 from services.agent.toolkit import ToolRegistry
 
 # ---------------------------------------------------------------------------
@@ -146,6 +147,16 @@ SCOPE_NETWORK_WIDE = "NETWORK_WIDE"
 SCOPE_LOCALIZED = "LOCALIZED"
 
 BEHAVIOR_SCOPES = (SCOPE_NETWORK_WIDE, SCOPE_LOCALIZED)
+
+#: The two ways this set's writes can reach the constraint engine, and therefore the two
+#: verdicts ``evidence["preflight_forecast"]["paths"]`` has to carry (unit #44-b).
+#: :data:`PATH_DIRECT_EDIT` is the write on its own — still refused on a shared behaviour.
+#: :data:`PATH_APPROVED_SET` is the write dispatched through the approval machinery under
+#: this set's grant — the one narrow exception DECISIONS.md 2026-08-19 decided on.
+PATH_DIRECT_EDIT = "direct_edit"
+PATH_APPROVED_SET = "approved_set"
+
+FORECAST_PATHS = (PATH_DIRECT_EDIT, PATH_APPROVED_SET)
 
 
 def normalize_behavior_scope(value: Any) -> str:
@@ -975,6 +986,21 @@ def propose_car_following_parameters(
         "measurement": measurement_payload,
         "behavior_scope": scope,
         "target_behavior": behavior_payload or None,
+        # #44-b: the blast radius, NAMED, as data. The exception to
+        # ``driving_behavior_shared_object_edit`` rests entirely on a human having
+        # read what this edit touches, so the radius has to be on the proposal
+        # itself — both to build that sentence and to be the left-hand side of
+        # ``car_following_consent_radius_drifted``'s comparison at apply time. A
+        # caller that hands in a ``behavior`` without ``referenced_by`` therefore
+        # gets a radius of zero named consumers, which will NOT match a live shadow
+        # model that has some: the grant then fails the drift check and the edit is
+        # refused. That is the safe direction on purpose — an unnamed radius must
+        # never be able to excuse a network-wide write. Drift alone did not achieve
+        # that, though (refuter, #44-b): when the live model was ALSO reference-graph-
+        # less the two empty radii compared equal and the edit was granted on a
+        # "링크 0개" sentence, so ``consent_radius`` now also records whether the
+        # picture is ``complete`` and ``evaluate`` refuses without it.
+        "consent_radius": car_following_grant.consent_radius(behavior_payload),
         "citation": {
             "table": mrwa_reference.TABLE_5_6_CITATION,
             "clause": mrwa_reference.CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION,
@@ -1143,6 +1169,31 @@ def _preflight_forecast(behavior: Mapping[str, Any], scope: str) -> dict[str, An
     heads-up that a network-wide edit of a SHARED behaviour is exactly what
     that constraint refuses, together with the reason the collision exists at
     all: the guardrail assumes a local intent, §5.2.5.1 has a global one.
+
+    TWO PATHS since unit #44-b (2026-08-19), because there are now two answers
+    and one number cannot carry both:
+
+    * :data:`PATH_DIRECT_EDIT` — the write issued on its own (a planner tool
+      call, ``fixes.preflight_findings``, any caller with no approval context).
+      Refused whenever the target is shared, exactly as before. This is what
+      the top-level ``expected_to_refuse`` still reports, so every existing
+      consumer of that key keeps its meaning.
+    * :data:`PATH_APPROVED_SET` — the write dispatched through the approval
+      machinery under the grant this proposal set mints
+      (:func:`grant_from_proposals`). Clean via the named exception
+      ``car_following_shared_edit_consented`` **only when the blast radius can
+      be named in full** (``car_following_grant.consent_radius(...)["complete"]``
+      — a truncated or absent consumer list means the sentence a human would
+      read understates where the edit lands, and this path then forecasts the
+      ordinary refusal instead). Even then it stays clean only while the radius
+      is the one consent was given for: if the reference graph moves between
+      approval and apply, ``car_following_consent_radius_drifted`` refuses by
+      name.
+
+    The refuter's invariant from #44 is unchanged and now has to hold on both
+    axes: a forecast may be pessimistic, never optimistic. A path that says
+    clean is a path where the engine, handed that path's own provenance,
+    produces no refusal.
     """
     reference_count = _number(behavior.get("reference_count"))
     # The forecast is about the action this module ACTUALLY emits, which is an
@@ -1170,10 +1221,9 @@ def _preflight_forecast(behavior: Mapping[str, Any], scope: str) -> dict[str, An
             "behaviour with a non-zero reference count. That guardrail's premise is a LOCAL "
             "intent ('editing one to fix a single ramp changes every link using it'); MRWA "
             "§5.2.5.1's intent here is the opposite — one measured saturation flow calibrating "
-            "the urban behaviour across the network — so the collision is real and is not "
-            "resolved by this module. It is forecast so the modeller meets it here rather than "
-            "at dispatch. Resolving it (accept the network-wide edit, or duplicate and retarget "
-            "a named link set) is a human decision."
+            "the urban behaviour across the network. Issued on its own, this write is still "
+            "refused: the narrow exception decided on 2026-08-19 applies ONLY to this set "
+            "dispatched through the approval machinery (see the approved_set path below)."
         )
         if scope == SCOPE_LOCALIZED:
             why += (
@@ -1189,12 +1239,82 @@ def _preflight_forecast(behavior: Mapping[str, Any], scope: str) -> dict[str, An
             else "the target's reference count is unknown, so nothing is forecast — run "
             "fixes.preflight_findings against the real shadow model."
         )
+
+    # Can the radius even be stated in full? The exception is only available where
+    # every consumer is named (see ``car_following_grant.consent_radius``'s
+    # ``complete``); where it is not, ``evaluate`` returns RADIUS_NOT_FULLY_NAMED and
+    # the ordinary shared-object refusal never stands down. Forecasting that path as
+    # "clean" would be optimistic exactly where the guardrail bites — the one
+    # direction this forecast is not allowed to be wrong in.
+    radius_complete = bool(car_following_grant.consent_radius(behavior).get("complete"))
+
+    if will_refuse and not radius_complete:
+        approved_path = {
+            "expected_to_refuse": True,
+            "constraint_id": "driving_behavior_shared_object_edit",
+            "why": (
+                "STILL REFUSED, even through the approval machinery: this behaviour's blast "
+                "radius cannot be named in full. Its consumer list is truncated or absent, so "
+                f"the link total that would be shown ({_fmt(reference_count)} consumer(s)) "
+                "covers only the consumers that were named and an un-named one can change by "
+                "any amount without the drift check seeing it. The exception decided on "
+                "2026-08-19 rests on a human having READ where the edit lands, so it does not "
+                "apply where that sentence cannot be written truthfully. duplicate_driving_"
+                "behavior and retarget a named link set, or re-read the behaviour from a shadow "
+                "model that names every consumer."
+            ),
+        }
+    elif will_refuse:
+        approved_path = {
+            "expected_to_refuse": False,
+            "constraint_id": "car_following_shared_edit_consented",
+            "refuses_if_radius_drifts": "car_following_consent_radius_drifted",
+            "why": (
+                "Clean via the named exception: dispatched through the approval machinery under "
+                "this set's own grant (saturation_flow.grant_from_proposals), "
+                "constraints.driving_behavior_shared_object_edit stands down and "
+                "car_following_shared_edit_consented names the radius instead — "
+                f"{_fmt(reference_count)} link-behavior-type consumer(s) changed together, "
+                "knowingly (DECISIONS.md 2026-08-19). Three things keep it honest and all three "
+                "refuse rather than warn: the grant names these three writes by canonical "
+                "signature, so nothing else rides the exception; if the reference graph moves "
+                "between approval and apply, car_following_consent_radius_drifted refuses by "
+                "name, because consent was to a named radius; and the exception is unavailable "
+                "at all unless every consumer is named, because a partly-named radius is not a "
+                "sentence a human can have read."
+            ),
+        }
+    else:
+        # Nothing was being refused, so the exception is not what makes this
+        # clean — saying otherwise would credit a guardrail bypass for an edit
+        # that never needed one.
+        approved_path = {
+            "expected_to_refuse": False,
+            "constraint_id": "car_following_shared_edit_consented",
+            "refuses_if_radius_drifts": "car_following_consent_radius_drifted",
+            "why": (
+                "Clean, and NOT via the exception — there is nothing here for it to excuse. "
+                + why
+            ),
+        }
+
     return {
         "constraint_id": "driving_behavior_shared_object_edit",
+        # The DIRECT path's verdict, unchanged in meaning since #44 — every
+        # existing consumer of this key reads "what happens if this write is
+        # issued on its own", and that answer did not change.
         "expected_to_refuse": will_refuse,
         "reference_count": reference_count,
         "behavior_scope": scope,
         "why": why,
+        "paths": {
+            PATH_DIRECT_EDIT: {
+                "expected_to_refuse": will_refuse,
+                "constraint_id": "driving_behavior_shared_object_edit",
+                "why": why,
+            },
+            PATH_APPROVED_SET: approved_path,
+        },
     }
 
 
@@ -1318,6 +1438,125 @@ def _build_actions(
             )
         )
     return tuple(actions)
+
+
+# ---------------------------------------------------------------------------
+# The grant — unit #44-b's structural key
+# ---------------------------------------------------------------------------
+
+
+def grant_from_proposals(
+    proposals: Sequence[fixes.FixProposal],
+) -> car_following_grant.CarFollowingGrant:
+    """Mint the one thing that can stand ``driving_behavior_shared_object_edit`` down.
+
+    THE ONLY MINTING PATH. Everything the exception is worth rests on this function
+    refusing to build a grant out of anything less than a complete, self-consistent set
+    that :func:`propose_car_following_parameters` actually produced — which in turn means
+    the CAPACITY_LIMIT rung, a provenance-checked OBSERVED measurement that survived
+    :func:`observed_measurement`'s data-quality gates, a real Table 5-6 row, and a named
+    target behaviour were all established first. There is deliberately no "build me a
+    grant for this behaviour" entry point, because that is the shape of every guard this
+    repo has had to un-ship (see ``car_following_grant``'s docstring for both).
+
+    Raises ``ValueError`` — never returns a partial or empty grant — because a
+    mis-assembled set is a programming error at the call site, not a modelling refusal
+    the user should read. The refusals users see are ``FixProposal``s.
+
+    What the returned grant then authorizes is EXACTLY these three writes: its
+    ``signatures`` are their canonical ``gates.signature`` forms, so the behaviour number,
+    the parameter name and the value are all pinned at once. Nothing else — not the other
+    five whitelisted driving-behaviour parameters, not W99's CC0–CC9, not the same
+    parameter at a different value — can ride it.
+    """
+    actions = list(proposals or ())
+    if len(actions) != len(_PARAMETER_SOURCES):
+        raise ValueError(
+            f"grant_from_proposals: expected the complete set of {len(_PARAMETER_SOURCES)} "
+            f"proposals ({', '.join(name for name, _ in _PARAMETER_SOURCES)}); got "
+            f"{len(actions)}. A grant over a partial set would authorize a behaviour that "
+            "matches no published Table 5-6 row."
+        )
+
+    for action in actions:
+        if not action.is_proposal or action.verb != car_following_grant.GRANT_TOOL:
+            raise ValueError(
+                "grant_from_proposals: every member must be a PROPOSAL emitting "
+                f"{car_following_grant.GRANT_TOOL!r}; got outcome={action.outcome!r} "
+                f"verb={action.verb!r} (reason_code={action.reason_code!r}). A refusal is not a "
+                "proposal with the safety removed."
+            )
+        if action.key != CAR_FOLLOWING_FROM_SATURATION_FLOW:
+            raise ValueError(
+                f"grant_from_proposals: member key {action.key!r} is not "
+                f"{CAR_FOLLOWING_FROM_SATURATION_FLOW!r} — this grant covers the Table 5-6 "
+                "car-following set and nothing else."
+            )
+
+    set_ids = {str(a.evidence.get("set_id") or "") for a in actions}
+    if len(set_ids) != 1 or not set_ids.pop():
+        raise ValueError(
+            "grant_from_proposals: the three members must share exactly one set_id (one node, "
+            "one behaviour, one table row); got "
+            f"{sorted({str(a.evidence.get('set_id')) for a in actions})!r}."
+        )
+    set_id = str(actions[0].evidence["set_id"])
+
+    behavior_nos = {str((a.params or {}).get("behavior_no", "")) for a in actions}
+    if len(behavior_nos) != 1:
+        raise ValueError(
+            f"grant_from_proposals: members target different behaviours {sorted(behavior_nos)!r}."
+        )
+    behavior_no = behavior_nos.pop()
+
+    values = {str((a.params or {}).get("parameter", "")): (a.params or {}).get("value") for a in actions}
+    if set(values) != set(car_following_grant.GRANTED_PARAMETERS):
+        raise ValueError(
+            "grant_from_proposals: the set must be exactly "
+            f"{sorted(car_following_grant.GRANTED_PARAMETERS)!r}; got {sorted(values)!r}. The "
+            "exception reaches these three parameters and no others."
+        )
+
+    # The set's own declared end state, re-checked against the writes that claim to reach
+    # it. ``expected_after_apply`` is what verify_applied_row reads back afterwards, so a
+    # grant whose writes disagree with it would authorize a set that its own verifier
+    # would then call a partial application.
+    expected = actions[0].evidence.get("expected_after_apply")
+    expected = dict(expected) if isinstance(expected, Mapping) else {}
+    for parameter, value in values.items():
+        if not _same(expected.get(parameter), value):
+            raise ValueError(
+                f"grant_from_proposals: member {parameter!r} writes {value!r} but the set's "
+                f"expected_after_apply says {expected.get(parameter)!r}."
+            )
+
+    measurement = actions[0].evidence.get("measurement")
+    measurement = dict(measurement) if isinstance(measurement, Mapping) else {}
+    if not measurement.get("ok"):
+        raise ValueError(
+            "grant_from_proposals: the set carries no accepted measurement "
+            f"(reason_code={measurement.get('reason_code')!r}). Table 5-6 is never entered on a "
+            "guess, and a grant is never issued without the number that justified it."
+        )
+
+    row = actions[0].evidence.get("applied_row")
+    row = dict(row) if isinstance(row, Mapping) else {}
+
+    return car_following_grant.build_grant(
+        set_id=set_id,
+        behavior_no=behavior_no,
+        values={k: float(v) for k, v in values.items()},
+        saturation_flow_pcu=float(row.get("saturation_flow_pcu") or 0.0),
+        measurement={
+            "saturation_flow_pcu": measurement.get("saturation_flow_pcu"),
+            "provenance": measurement.get("provenance"),
+            "method": measurement.get("method"),
+            "attribution": measurement.get("attribution"),
+            "measured_at": measurement.get("measured_at"),
+        },
+        consent_radius_payload=dict(actions[0].evidence.get("consent_radius") or {}),
+        signatures=[signature(car_following_grant.GRANT_TOOL, dict(a.params or {})) for a in actions],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1627,6 +1866,7 @@ __all__ = [
     "DERIVATION_BLOCKERS",
     "DERIVED",
     "EXACT",
+    "FORECAST_PATHS",
     "GREEN_TIME_FULL",
     "GREEN_TIME_NONE",
     "GREEN_TIME_PARTIAL",
@@ -1640,6 +1880,8 @@ __all__ = [
     "OBSERVED",
     "OUT_OF_RANGE_HIGH",
     "OUT_OF_RANGE_LOW",
+    "PATH_APPROVED_SET",
+    "PATH_DIRECT_EDIT",
     "PCU_DECOMPOSITION_UNAVAILABLE",
     "PROVENANCES",
     "REASON_CODES",
@@ -1657,6 +1899,7 @@ __all__ = [
     "SCOPE_NETWORK_WIDE",
     "derivation_is_still_blocked",
     "derive_measurement",
+    "grant_from_proposals",
     "green_time_availability",
     "lookup_table_5_6",
     "normalize_behavior_scope",

@@ -203,7 +203,14 @@ def test_health_check_runner_against_demo_dataset():
     # the network turned out to have, which unsupported verb was reached for),
     # and a whole-network dataset scan has no equivalent of that. Derived from
     # the registry, not hand-counted.
-    assert report["summary"]["edit_time_only_n"] == 99
+    # Unit #44-b adds two more (99 -> 101): car_following_shared_edit_consented
+    # and car_following_consent_radius_drifted. Both are edit-time-only for a
+    # STRONGER reason than the usual "they key off the proposed action's
+    # params" -- they key off the APPROVAL CONTEXT a proposed write arrives
+    # with (the grant on the write gate, via the constraint engine's `extra`).
+    # A cold whole-network scan has no proposed write and no approval at all,
+    # so neither could ever fire there.
+    assert report["summary"]["edit_time_only_n"] == 101
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

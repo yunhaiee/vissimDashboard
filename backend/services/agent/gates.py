@@ -25,6 +25,25 @@ implementations live here; ``RefuseAllWriteGate`` stays defined in
 :func:`signature` is the one canonicalization both the gate and
 ``routers/assistant.py`` (when persisting/reading ``pending_approval.json``)
 must agree on, so it lives here rather than being duplicated.
+
+**#44-b addition: ``write_provenance``.** Both gates can carry an optional
+``grant`` (``services.agent.car_following_grant.CarFollowingGrant``) and
+answer ``write_provenance(action)`` with what the APPROVAL MACHINERY knows
+about that action -- which grant covers it, and whether a human's click has
+been consumed for it yet. It is an optional protocol extension in the same
+shape as :meth:`PreapprovedWriteGate.refusal_reason`: ``orchestrator.py``
+probes for it via ``getattr`` and gates that do not define it (the default
+``RefuseAllWriteGate``, and any caller-supplied gate) simply produce no
+provenance at all, which is the pre-#44-b behaviour everywhere.
+
+Why the gate is the carrier: the constraint engine has to be able to tell
+"this write is the one a human approved off a cited Table 5-6 proposal" from
+"this write merely claims to be", and the planner controls ONLY
+``{"tool", "params"}``. The gate is machinery -- constructed by the router,
+never by the model -- so provenance riding on it is a channel no planner
+payload can reach. See ``car_following_grant``'s own module docstring for
+the full argument, including why a self-reported flag was rejected (this
+repo has had to un-ship that exact design twice).
 """
 
 from __future__ import annotations
@@ -33,7 +52,42 @@ import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from services.agent.car_following_grant import CarFollowingGrant
     from services.agent.toolkit import ToolSpec
+
+
+# ---------------------------------------------------------------------------
+# Consent states (#44-b) -- what the GATE says about the human's click.
+#
+# Defined here rather than in ``car_following_grant`` because the gate is what
+# reports them and ``car_following_grant`` imports this module (for
+# :func:`signature`); putting them the other way round would be a cycle. The
+# grant module re-exports both under the same names, so consumers can read them
+# from whichever side they already depend on.
+# ---------------------------------------------------------------------------
+
+#: The turn is PAUSED for a human. Nothing dispatches in this state.
+AWAITING_APPROVAL = "AWAITING_APPROVAL"
+
+#: A human clicked and :meth:`PreapprovedWriteGate.authorize` matched and
+#: CONSUMED this exact action's approved signature. The only state a write
+#: actually dispatches in.
+CONSUMED_APPROVAL = "CONSUMED_APPROVAL"
+
+
+def _write_provenance(
+    grant: "CarFollowingGrant | None", action: dict[str, Any], consent: str
+) -> dict[str, Any] | None:
+    """The gate-side half of the #44-b provenance protocol, shared by both gates.
+
+    ``None`` -- the answer for every gate that carries no grant, and for every
+    action a carried grant does not name -- is what keeps the exception a
+    per-action match rather than a mode the engine gets into. ``kind`` is read
+    off the grant itself so this module never has to know what kinds exist.
+    """
+    if grant is None or not grant.covers(action):
+        return None
+    return {"kind": grant.kind, "grant": grant, "consent": consent}
 
 
 def signature(tool: str, params: dict[str, Any]) -> str:
@@ -82,10 +136,32 @@ class ProposeWriteGate:
     ``RefuseAllWriteGate`` (silently refuse) or a hypothetical "always
     allow" gate (silently write), this gate's entire job is to hand control
     back to a human before anything happens.
+
+    ``grant`` (#44-b, optional) is the Table 5-6 car-following grant the
+    proposal this turn is acting on minted. It exists here for ONE reason:
+    the approval card's own preflight runs before the card is shown, and a
+    refuse-tier finding there means the human is never asked at all
+    (``orchestrator.py``'s ``ApprovalRequired`` branch: ``if
+    preflight_report.blocking`` returns a refusal instead of a card). That
+    is precisely the dead end DECISIONS 2026-08-18 recorded and 2026-08-19
+    decided to end, so the grant has to be visible at card-build time too.
+    Nothing can be written through this gate while it is: ``authorize``
+    never returns a verdict, so the consent state stays
+    ``AWAITING_APPROVAL`` and the only effect is that the card gets built --
+    with the constraint engine's warn-tier finding naming the radius on it,
+    which is the sentence the decision's safety argument rests on.
     """
+
+    def __init__(self, grant: "CarFollowingGrant | None" = None) -> None:
+        self.grant = grant
 
     def authorize(self, action: dict[str, Any], spec: "ToolSpec") -> bool:
         raise ApprovalRequired(action, spec)
+
+    def write_provenance(self, action: dict[str, Any]) -> dict[str, Any] | None:
+        """See :meth:`PreapprovedWriteGate.write_provenance`. Always
+        ``AWAITING_APPROVAL`` -- this gate cannot dispatch anything."""
+        return _write_provenance(self.grant, action, AWAITING_APPROVAL)
 
 
 class PreapprovedWriteGate:
@@ -121,8 +197,13 @@ class PreapprovedWriteGate:
     independent: consuming one never affects another's membership.
     """
 
-    def __init__(self, signatures: set[str]) -> None:
+    def __init__(
+        self, signatures: set[str], grant: "CarFollowingGrant | None" = None
+    ) -> None:
         self.signatures = set(signatures)
+        #: #44-b: the Table 5-6 grant these approved signatures came from, or
+        #: ``None`` (every other unit's approvals, unchanged).
+        self.grant = grant
         # Every signature this instance has ever granted -- superset of the
         # (now-removed-from `signatures`) ones already dispatched this
         # re-run. Powers `refusal_reason` below; never consulted by
@@ -153,9 +234,37 @@ class PreapprovedWriteGate:
         sig = signature(action.get("tool", ""), action.get("params", {}))
         return "approval_consumed" if sig in self._consumed else None
 
+    def write_provenance(self, action: dict[str, Any]) -> dict[str, Any] | None:
+        """What the approval machinery knows about ``action`` (#44-b).
+
+        ``None`` unless a carried grant NAMES this exact write AND this gate
+        actually holds the human's approval for it -- either still pending
+        (the signature is in :attr:`signatures`, so :data:`AWAITING_APPROVAL`)
+        or already spent by this instance's own one-shot :meth:`authorize`
+        (:data:`CONSUMED_APPROVAL`, the state a dispatch follows). A write this
+        gate was never given a signature for gets ``None`` even when the grant
+        covers it: a grant says which writes a proposal produced, an approval
+        says a human agreed to them, and the exception needs both.
+
+        The one-shot property needs no new enforcement here: a repeat of an
+        already-dispatched write is refused by ``authorize`` before the
+        orchestrator ever reaches preflight, so the constraint engine is never
+        asked to excuse a reused approval.
+        """
+        sig = signature(action.get("tool", ""), action.get("params", {}))
+        if sig in self._consumed:
+            consent = CONSUMED_APPROVAL
+        elif sig in self.signatures:
+            consent = AWAITING_APPROVAL
+        else:
+            return None
+        return _write_provenance(self.grant, action, consent)
+
 
 __all__ = [
+    "AWAITING_APPROVAL",
     "ApprovalRequired",
+    "CONSUMED_APPROVAL",
     "PreapprovedWriteGate",
     "ProposeWriteGate",
     "signature",
