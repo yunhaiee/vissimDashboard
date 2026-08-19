@@ -4392,10 +4392,20 @@ contractTest("U-1: three accent colours, tint in the fill, ink in the text", (pi
     /color: "#898781",\s*\n\s*weight: 1,/,
     "expected the residual bounding box to keep its hairline in the neutral muted grey",
   );
+  // UNIT #48 MOVED THIS, and moved nothing else about it. The corners became
+  // `L.marker` + `L.divIcon` because Leaflet implements DRAGGING on Marker
+  // alone, so `circleMarker`'s `radius` became the handle's own pixel size --
+  // same two sizes, same reason: with amber gone, the first corner (the one a
+  // closing double-click aims at) is findable by SIZE and FILL or not at all.
   pin.match(
     lassoMap,
-    /radius: index === 0 \? 6 : 4,/,
+    /HANDLE_SIZE_PX = \(isFirst: boolean\) => \(isFirst \? 14 : 11\)/,
     "expected the ring's first corner to be findable by SIZE now that it cannot be yellow",
+  );
+  pin.match(
+    lassoMap,
+    /fillColor: index === 0 \? "#fafaf9" : "#e0f2fe"|background:\$\{index === 0 \? "#fafaf9" : "#e0f2fe"\}/,
+    "expected the first corner's ivory centre to survive the handle rewrite -- size AND fill are what replaced the hue",
   );
   // MONO exists rather than the states having been quietly de-emphasised into
   // the page background: the heavy hairline is what carries them now.
@@ -5427,14 +5437,21 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
     /export const REGION_PREFILL_STORAGE_KEY = "prism-region-prefill";/,
     "expected the sessionStorage key to be declared exactly once, in the hand-off module",
   );
+  // The `, type RegionPrefill` half arrived with unit #48, whose multi-corridor
+  // proposal builds the payload in a named helper rather than inline. The pin
+  // still says what it always said -- the WRITE goes through the shared module,
+  // never through a second copy of the key.
   pin.match(
     page,
-    /import \{ stashRegionPrefill \} from "@\/lib\/region-prefill";/,
+    /import \{ stashRegionPrefill(?:, [^}]+)? \} from "@\/lib\/region-prefill";/,
     "expected the job page to write the proposal through the shared hand-off module",
   );
   pin.match(
     region,
-    /import \{ takeRegionPrefill, type RegionPrefill \} from "@\/lib\/region-prefill";/,
+    // Both names, from that module, in whatever order and across however many
+    // lines Prettier wants -- the load-bearing fact is WHERE the region page
+    // gets its reader, not the shape of the import statement.
+    /import \{(?=[^}]*\btakeRegionPrefill\b)(?=[^}]*\btype RegionPrefill\b)[^}]*\} from "@\/lib\/region-prefill";/,
     "expected the region page to read the proposal through the same shared module",
   );
   for (const source of [page, region]) {
@@ -7675,4 +7692,399 @@ contractTest("unit #47: the capacity premise is not obtainable by leaving a fiel
     /Include this node's\s*\n?\s*"?\s*"?node_control in targets/,
     "expected the planner-facing description to ask for node_control by name",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #48 -- the boundary treatment learns the OTHER finding, and learns to
+// propose ONE lasso for all of them.
+//
+// Three screens' worth of the same fact, all from the user's 2026-08-19 live
+// pass:
+//   1. a `v3_orphan_link` the lasso severed now carries a widened region of its
+//      own -- one finger per SEVERED END, which is why it cannot ride in #40's
+//      single-`corridor_patch` payload;
+//   2. a job with several boundary findings gets ONE region covering all of
+//      them, because two proposals derived from the same original polygon
+//      overwrite each other (which is exactly why repeating the extension never
+//      healed the orphan);
+//   3. the region page's corners can be DRAGGED, which is the premise of
+//      handing a human a proposed shape at all.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #48: the orphan's region and the all-at-once region are the backend's, never a client guess", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // 1. BOTH ARE GATED ON A DERIVED SHAPE, never on an attribution and never on
+  //    a status string. An orphan the SOURCE itself leaves unconnected has an
+  //    attribution key of neither kind and must show no button at all.
+  pin.match(
+    page,
+    /\{disposition\.boundary_extension_patches && \(/,
+    "expected the orphan's widen-the-boundary action to be gated on the backend's own derived region",
+  );
+  const orphanBlock = sliceBetween(
+    page,
+    "{disposition.boundary_extension_patches && (",
+    "{/* Unit #42 -- a NAMED refusal",
+  );
+  pin.match(orphanBlock, /<BoundaryPatchesProposal/, "expected to find the orphan treatment block (markers moved?)");
+  pin.doesNotMatch(
+    withoutComments(orphanBlock),
+    /orphan_boundary_attribution/,
+    "expected the action to key off the derived REGION, never off the attribution -- an attributed orphan whose fingers refused by name has nothing to propose and must show no button",
+  );
+  pin.match(
+    page,
+    /\{fixes\?\.boundary_extension_all && \(/,
+    "expected the all-at-once region to render only when the backend derived one",
+  );
+
+  // 2. THE COMPOSITE'S LABEL IS CHECKABLE. A shape that claims to cover every
+  //    boundary finding must NAME them, or the reader has to trust that theirs
+  //    is in there.
+  const proposalComponent = sliceBetween(
+    page,
+    "function BoundaryPatchesProposal(",
+    "\n/**\n * ONE finding's disposition",
+  );
+  pin.match(proposalComponent, /\S/, "expected to find the shared proposal component (markers moved?)");
+  pin.match(
+    proposalComponent,
+    /proposal\.covers\.map\(\(cover\) => \(/,
+    "expected every covered finding to be named, not just counted",
+  );
+  // ...and the extrapolated tail is stated in the PROSE, never folded into the
+  // measured figure. This component renders above a button that navigates to
+  // the screen owning the extract; a reader must not be able to read a drawn
+  // bearing as measured road.
+  pin.match(
+    proposalComponent,
+    /totalExtrapolated > 0 && \(/,
+    "expected the extrapolation split to be stated whenever there is one",
+  );
+  pin.match(
+    proposalComponent,
+    /마지막으로 측정된 방향으로 그은 것입니다/,
+    "expected the ko copy to say the remainder was DRAWN on the last measured bearing",
+  );
+  // The hand-off goes through the shared module and NOTHING is fetched here.
+  pin.match(
+    proposalComponent,
+    /stashRegionPrefill\(boundaryPatchesPrefill\(proposal, jobId\)\)/,
+    "expected the proposal to be carried through the shared one-shot hand-off",
+  );
+  pin.doesNotMatch(
+    proposalComponent,
+    /startRegionFetch|startGenesisJob|applyGenesisFix/,
+    "expected the button to hand a shape to the region page and fetch nothing -- that page's extract button is the ask-first gate",
+  );
+
+  // 3. THE COMPOSITE'S REFUSAL IS A SENTENCE, NEVER A CONTROL -- and it says
+  //    the per-finding proposals survived, because that is what makes refusing
+  //    the all-at-once option safe rather than a dead end.
+  const refusalBlock = sliceBetween(
+    page,
+    "{fixes?.boundary_extension_all_refusal && (",
+    "{report ? (",
+  );
+  pin.match(refusalBlock, /\S/, "expected to find the composite's refusal block (markers moved?)");
+  pin.doesNotMatch(refusalBlock, /<button/, "a refusal is a diagnosis, never a button");
+  pin.match(
+    refusalBlock,
+    /boundary_extension_all_refusal\.reason_code/,
+    "expected the backend's own named reason to be printed rather than re-worded",
+  );
+  pin.match(
+    refusalBlock,
+    /소견별 제안은 각 카드에 그대로 있으니/,
+    "expected the refusal to say the per-finding proposals are unaffected",
+  );
+
+  // 4. THE PROJECT STAMP travels with a multi-corridor proposal exactly as it
+  //    does with a single-finding one: sessionStorage is per-tab and outlives
+  //    the reload a project switch does.
+  const prefillBuilder = sliceBetween(page, "function boundaryPatchesPrefill(", "\nfunction BoundaryPatchesProposal(");
+  pin.match(prefillBuilder, /workspace_id: getWorkspaceId\(\),/, "expected the multi proposal to be stamped with the project it was derived in");
+  pin.match(prefillBuilder, /covers: proposal\.covers\.map\(/, "expected every covered finding to travel with the shape");
+});
+
+contractTest("unit #48: a region page corner is dragged and typed through ONE setter", (pin) => {
+  const page = read("app/genesis/region/page.tsx");
+  const map = read("components/genesis/RegionLassoMap.tsx");
+
+  // 1. ONE SOURCE OF TRUTH. The map's drag lands in the SAME callback the
+  //    editable table's `onCommit` calls -- `vertices` stays this page's only
+  //    shape state, so dragging a corner moves the row beneath it and typing a
+  //    degree moves the handle above it, with neither side holding a copy.
+  pin.match(
+    page,
+    /onMoveVertex=\{updateVertex\}/,
+    "expected a dragged corner to land in the SAME vertices-mutating callback the table's typed edit uses",
+  );
+  pin.match(
+    page,
+    /onCommit=\{updateVertex\}/,
+    "expected the table's own edit to still use that one callback (both halves of the binding, pinned together)",
+  );
+
+  // 2. THE HANDLES ARE REAL AND THEY COMMIT ON DROP. `L.marker` because Leaflet
+  //    implements dragging on Marker alone; `dragend` because the redraw effect
+  //    replaces the whole layer group, so committing per mouse-move would tear
+  //    down the marker the pointer is holding.
+  pin.match(map, /draggable: true,/, "expected the ring's corners to be draggable");
+  // Measured against the source with COMMENTS STRIPPED, all three of these: a
+  // character-distance bound taken over raw source is a pin on how much prose
+  // sits inside a handler, and it fires on an edit that explains the code
+  // better rather than on one that breaks it. (Refuter, unit #48: two of these
+  // did exactly that.)
+  pin.match(
+    withoutComments(map),
+    /marker\.on\("dragend", \(\) => \{[\s\S]{0,240}?handlers\.current\.onMoveVertex\(index, nextLat, nextLon\);/,
+    "expected the drag to commit on drop, through the page's own setter",
+  );
+  // ...and ONCE, which is what the message above claims and what a bound on the
+  // `dragend` handler alone never checked: a second call from inside `drag`
+  // would satisfy that pattern and commit on every mouse-move.
+  pin.match(
+    withoutComments(map),
+    /^(?:(?!onMoveVertex\()[\s\S])*onMoveVertex\((?:(?!onMoveVertex\()[\s\S])*$/,
+    "expected EXACTLY ONE onMoveVertex call site in the map -- a second one is a per-mouse-move commit",
+  );
+  pin.match(
+    withoutComments(map),
+    /marker\.on\("drag", \(\) => \{[\s\S]{0,500}?outline\.setLatLngs\(moved\);/,
+    "expected the outline to follow the handle DURING the drag without a React round trip per mouse-move",
+  );
+
+  // 2b. A REDRAW MAY NOT LAND MID-DRAG. Leaflet's `Marker.onRemove` ->
+  //     `MarkerDrag.removeHooks` -> `Draggable.disable` "counts as first ending
+  //     the drag" and FIRES `dragend`, so rebuilding the layer group while a
+  //     handle is held does not merely repaint: it commits the corner to
+  //     wherever the pointer happened to be and takes the handle away. Keeping
+  //     the drag's own writes off React state is NOT enough, because `bbox` is
+  //     a fresh object out of every server preview and a preview is scheduled
+  //     by the previous commit. (Refuter, unit #48: this was reproducible with
+  //     nothing but two drags inside one debounce window.)
+  pin.match(
+    withoutComments(map),
+    /marker\.on\("dragstart", \(\) => \{\s*draggingRef\.current = true;/,
+    "expected a drag in flight to be recorded, so the redraw effect can defer",
+  );
+  pin.match(
+    withoutComments(map),
+    /if \(draggingRef\.current\) return;[\s\S]{0,400}?drawingRef\.current\?\.remove\(\)/,
+    "expected the redraw effect to refuse to tear down the layer group while a corner is held",
+  );
+  pin.match(
+    withoutComments(map),
+    /draggingRef\.current = false;[\s\S]{0,240}?handlers\.current\.onMoveVertex\(/,
+    "expected the drag flag to be lowered BEFORE the commit, so the deferred redraw runs with it",
+  );
+
+  // 3. A CLOSED RING IS DRAGGABLE, and that does not contradict "a closed ring
+  //    refuses clicks": that rule is about ADDING a corner, and moving one adds
+  //    nothing. The pre-filled proposal arrives closed, so a rule that stopped
+  //    drags there would disable the case this was built for.
+  // Pinned as "every `draggable:` is literally `true`" rather than as a
+  // character distance between the click guard and the word `draggable`: those
+  // two sit ~7300 characters apart, so the old bound of 200 could not fail for
+  // any implementation at all, including one that DID disable dragging on a
+  // closed ring under another spelling. (Refuter, unit #48.)
+  pin.doesNotMatch(
+    withoutComments(map),
+    /draggable:(?!\s*true\b)/,
+    "the closed-ring guard must not be extended over dragging -- moving a corner is not adding one",
+  );
+  // The guard it DOES still cover: clicking to add.
+  pin.match(
+    map,
+    /pendingClick = setTimeout\(\(\) => \{[\s\S]{0,200}?if \(current\.closed\) return;/,
+    "expected the closed ring to still refuse a click that would ADD a corner",
+  );
+
+  // 4. CLICKING A HANDLE MUST NOT DROP A SECOND CORNER ON TOP OF IT -- and the
+  //    closing double-click must still work when it lands ON the first corner,
+  //    which is where a user aims it. Interactive markers swallow both, so the
+  //    dblclick is forwarded to the same `onClose` the map handler calls.
+  pin.match(
+    map,
+    /marker\.on\("dblclick"[\s\S]{0,400}?current\.onClose\(\);/,
+    "expected a double-click on a corner to close the ring, not to be eaten by the marker",
+  );
+  pin.match(
+    map,
+    /marker\.on\("click", \(event: \{ originalEvent\?: Event \}\) => \{\s*\n\s*event\.originalEvent\?\.stopPropagation\(\);/,
+    "expected a click on a corner to stop there rather than adding a duplicate corner under the pointer",
+  );
+
+  // 5. STILL NO TEXT OF ITS OWN. The handle's hover title is built from a
+  //    string the page's t() supplies, like every other label this map shows.
+  pin.match(map, /handleLabel: string;/, "expected the handle's label to arrive as a prop");
+  pin.match(page, /handleLabel=\{t\("점", "Point", "点"\)\}/, "expected the page to own the ko/en/ja wording");
+});
+
+contractTest("unit #48: a multi-finding hand-off names every finding it covers", (pin) => {
+  const region = read("app/genesis/region/page.tsx");
+  const handoff = read("lib/region-prefill.ts");
+
+  // The banner BRANCHES: a proposal covering several findings must not print
+  // the single-finding sentence, whose scalar fields describe only the FIRST
+  // covered one. This is the screen that owns the extract button.
+  pin.match(
+    region,
+    /\{prefill\.covers && prefill\.covers\.length > 1 \? \(/,
+    "expected the arrival banner to branch on how many findings the shape covers",
+  );
+  const banner = sliceBetween(region, "{prefill && (", '<div className="mb-4 flex flex-col gap-3">');
+  pin.match(banner, /\S/, "expected to find the arrival banner (markers moved?)");
+  pin.match(
+    banner,
+    /prefill\.covers\.map\(\(cover\) => \(/,
+    "expected every covered finding to be named in the banner, not just counted",
+  );
+  pin.match(
+    banner,
+    /prefill\.covers\.some\(\(cover\) => cover\.extrapolated_m > 0\) && \(/,
+    "expected the multi-finding banner to state what an extrapolated tail IS, not only its metres",
+  );
+
+  // ONE covered finding is not the same as one KIND of measurement. An orphan's
+  // hand-off is always a single covered finding, so it lands in the singular
+  // branch -- where `deficit_m` is `basis_m`, and for an orphan that number is
+  // metres the boundary CUT, not a runway shortage. The backend's own basis
+  // note refuses to "call every finger's own number a deficit, because half of
+  // them are not one"; the banner over the extract button is the last place
+  // that could undo the refusal, and it did. (Refuter, unit #48.)
+  const job = read("app/genesis/jobs/[id]/page.tsx");
+  pin.match(
+    job,
+    /basis_kind: cover\.basis_kind,/,
+    "expected basis_kind to travel with the hand-off -- without it the region page cannot tell a cut from a shortage",
+  );
+  pin.match(
+    handoff,
+    /if \(typeof row\.basis_kind !== "string"\) return null;/,
+    "expected a cover with no basis_kind to drop the proposal rather than be read as a deficit",
+  );
+  pin.match(
+    region,
+    /prefill\.covers\?\.\[0\]\?\.basis_kind === BASIS_BOUNDARY_CUT \? \(/,
+    "expected the singular banner to branch on WHAT was measured, not only on how many findings",
+  );
+  pin.doesNotMatch(
+    // Comment-stripped: this branch's own comment says the word "shortage" in
+    // order to explain why the branch exists, and a pin that cannot tell prose
+    // from rendered text is a pin on the prose.
+    sliceBetween(
+      withoutComments(region),
+      "prefill.covers?.[0]?.basis_kind === BASIS_BOUNDARY_CUT ? (",
+      ") : (",
+    ),
+    /부족분|shortage|不足分/,
+    "a boundary CUT must not be renamed a shortage on the screen that owns the extract button",
+  );
+
+  // The store is re-validated, and an INVALID `covers` drops the WHOLE
+  // proposal. Returning the shape without it would put a banner naming one
+  // finding over a button that fetches a region derived for three.
+  pin.match(
+    handoff,
+    /if \(!Array\.isArray\(candidate\.covers\) \|\| candidate\.covers\.length === 0\) return null;/,
+    "expected a present-but-broken covers list to drop the proposal rather than be ignored",
+  );
+});
+
+contractTest("unit #48: the multi-finding hand-off round-trips, and a broken covers list is dropped", () => {
+  // BEHAVIOUR, not spelling -- the same fake-store harness unit #40's own
+  // hand-off test uses, extended to the field this unit added.
+  const store = new Map<string, string>();
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    sessionStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    },
+  };
+  try {
+    const multi = {
+      polygon: [
+        [36.35, 127.38],
+        [36.35, 127.39],
+        [36.34, 127.39],
+      ] as Array<[number, number]>,
+      workspace_id: "bfc69251bd04",
+      parent_job: "e84e57316ccb",
+      finding_code: "v3_orphan_link",
+      subject: "10 (tertiary_link [FWD] w37972527s0)",
+      deficit_m: 9.32,
+      added_area_km2: 0.00032,
+      measured_source_m: 9.31,
+      extrapolated_m: 1.87,
+      covers: [
+        {
+          finding_code: "v3_orphan_link",
+          subject: "10 (tertiary_link [FWD] w37972527s0)",
+          basis_kind: "boundary_cut_metres",
+          length_m: 11.18,
+          measured_source_m: 9.31,
+          extrapolated_m: 1.87,
+        },
+        {
+          finding_code: "v4_lane_drop_without_runway",
+          subject: "108 (둔산로 [FWD] w1416532929s1)",
+          basis_kind: "lane_change_runway_deficit",
+          length_m: 13.94,
+          measured_source_m: 13.94,
+          extrapolated_m: 0,
+        },
+      ],
+    };
+
+    assert.equal(stashRegionPrefill(multi), true);
+    const read1 = takeRegionPrefill("bfc69251bd04");
+    assert.equal(read1?.covers?.length, 2);
+    assert.equal(read1?.covers?.[1].finding_code, "v4_lane_drop_without_runway");
+    assert.equal(read1?.covers?.[1].extrapolated_m, 0);
+    // REGRESSION (refuter, unit #48): `basis_kind` must survive the hand-off.
+    // It is the ONLY thing that tells the region page an orphan's metres are
+    // metres the boundary CUT and not a runway shortage, and the banner it
+    // renders sits over the extract button. Dropping it printed
+    // "v3_orphan_link shortage of 9.32 m" -- the exact rename the backend's own
+    // basis note refuses to make.
+    assert.equal(read1?.covers?.[0].basis_kind, "boundary_cut_metres");
+    assert.equal(read1?.covers?.[1].basis_kind, "lane_change_runway_deficit");
+    assert.equal(takeRegionPrefill("bfc69251bd04"), null, "one-shot still holds for a multi proposal");
+
+    // A #40 single-finding proposal still reads back with no `covers` at all --
+    // the field is ADDITIVE, and the old shape did not change under it.
+    const { covers: _covers, ...single } = multi;
+    assert.equal(stashRegionPrefill(single), true);
+    assert.equal(takeRegionPrefill("bfc69251bd04")?.covers, undefined);
+
+    // Present but broken: the WHOLE proposal is dropped, never half-read.
+    for (const broken of [
+      JSON.stringify({ ...multi, covers: [] }),
+      JSON.stringify({ ...multi, covers: "two" }),
+      JSON.stringify({ ...multi, covers: [{ finding_code: "x", subject: "y" }] }),
+      JSON.stringify({
+        ...multi,
+        covers: [{ ...multi.covers[0], extrapolated_m: "1.87" }],
+      }),
+      JSON.stringify({ ...multi, covers: [{ ...multi.covers[0], subject: 7 }] }),
+      // A cover with no `basis_kind` cannot be told apart from a runway
+      // shortage, so it is dropped with the rest rather than guessed at.
+      JSON.stringify({
+        ...multi,
+        covers: [{ ...multi.covers[0], basis_kind: undefined }],
+      }),
+    ]) {
+      store.set(REGION_PREFILL_STORAGE_KEY, broken);
+      assert.equal(takeRegionPrefill("bfc69251bd04"), null, `expected to drop: ${broken}`);
+      assert.equal(store.size, 0, "a dropped proposal must still leave the store empty");
+    }
+  } finally {
+    if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
+    else (globalThis as { window?: unknown }).window = previousWindow;
+  }
 });

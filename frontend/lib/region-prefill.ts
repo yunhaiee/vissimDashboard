@@ -50,10 +50,51 @@
  * hand-off, so the writer and the reader cannot drift apart. */
 export const REGION_PREFILL_STORAGE_KEY = "prism-region-prefill";
 
+/** UNIT #48 -- one entry per FINDING a multi-corridor proposal covers.
+ *
+ * A #40 proposal treated exactly one finding with exactly one finger, so the
+ * scalar fields below said everything. Two things broke that: a
+ * `v3_orphan_link` cut at both ends needs TWO fingers for ONE finding, and the
+ * "treat every boundary finding at once" option covers several findings on one
+ * ring. `covers` is how the banner names them all instead of naming one and
+ * implying the rest.
+ *
+ * ADDITIVE, deliberately: the scalar fields stay exactly what they were, and a
+ * single-finding #40 proposal still writes and reads with `covers` absent. The
+ * multi case fills BOTH -- the scalars from the first covered finding (a true
+ * statement about a real covered finding, never an aggregate wearing a
+ * singular's clothes) and `covers` with all of them, which is what the banner
+ * actually renders once there is more than one. */
+export interface RegionPrefillCoverage {
+  finding_code: string;
+  subject: string;
+  /** WHAT this finding's finger was sized by, quoted from the backend's own
+   * `basis_kind`: `lane_change_runway_deficit` (a runway SHORTAGE) or
+   * `boundary_cut_metres` (the metres the lasso CUT off a severed way). The
+   * payload separates the two on purpose -- its own basis note refuses to
+   * "call every finger's own number a deficit, because half of them are not
+   * one" -- and the banner on the screen that owns the extract button is the
+   * last place that distinction may be dropped. */
+  basis_kind: string;
+  /** The finger(s) derived for THIS finding: how long in total, how much of
+   * that the source itself declared, and how much was drawn on the last
+   * measured bearing. Split, never summed into one claim. */
+  length_m: number;
+  measured_source_m: number;
+  extrapolated_m: number;
+}
+
+/** The two values `basis_kind` takes, mirrored from the backend's own
+ * `BASIS_RUNWAY_DEFICIT` / `BASIS_BOUNDARY_CUT`. An unrecognized value is
+ * treated as "not a deficit" wherever the wording turns on it: the neutral
+ * sentence is true of both, and a wrong confident one is not. */
+export const BASIS_RUNWAY_DEFICIT = "lane_change_runway_deficit";
+export const BASIS_BOUNDARY_CUT = "boundary_cut_metres";
+
 /** What the region page needs to draw the proposal AND to say what it is
  * treating. Every field comes from the backend's own derivation
- * (`disposition.boundary_extension`) or from the finding it treats; nothing
- * here is composed prose. */
+ * (`disposition.boundary_extension`, or unit #48's multi-corridor payload) or
+ * from the finding it treats; nothing here is composed prose. */
 export interface RegionPrefill {
   /** The proposed ring, `[lat, lon]` pairs, open (last vertex is not the
    * first) -- the same convention `RegionPolygon` and the region page's own
@@ -77,6 +118,13 @@ export interface RegionPrefill {
    * to know that part of the shape is an extrapolation, not a measurement. */
   measured_source_m: number;
   extrapolated_m: number;
+  /** UNIT #48. ABSENT for a #40 single-finding proposal (the scalars above say
+   * it all); present, with one entry per finding, for a multi-corridor one. A
+   * stored value that is present but does not validate drops the WHOLE
+   * proposal rather than being quietly ignored -- a banner that silently lost
+   * half its findings would understate what the extract button is about to
+   * fetch, which is the one thing this hand-off exists to prevent. */
+  covers?: RegionPrefillCoverage[];
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -156,6 +204,37 @@ export function takeRegionPrefill(currentWorkspaceId: string | null): RegionPref
   ) {
     return null;
   }
+  // UNIT #48: `covers` is optional, and an INVALID one is fatal rather than
+  // dropped. The alternative -- returning the proposal without it -- would put
+  // a banner on screen naming one finding above a shape derived for three, over
+  // a button that fetches the whole widened region.
+  let covers: RegionPrefillCoverage[] | undefined;
+  if (candidate.covers !== undefined) {
+    if (!Array.isArray(candidate.covers) || candidate.covers.length === 0) return null;
+    const parsedCovers: RegionPrefillCoverage[] = [];
+    for (const entry of candidate.covers) {
+      if (typeof entry !== "object" || entry === null) return null;
+      const row = entry as Record<string, unknown>;
+      if (typeof row.finding_code !== "string" || typeof row.subject !== "string") return null;
+      if (typeof row.basis_kind !== "string") return null;
+      if (
+        !isFiniteNumber(row.length_m) ||
+        !isFiniteNumber(row.measured_source_m) ||
+        !isFiniteNumber(row.extrapolated_m)
+      ) {
+        return null;
+      }
+      parsedCovers.push({
+        finding_code: row.finding_code,
+        subject: row.subject,
+        basis_kind: row.basis_kind,
+        length_m: row.length_m,
+        measured_source_m: row.measured_source_m,
+        extrapolated_m: row.extrapolated_m,
+      });
+    }
+    covers = parsedCovers;
+  }
   return {
     polygon: polygon.map(([lat, lon]) => [lat, lon] as [number, number]),
     workspace_id: workspaceId ?? null,
@@ -166,5 +245,6 @@ export function takeRegionPrefill(currentWorkspaceId: string | null): RegionPref
     added_area_km2: candidate.added_area_km2,
     measured_source_m: candidate.measured_source_m,
     extrapolated_m: candidate.extrapolated_m,
+    ...(covers ? { covers } : {}),
   };
 }

@@ -31,6 +31,50 @@
 // carries a second net: a corner committed within `STRAY_COMMIT_WINDOW_MS` and
 // within `STRAY_COMMIT_RADIUS_PX` of the double-click position is the first
 // click of THIS double-click, and is discarded before the ring closes.
+//
+// ---------------------------------------------------------------------------
+// UNIT #48 (2026-08-19) — THE CORNERS BECOME DRAGGABLE.
+//
+// The user drew a region, saw a corner in the wrong place, and had no way to
+// move it except by reading its index off the map and typing degrees into the
+// table. Worse for the case this unit exists for: unit #40/#48 PRE-FILL this
+// map with a derived proposal, and "drag whatever you disagree with" is the
+// entire premise of handing a human a shape instead of fetching it.
+//
+// FOUR decisions, each with the reason it was made rather than the other way:
+//
+//   1. ONE SOURCE OF TRUTH, UNCHANGED. A drag ends in `onMoveVertex(index, lat,
+//      lon)`, which the page wires to `updateVertex` — the SAME callback the
+//      editable table's `onCommit` already uses, and the only place a
+//      coordinate mutates. Table typing and map dragging are therefore the same
+//      write, not two writes that have to be kept in step.
+//
+//   2. DRAGGING IS ALLOWED ON A CLOSED RING, and that does NOT contradict the
+//      "closed ring refuses clicks" rule three lines up. That rule is about
+//      ADDING: a closed ring has all the corners it is going to get from
+//      clicking, and a click landing inside it would silently grow the shape.
+//      MOVING an existing corner changes no count and adds nothing — it is the
+//      table's own edit, performed with a mouse. The pre-filled proposal
+//      arrives closed, so a rule that stopped drags there would disable the one
+//      case this was built for.
+//
+//   3. THE MARKERS ARE `L.marker` + `L.divIcon`, NOT `L.circleMarker`. Leaflet
+//      only implements dragging on `Marker`, and `divIcon` keeps the visual
+//      identical (a bordered dot, the first corner wider with an ivory centre —
+//      the size-and-fill distinction the three-colour decision left it) with NO
+//      image asset, so nothing has to resolve `marker-icon.png` through the
+//      bundler. The colours are the ring's own sky, unchanged.
+//
+//   4. A MARKER SWALLOWS `click` AND FORWARDS `dblclick`. A click on a corner
+//      must not also drop a second corner on top of it; but the ring is closed
+//      by double-clicking NEAR THE FIRST CORNER, and with interactive markers
+//      that double-click can land ON the marker and never reach the map. So the
+//      marker forwards it to the same `onClose` the map handler calls. The
+//      stray-commit net is untouched and untroubled by this: a first click that
+//      landed on a marker never armed the map's pending-click timer at all.
+//
+// Adding a corner by clicking an edge MIDPOINT is deliberately NOT here — see
+// the note beside the drag handlers below for what it would have cost.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
@@ -52,6 +96,13 @@ const DOUBLE_CLICK_GRACE_MS = 220;
  * the close point safe. */
 const STRAY_COMMIT_WINDOW_MS = 900;
 const STRAY_COMMIT_RADIUS_PX = 12;
+
+/** The drag handle's own size in CSS pixels — the first corner wider, exactly
+ * the size-and-fill distinction the three-colour decision left the ring's
+ * corners with when they could no longer be yellow. Diameters (a circleMarker's
+ * `radius` was 6 and 4), so the handle a pointer has to hit is the dot it can
+ * see. Wide enough to grab, small enough not to hide the road under it. */
+const HANDLE_SIZE_PX = (isFirst: boolean) => (isFirst ? 14 : 11);
 
 export type LatLon = [number, number];
 
@@ -78,12 +129,22 @@ export interface RegionLassoMapProps {
    * handler identifies it as the stray first click of the closing double-click
    * (see the header comment's second net). */
   onDiscardLastVertex: () => void;
+  /** UNIT #48 — a corner was dragged to a new place. Wired by the page to the
+   * SAME `updateVertex` the editable table's `onCommit` calls, which is what
+   * makes the table and the map one binding rather than two. Fired ONCE, on
+   * `dragend`: during the drag Leaflet moves the marker itself and this
+   * component redraws the ring outline in place (see the handler), so the
+   * feedback is live without a React round trip per mouse-move. */
+  onMoveVertex: (index: number, lat: number, lon: number) => void;
   /** Where to look when there is nothing drawn yet. */
   centre: LatLon;
-  /** Both strings come from the page's three-argument `t()` — this component owns
-   * no user-facing text, so ko/en/ja stay in one plumbing rather than two. */
+  /** All three strings come from the page's three-argument `t()` — this
+   * component owns no user-facing text, so ko/en/ja stay in one plumbing rather
+   * than two. `handleLabel` is the noun a drag handle's hover title is built
+   * from; this file appends the corner's number to it and nothing else. */
   ariaLabel: string;
   fitLabel: string;
+  handleLabel: string;
 }
 
 export default function RegionLassoMap({
@@ -94,20 +155,53 @@ export default function RegionLassoMap({
   onAddVertex,
   onClose,
   onDiscardLastVertex,
+  onMoveVertex,
   centre,
   ariaLabel,
   fitLabel,
+  handleLabel,
 }: RegionLassoMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const drawingRef = useRef<LayerGroup | null>(null);
+  // TRUE from `dragstart` to `dragend` on a corner handle. The redraw effect
+  // below refuses to rebuild the layer group while this is set, and the reason
+  // is not tidiness: `layer.remove()` reaches Leaflet's `Marker.onRemove` ->
+  // `MarkerDrag.removeHooks` -> `Draggable.disable`, which "counts as first
+  // ending the drag" and FIRES `dragend` — so a rebuild that lands mid-gesture
+  // does not merely repaint, it COMMITS the corner to wherever the pointer
+  // happened to be at that instant and then removes the handle from under it.
+  //
+  // Keeping the drag's own writes off React state (the outline is moved in
+  // place, below) is necessary and was not sufficient: `bbox` is a fresh object
+  // out of every server preview, and a preview is scheduled by the previous
+  // commit, so its response reliably arrives during the NEXT drag. Deferring is
+  // safe because `dragend` always commits through `onMoveVertex`, which hands
+  // back a new `vertices` array and re-runs this effect immediately after.
+  const draggingRef = useRef(false);
   const [ready, setReady] = useState(false);
 
   // The handlers are attached to the map ONCE (re-attaching them on every state
   // change would leak listeners), so they read the current props through a ref
   // rather than through a closure over a stale render.
-  const handlers = useRef({ onAddVertex, onClose, onDiscardLastVertex, vertices, maxVertices, closed });
-  handlers.current = { onAddVertex, onClose, onDiscardLastVertex, vertices, maxVertices, closed };
+  const handlers = useRef({
+    onAddVertex,
+    onClose,
+    onDiscardLastVertex,
+    onMoveVertex,
+    vertices,
+    maxVertices,
+    closed,
+  });
+  handlers.current = {
+    onAddVertex,
+    onClose,
+    onDiscardLastVertex,
+    onMoveVertex,
+    vertices,
+    maxVertices,
+    closed,
+  };
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -212,17 +306,28 @@ export default function RegionLassoMap({
   // so diffing would be more code than it saves.
   useEffect(() => {
     if (!ready) return;
+    // A rebuild during a drag would end that drag and commit a corner the user
+    // never dropped -- see `draggingRef`. The commit at `dragend` re-runs this
+    // effect with the same dependencies a moment later, so nothing is lost.
+    if (draggingRef.current) return;
     const map = mapRef.current;
     if (!map) return;
     let cancelled = false;
 
     (async () => {
       const L = (await import("leaflet")).default;
-      if (cancelled || mapRef.current !== map) return;
+      if (cancelled || mapRef.current !== map || draggingRef.current) return;
       drawingRef.current?.remove();
       drawingRef.current = null;
 
       const layer = L.layerGroup();
+      // UNIT #48 — the ring outline is kept in a local so a DRAG can move it in
+      // place. Rewriting `vertices` on every mouse-move would re-run this whole
+      // effect, which replaces the layer group wholesale and would destroy the
+      // very marker being dragged mid-gesture. So the drag updates this one
+      // layer's latlngs directly (no React state), and `dragend` commits once —
+      // after which the ordinary redraw below rebuilds everything consistently.
+      let outline: { setLatLngs: (points: LatLon[]) => void } | null = null;
       if (bbox) {
         // DEMOTED, and the demotion is the point. This rectangle used to be the
         // shape the study area was cut to, so it was drawn as loudly as the ring;
@@ -256,7 +361,7 @@ export default function RegionLassoMap({
       if (vertices.length >= 2) {
         if (closed) {
           // L.polygon closes the ring itself — no repeated first corner.
-          L.polygon(vertices, {
+          outline = L.polygon(vertices, {
             color: "#38bdf8",
             weight: 2,
             fillColor: "#38bdf8",
@@ -264,7 +369,7 @@ export default function RegionLassoMap({
             interactive: false,
           }).addTo(layer);
         } else {
-          L.polyline(vertices, {
+          outline = L.polyline(vertices, {
             color: "#38bdf8",
             weight: 2,
             dashArray: "5 4",
@@ -281,15 +386,84 @@ export default function RegionLassoMap({
       // centre against the pale-sky centres of the others. Distinct by weight
       // and shape, which is the same substitution every dropped amber state on
       // these screens took.
+      //
+      // UNIT #48 — these are `L.marker` + `L.divIcon` rather than
+      // `L.circleMarker` for ONE reason: Leaflet implements dragging on Marker
+      // only. The look is the same dot at the same two sizes in the same sky,
+      // built from a div so nothing has to resolve an image asset through the
+      // bundler. `iconAnchor` is the icon's own centre, so the coordinate a
+      // drag reports is the point under the dot's middle and not its corner.
+      //
+      // WHAT IS DELIBERATELY NOT HERE: a "+" handle at each edge's midpoint for
+      // INSERTING a corner. It is the natural next reach, and it was left out
+      // rather than half-built — it doubles the marker count against a 64-corner
+      // cap, it needs its own answer for what "insert" means on an OPEN ring
+      // being drawn (there is no edge back to the first corner yet), and it puts
+      // a second click-to-add path beside the map click the stray-commit net
+      // above exists to protect. Moving corners was the ask; inserting them is
+      // named as absent instead of arriving untested.
+      const dragCursor = "cursor: grab;";
       vertices.forEach(([lat, lon], index) => {
-        L.circleMarker([lat, lon], {
-          radius: index === 0 ? 6 : 4,
-          color: "#0ea5e9",
-          weight: 2,
-          fillColor: index === 0 ? "#fafaf9" : "#e0f2fe",
-          fillOpacity: 1,
-          interactive: false,
+        const size = HANDLE_SIZE_PX(index === 0);
+        const marker = L.marker([lat, lon], {
+          keyboard: false,
+          draggable: true,
+          // Leaflet's own title tooltip, in the page's language: this component
+          // owns no user-facing text of its own (see `ariaLabel`'s note).
+          title: `${handleLabel} ${index + 1}`,
+          icon: L.divIcon({
+            className: "",
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2],
+            html:
+              `<div style="width:${size}px;height:${size}px;box-sizing:border-box;` +
+              `border-radius:9999px;border:2px solid #0ea5e9;` +
+              `background:${index === 0 ? "#fafaf9" : "#e0f2fe"};${dragCursor}"></div>`,
+          }),
         }).addTo(layer);
+        // LIVE, without React: the outline follows the handle during the drag
+        // by having its own latlngs rewritten. `vertices` is untouched until
+        // the drop, which is what keeps this effect from tearing down the
+        // marker the pointer is holding.
+        // Leaflet fires `dragstart` only once the pointer has passed its own
+        // click tolerance, and a `dragstart` is always followed by a `dragend`
+        // — so this flag cannot be left raised by a tap that never moved.
+        marker.on("dragstart", () => {
+          draggingRef.current = true;
+        });
+        marker.on("drag", () => {
+          if (!outline) return;
+          // The marker's OWN position, not the pointer's: Leaflet has already
+          // applied the drag to it, and reading it back is what keeps the
+          // outline and the handle from disagreeing by a pixel.
+          const { lat: dragLat, lng: dragLon } = marker.getLatLng();
+          const moved = handlers.current.vertices.map(
+            (vertex, i) => (i === index ? [dragLat, dragLon] : vertex) as LatLon,
+          );
+          outline.setLatLngs(moved);
+        });
+        marker.on("dragend", () => {
+          // Lowered BEFORE the commit: `onMoveVertex` hands back a new
+          // `vertices` array, and the redraw it triggers is the one that has to
+          // run. Any redraw deferred while the drag was in flight rides along
+          // with it, since this effect reads every dependency afresh.
+          draggingRef.current = false;
+          const { lat: nextLat, lng: nextLon } = marker.getLatLng();
+          handlers.current.onMoveVertex(index, nextLat, nextLon);
+        });
+        // A click ON a corner must not ALSO drop a second corner on top of it,
+        // so it stops here. A DOUBLE click on one is how a user closes the ring
+        // (they aim at the first corner), and with an interactive marker in the
+        // way it would otherwise never reach the map's own dblclick handler —
+        // so it is forwarded to the same `onClose`, under the same >= 3 rule.
+        marker.on("click", (event: { originalEvent?: Event }) => {
+          event.originalEvent?.stopPropagation();
+        });
+        marker.on("dblclick", (event: { originalEvent?: Event }) => {
+          event.originalEvent?.stopPropagation();
+          const current = handlers.current;
+          if (!current.closed && current.vertices.length >= 3) current.onClose();
+        });
       });
       if (cancelled || mapRef.current !== map) {
         layer.remove();
@@ -302,7 +476,10 @@ export default function RegionLassoMap({
     return () => {
       cancelled = true;
     };
-  }, [ready, vertices, closed, bbox]);
+    // `handleLabel` is in here because a language switch changes nothing else
+    // on this map: without it the drag handles would keep the hover title they
+    // were built with, in a language the rest of the screen has left.
+  }, [ready, vertices, closed, bbox, handleLabel]);
 
   const fit = useCallback(async () => {
     const map = mapRef.current;

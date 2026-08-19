@@ -870,6 +870,343 @@ def _v3_testimony_clause(testimony: Any, provenance: Any) -> tuple[str, str, str
     return tuple(text.format(**fields) for text in clause)  # type: ignore[return-value]
 
 
+# ---------------------------------------------------------------------------
+# Unit #48 (V3): an ORPHAN link the requested lasso severed.
+#
+# Unit #36 could only ask the source about the orphan's DEPARTURE end, and on
+# the motivating job the answer was ``node_not_in_source``: true, and useless,
+# because the node it asked about is one this generator synthesized ON the
+# requested ring. The trim ledger knew the whole story. These clauses say it --
+# and, when a region could be derived, name the treatment the same way #40's
+# does for a runway shortage. Neither moves the tier: the connection is still
+# never invented, and widening the lasso is a NEW GENERATION a human asks for
+# on the region screen.
+# ---------------------------------------------------------------------------
+
+#: Unit #48: the measured reason an orphan's boundary attribution yielded
+#: nothing, localized. Keys mirror
+#: ``genesis_jobs.derive_v3_orphan_boundary_attribution``'s own ``reason_code``
+#: values. ``no_boundary_trim`` is the one that carries a DOCTRINE and not just
+#: a fact: an orphan the source itself leaves unconnected gets NO region, and
+#: the reader is told that in so many words rather than left wondering why the
+#: card next to theirs has a button. An unknown code falls back to quoting the
+#: code, the same discipline every reason table here established.
+_V3_ORPHAN_ATTRIBUTION_REASONS: dict[str, tuple[str, str, str]] = {
+    "no_boundary_trim": (
+        " 경계 실측 결과: 이 링크의 way는 요청 영역 경계에서 잘린 적이 없습니다 — 고립은 "
+        "경계가 아니라 원본 자체의 것이므로, 영역을 넓히는 치료는 제안하지 않습니다.",
+        " Measured against the boundary ledger: this link's way was never cut at the requested"
+        " region's edge -- the isolation is the SOURCE's, not the boundary's, so no widened"
+        " region is proposed for it.",
+        " 境界の測定結果: このリンクのwayは要求領域の境界で切断されたことがありません — "
+        "孤立は境界ではなくソース自体のものであり、領域を広げる治療は提案しません。",
+    ),
+    "trim_disagrees_with_source": (
+        " 경계 실측 결과: 트림 원장의 기록과 원본 좌표를 다시 대조했을 때 서로 맞지 않아, "
+        "어느 쪽도 채택하지 않고 그대로 보고합니다 — 재유도되지 않은 원장은 반복하지 않습니다.",
+        " Measured against the boundary ledger: re-derived against the source's own"
+        " coordinates, the trim record does not hold -- the conflict is reported rather than"
+        " adjudicated, and a ledger that could not be re-derived is not repeated as though it"
+        " had been.",
+        " 境界の測定結果: トリム台帳の記録を元データの座標と突き合わせたところ一致しないため、"
+        "どちらも採用せずそのまま報告します — 再導出できなかった台帳は繰り返しません。",
+    ),
+    "source_artifact_missing": (
+        " 경계 실측 결과: 이 작업의 원본 .osm을 읽을 수 없어 트림 원장의 주장을 대조하지 "
+        "못했습니다 — 원장의 말만으로 경계 탓을 선언하지는 않습니다.",
+        " Measured against the boundary ledger: this job's source .osm could not be read, so"
+        " the ledger's claim could not be cross-checked -- the boundary is not blamed on the"
+        " ledger's word alone.",
+        " 境界の測定結果: このジョブの元の.osmを読めず、トリム台帳の主張を突き合わせられません"
+        "でした — 台帳の言葉だけで境界のせいだと宣言はしません。",
+    ),
+}
+
+
+def _v3_orphan_boundary_clause(attribution: Any, provenance: Any) -> tuple[str, str, str]:
+    """The localized measured sentence for an orphan's boundary attribution --
+    the affirmative "the lasso cut it" when the ledger and the source agree, the
+    named measured reason when there is none, or three empty strings when no
+    derivation record was supplied at all (a caller with no service layer keeps
+    the exact pre-#48 answer).
+
+    **The causal sentence says only what was measured.** Its first draft closed
+    with "it is alone because the lasso cut its JUNCTION(S) away, not because
+    the road ends" on every attributed orphan, and both halves of that can be
+    false while the attribution itself is perfectly sound:
+
+    * ``junction_way_ids`` is routinely EMPTY -- the outermost node of a cut
+      tail is usually a plain geometry node, so what the lasso cut away was the
+      road's continuation and not a junction. Naming a junction the source never
+      declared is inventing the very evidence this module exists to measure.
+    * a link has TWO ends and the ledger may record ONE. The un-cut end is
+      still a world gap the boundary had nothing to do with, and unit #36's own
+      testimony clause -- which this clause is appended to -- may have just said
+      so in the same paragraph ("the source itself shares the gap"). Asserting
+      "not because the road ends" over the top of it is this module overruling a
+      measurement with a slogan.
+
+    So the cause names a junction only when one was measured, and the "not
+    because the road ends" half is claimed only when BOTH ends were severed.
+    One severed end is reported as one severed end, with the other end's
+    silence handed back to the reader rather than resolved for them."""
+    if isinstance(attribution, Mapping) and attribution.get("status") == "boundary_attributed":
+        ends = [entry for entry in attribution.get("severed_ends") or [] if isinstance(entry, Mapping)]
+        if ends:
+            parts_ko = ", ".join(
+                f"{entry.get('end')} 쪽 {entry.get('metres_cut')} m"
+                + (
+                    f"(잘려나간 노드 {entry.get('outermost_cut_node')}에서 way "
+                    f"{', '.join(str(w) for w in entry.get('junction_way_ids') or [])}와 만납니다)"
+                    if entry.get("junction_way_ids")
+                    else ""
+                )
+                for entry in ends
+            )
+            parts_en = ", ".join(
+                f"{entry.get('metres_cut')} m at its {entry.get('end')}"
+                + (
+                    f" (the cut node {entry.get('outermost_cut_node')} is where the source"
+                    f" declares way(s) {', '.join(str(w) for w in entry.get('junction_way_ids') or [])} meet)"
+                    if entry.get("junction_way_ids")
+                    else ""
+                )
+                for entry in ends
+            )
+            parts_ja = "、".join(
+                f"{entry.get('end')} 側 {entry.get('metres_cut')} m"
+                + (
+                    f"(切り落とされたノード {entry.get('outermost_cut_node')} で、ソースは way "
+                    f"{', '.join(str(w) for w in entry.get('junction_way_ids') or [])} も"
+                    "接続すると宣言しています)"
+                    if entry.get("junction_way_ids")
+                    else ""
+                )
+                for entry in ends
+            )
+            # What the lasso took away: a JUNCTION only where the source declares
+            # one at the cut node, otherwise the road's own continuation.
+            junctions = any(entry.get("junction_way_ids") for entry in ends)
+            cause_ko = (
+                "라쏘가 그 접속점을 잘라냈기 때문입니다"
+                if junctions
+                else "라쏘가 그 앞의 도로를 잘라냈기 때문입니다"
+            )
+            cause_en = (
+                "the lasso cut its junction(s) away"
+                if junctions
+                else "the lasso cut the road beyond it away"
+            )
+            cause_ja = (
+                "ラッソが接続点を切り落としたためです"
+                if junctions
+                else "ラッソがその先の道路を切り落としたためです"
+            )
+            # What the source does NOT say, said, when no junction was measured:
+            # the cut node is a plain geometry node, so the road's continuation
+            # is what the lasso took and WHAT it joined stays unanswered here.
+            note_ko = (
+                ""
+                if junctions
+                else " 잘려나간 노드에서 원본은 다른 way를 선언하지 않으므로, 이 링크가 무엇과 "
+                "이어져 있었는지까지는 이 추출이 답하지 못합니다."
+            )
+            note_en = (
+                ""
+                if junctions
+                else " The source declares no other way at the cut node(s), so what this link"
+                " joined is not something this extract can answer."
+            )
+            note_ja = (
+                ""
+                if junctions
+                else "切り落とされたノードでソースは他の way を宣言していないため、このリンクが"
+                "何と繋がっていたかまではこの抽出では答えられません。"
+            )
+            # A link has TWO ends. Only when BOTH were severed may this clause
+            # say the road does not simply end; with one, the other end's gap is
+            # the source's own business and is handed back, not adjudicated.
+            if len(ends) >= 2:
+                scope_ko = f"이 링크가 홀로 남은 것은 도로가 끝나서가 아니라 {cause_ko}.{note_ko}"
+                scope_en = f"It is alone because {cause_en}, not because the road ends.{note_en}"
+                scope_ja = (
+                    f"このリンクが孤立しているのは道路が終わっているからではなく、{cause_ja}。"
+                    f"{note_ja}"
+                )
+            else:
+                only = ends[0].get("end")
+                scope_ko = (
+                    f"경계가 자른 것은 이 링크의 두 끝 중 {only} 쪽 한 곳뿐이고, 그쪽이 끊긴 "
+                    f"것은 {cause_ko}.{note_ko} 반대쪽 끝은 잘린 적이 없으므로, 그쪽 단절까지 "
+                    "경계 탓으로 돌리지는 않습니다."
+                )
+                scope_en = (
+                    f"Only ONE of this link's two ends was cut by the boundary (its {only}), "
+                    f"and that end is severed because {cause_en}.{note_en} The other end was "
+                    "never cut, so whatever isolates it there is not attributed to the boundary."
+                )
+                scope_ja = (
+                    f"境界が切ったのはこのリンクの二つの端のうち {only} 側の一箇所だけで、その端"
+                    f"が切れているのは{cause_ja}。{note_ja}反対側の端は切られていないため、"
+                    "そちらの断絶まで境界のせいだとはしません。"
+                )
+            return (
+                f" 경계 실측 결과: 이 링크가 실은 way {attribution.get('way_id')}는 요청하신 "
+                f"영역 경계에서 {parts_ko} 잘렸습니다 — {scope_ko}",
+                f" Measured against the boundary ledger: this link's way "
+                f"{attribution.get('way_id')} was cut at the requested region's edge -- "
+                f"{parts_en}. {scope_en}",
+                f" 境界の測定結果: このリンクが担う way {attribution.get('way_id')} は要求された"
+                f"領域の境界で切断されています — {parts_ja}。{scope_ja}",
+            )
+    if not isinstance(provenance, Mapping):
+        return "", "", ""
+    reason_code = provenance.get("reason_code")
+    if not reason_code:
+        return "", "", ""
+    clause = _V3_ORPHAN_ATTRIBUTION_REASONS.get(str(reason_code))
+    if clause is None:
+        fallback = f" (orphan boundary attribution: {reason_code})"
+        return fallback, fallback, fallback
+    return clause
+
+
+#: Unit #48: the measured reason an ATTRIBUTED orphan still got no widened
+#: region, localized. Keys mirror the ``reason_code`` values
+#: ``genesis_jobs.derive_boundary_extension_for_findings`` can return that #40's
+#: single-finger path never could; every code the two share keeps ONE sentence,
+#: in :data:`_V4_EXTENSION_REASONS`, which this table is layered over rather
+#: than copied from.
+#:
+#: Without this table the card went SILENT in exactly the case that needs it
+#: most: the boundary clause above says the lasso did it, and then there is no
+#: button and no reason -- which reads as the product having nothing to say. An
+#: unknown code falls back to quoting the code, the same discipline every reason
+#: table here established.
+_V3_ORPHAN_EXTENSION_REASONS: dict[str, tuple[str, str, str]] = {
+    "no_boundary_findings": (
+        " 다만 잘려나간 길이가 어느 끝에서도 0 m로 측정되어, 넓혀야 할 거리가 없습니다 — "
+        "way의 바깥쪽 노드가 경계 위에 그대로 앉아 있다는 뜻이므로, 길이를 지어내지 않고 "
+        "영역 제안을 생략합니다.",
+        " No widened region is proposed even so: the overhang measured 0 m at every severed"
+        " end, so there is no distance to widen BY -- the way's outermost node sits on the"
+        " boundary itself, and a length is not invented to have something to propose.",
+        " ただし切り落とされた長さがどの端でも 0 m と測定されたため、広げるべき距離があり"
+        "ません — wayの外側のノードが境界上にそのまま乗っているという意味であり、長さを"
+        "作り出さずに領域の提案を省きます。",
+    ),
+    "corridor_patch_undrawable": (
+        " 다만 이 소견이 덮어야 할 회랑 중 하나는 손가락을 그릴 수 없어(사유는 페이로드에 "
+        "명명되어 있습니다), 덮는다고 적힌 것보다 적게 덮는 영역을 내놓는 대신 제안을 "
+        "거부합니다.",
+        " No widened region is proposed even so: one of the corridors this finding would have"
+        " to cover could not have its finger drawn (the reason is named in the payload), and"
+        " a region covering less than its own label claims is refused rather than emitted.",
+        " ただしこの検出が覆うべき回廊の一つは指を描けなかったため(理由はペイロードに明記"
+        "されています)、ラベルが主張するより少なく覆う領域を出す代わりに提案を拒否します。",
+    ),
+    "patch_mouths_collide_on_edge": (
+        " 다만 두 회랑의 손가락 입구가 같은 변의 같은 구간을 차지해, 한쪽을 고르거나 둘을 "
+        "합쳐 아무도 측정하지 않은 굵은 손가락을 만드는 대신 제안을 거부합니다.",
+        " No widened region is proposed even so: two corridors' finger mouths want the same"
+        " stretch of one ring edge, and picking one -- or hulling the pair into a fatter"
+        " finger neither corridor measured -- is not a choice this module makes for you.",
+        " ただし二つの回廊の指の入口が同じ辺の同じ区間を占めるため、どちらかを選ぶ、あるいは"
+        "二つを合わせて誰も測定していない太い指を作る代わりに提案を拒否します。",
+    ),
+    "source_artifact_missing": (
+        " 다만 이 작업의 원본 .osm을 읽을 수 없어 회랑이 뻗어 나갈 방향을 측정하지 못했고, "
+        "방향을 추측해 영역을 그리지는 않습니다.",
+        " No widened region is proposed even so: this job's source .osm could not be read, so"
+        " the corridors' own directions beyond the boundary could not be measured, and a"
+        " direction is not guessed to draw a shape with.",
+        " ただしこのジョブの元の.osmを読めず、回廊が伸びる方向を測定できなかったため、方向を"
+        "推測して領域を描くことはしません。",
+    ),
+}
+
+
+def _v3_orphan_extension_refusal_clause(refusal: Any) -> tuple[str, str, str]:
+    """The localized measured reason an attributed orphan got NO region.
+
+    Layered over :data:`_V4_EXTENSION_REASONS` rather than duplicating it: the
+    composite returns every reason #40's splice could return plus its own, and
+    two tables restating one refusal is how they drift apart. Three empty
+    strings when no refusal record was supplied at all, so a caller with no
+    service layer keeps the exact pre-#48 answer."""
+    if not isinstance(refusal, Mapping):
+        return "", "", ""
+    reason_code = refusal.get("reason_code")
+    if not reason_code:
+        return "", "", ""
+    clause = _V3_ORPHAN_EXTENSION_REASONS.get(str(reason_code)) or _V4_EXTENSION_REASONS.get(
+        str(reason_code)
+    )
+    if clause is None:
+        fallback = f" (boundary extension: {reason_code})"
+        return fallback, fallback, fallback
+    return clause
+
+
+def _v3_orphan_extension_clause(extension: Any) -> tuple[str, str, str]:
+    """The localized sentence for an orphan's DERIVED region -- one finger per
+    severed end, how much area they add, and that a human still has to look at
+    the shape and press the button.
+
+    The extrapolation split rides in the PROSE, not only in the payload, for
+    the reason :func:`_v4_extension_clause` states at length: on a one-node cut
+    the source declares the cut itself and nothing past it, so the finger's
+    margin is drawn on the last measured bearing. Widening the lasso widens the
+    EXTRACT REQUEST and claims nothing about the road being there."""
+    if not isinstance(extension, Mapping) or "extended_polygon_wgs84" not in extension:
+        return "", "", ""
+    patches = [p for p in extension.get("corridor_patches") or [] if isinstance(p, Mapping)]
+    if not patches:
+        return "", "", ""
+    total = round(sum(float(patch.get("length_m") or 0.0) for patch in patches), 2)
+    extrapolated = round(
+        sum(float(patch.get("extrapolated_m") or 0.0) for patch in patches), 2
+    )
+    measured = round(total - extrapolated, 2)
+    added = _km2(extension.get("added_area_km2"))
+    split_ko = split_en = split_ja = ""
+    if extrapolated > 0.0:
+        split_ko = (
+            f" 이 중 원본이 도로라고 선언한 길이는 {measured} m이고, 나머지 {extrapolated} m는 "
+            "마지막으로 측정된 방위로 그은 것입니다 — 도로를 지어낸 것이 아니라 그만큼 더 넓게 "
+            "추출을 요청하는 것입니다."
+        )
+        split_en = (
+            f" Of that, {measured} m is road the source itself declared and the remaining"
+            f" {extrapolated} m is drawn on the last MEASURED bearing -- it widens the EXTRACT"
+            " REQUEST by that much and claims nothing about the road being there."
+        )
+        split_ja = (
+            f" そのうちソースが道路と宣言しているのは {measured} m で、残り {extrapolated} m は"
+            "最後に測定された方位へ引いたものです — 道路を作り出したのではなく、その分だけ広く"
+            "抽出を要求するものです。"
+        )
+    return (
+        f" 치료: 잘린 끝 {len(patches)}곳마다 손가락을 하나씩(합계 {total} m) 덧댄 영역을 "
+        f"요청 폴리곤에서 도출했습니다 — 넓이 +{added} km²."
+        + split_ko
+        + " 그리려던 모양은 그대로 두고 해당 변에만 끼워 넣은 것이며, 지도에서 직접 확인·수정한 "
+        "뒤 추출 버튼을 누르셔야 새 생성이 시작됩니다.",
+        f" Treatment: a widened version of the region you requested has been derived -- one"
+        f" finger per severed end ({len(patches)} of them, {total} m in total), adding"
+        f" {added} km²."
+        + split_en
+        + " It is your own shape with the fingers spliced into the edges those corridors"
+        " cross; nothing is fetched until you have looked at it on the map and pressed the"
+        " extract button yourself.",
+        f" 治療: 切断された端 {len(patches)} 箇所それぞれに指を継ぎ足した領域(合計 {total} m)を"
+        f"要求ポリゴンから導出しました — 面積 +{added} km²。"
+        + split_ja
+        + "描かれた形はそのままに、該当する辺だけに差し込んだものです。地図で確認・修正のうえ、"
+        "抽出ボタンを押されるまで何も取得しません。",
+    )
+
+
 def _build_v3_connectivity_no_fix(
     *,
     code: str,
@@ -888,6 +1225,18 @@ def _build_v3_connectivity_no_fix(
     changes with the answer: whether a registered verb may one day close a
     pipeline-lost gap is a re-tier decision this catalogue does not make from
     evidence alone.
+
+    **Unit #48, for ``v3_orphan_link`` alone: the BOUNDARY's own answer.** The
+    testimony above asks the source about ONE node; a link the requested lasso
+    severed at both ends has no node the source has ever heard of, so that
+    question can only return ``node_not_in_source`` -- true, and silent about
+    the cause. ``targets['orphan_boundary_attribution']`` (measured from the
+    trim ledger and cross-checked against the source) says whether the lasso
+    did it, and ``targets['boundary_extension_patches']`` carries the region
+    that would undo it, one finger per severed end. Folded in exactly as V4's
+    pair is folded: both ride on the evidence, both add a sentence, and NEITHER
+    moves the tier. An orphan with no trim record is deliberately offered no
+    region at all, and told why.
     """
     mapping = _REGISTRY[code]
     caller_targets = targets or {}
@@ -898,10 +1247,39 @@ def _build_v3_connectivity_no_fix(
         extra["source_testimony"] = dict(testimony)
     if isinstance(provenance, Mapping):
         extra["source_testimony_provenance"] = dict(provenance)
+
+    orphan = _as_mapping(caller_targets.get("orphan_boundary_attribution"))
+    orphan_prov = _as_mapping(caller_targets.get("orphan_boundary_attribution_provenance"))
+    extension = _as_mapping(caller_targets.get("boundary_extension_patches"))
+    extension_refusal = _as_mapping(caller_targets.get("boundary_extension_patches_refusal"))
+    if orphan:
+        extra["orphan_boundary_attribution"] = dict(orphan)
+    if orphan_prov:
+        extra["orphan_boundary_attribution_provenance"] = dict(orphan_prov)
+    if extension:
+        extra["boundary_extension_patches"] = dict(extension)
+    if extension_refusal:
+        extra["boundary_extension_patches_refusal"] = dict(extension_refusal)
+
+    suffixes = _v3_testimony_clause(testimony, provenance)
+    if orphan or orphan_prov:
+        boundary = _v3_orphan_boundary_clause(orphan, orphan_prov)
+        treatment = _v3_orphan_extension_clause(extension)
+        if not any(treatment):
+            # An orphan the BOUNDARY severed but whose region could not be
+            # derived must not end on the affirmative sentence with nothing
+            # after it: the reader would have been told the lasso caused this
+            # and then handed no button and no reason. The refusal is named
+            # here, in the same paragraph, exactly as #40 names its own.
+            treatment = _v3_orphan_extension_refusal_clause(extension_refusal)
+        suffixes = tuple(
+            base + boundary[index] + treatment[index]
+            for index, base in enumerate(suffixes)
+        )  # type: ignore[assignment]
     return _no_fix(
         mapping,
         finding,
-        suffixes=_v3_testimony_clause(testimony, provenance),
+        suffixes=suffixes,
         extra_evidence=extra,
     )
 
@@ -1737,6 +2115,26 @@ def _v4_interior_clause(attribution: Mapping[str, Any]) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _km2(value: Any) -> str:
+    """A km² figure as a DECIMAL, never in scientific notation.
+
+    Measured, not hypothetical: unit #48's orphan fingers are metres long, so
+    the area they add rounds to 0.00006 km² -- and Python renders that float as
+    ``6e-05``, which landed in the Korean rationale as "넓이 +6e-05 km²". The
+    payload keeps the float (a reader parsing JSON wants the number); the PROSE
+    gets a decimal, because an exponent in a sentence is a number most readers
+    will misread by four orders of magnitude. #40's own clause shares this for
+    the same reason -- its real case rounds large enough to be safe today, and
+    "safe today" is not a property worth relying on twice.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):  # pragma: no cover - a payload we did not build
+        return str(value)
+    text = f"{number:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def _v4_extension_clause(extension: Mapping[str, Any]) -> tuple[str, str, str]:
     """The localized sentence for a DERIVED region extension: how far the
     proposed finger reaches, how much area it adds, and that a human still has
@@ -1764,7 +2162,7 @@ def _v4_extension_clause(extension: Mapping[str, Any]) -> tuple[str, str, str]:
     deficit = provenance.get("deficit_m")
     margin = provenance.get("margin_m")
     length = patch.get("length_m")
-    added = extension.get("added_area_km2")
+    added = _km2(extension.get("added_area_km2"))
     measured = patch.get("measured_source_m")
     try:
         extrapolated = float(patch.get("extrapolated_m") or 0.0)

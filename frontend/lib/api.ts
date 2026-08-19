@@ -3521,6 +3521,107 @@ export interface GenesisFixBoundaryExtension {
   };
 }
 
+/** Unit #48: ONE widened region covering SEVERAL severed corridors — the shape
+ * `GenesisFixBoundaryExtension` above cannot carry.
+ *
+ * Two callers, one payload. A `v3_orphan_link` whose way the lasso cut at BOTH
+ * ends needs two fingers, not one; and a job with several boundary findings
+ * needs them all on ONE ring, because two proposals each derived from the same
+ * original polygon overwrite each other (the 2026-08-19 demo: extending for the
+ * runway shortage never healed the orphan, since their fingers open onto
+ * different edges).
+ *
+ * Every finger names what it was SIZED BY (`basis_kind`), because half of them
+ * are not deficits: a severed orphan's finger reaches the metres the trim
+ * ledger says the boundary CUT. Key-ABSENT unless a shape was actually derived;
+ * the refusal, when there is one, arrives under its own key and renders a
+ * sentence, never a button. */
+export interface GenesisBoundaryExtensionPatches {
+  /** `[lat, lon]` pairs, open ring — the region page's own vertex convention. */
+  extended_polygon_wgs84: Array<[number, number]>;
+  extended_area_km2: number;
+  added_area_km2: number;
+  corridor_patches: Array<{
+    crossing_edge_index: number;
+    crossing_point_wgs84: [number, number];
+    centreline_wgs84: Array<[number, number]>;
+    length_m: number;
+    /** How much of `length_m` the SOURCE itself declared, and how much was
+     * drawn on the last measured bearing. Reported separately, never summed. */
+    measured_source_m: number;
+    extrapolated_m: number;
+    half_width_m: number;
+    roadway_width_m: number;
+    continuation_way_ids: number[];
+    vertices_added: number;
+    way_id: number;
+    boundary_node: number;
+    /** What this finger's length was measured FROM, and which measurement that
+     * was: `lane_change_runway_deficit` or `boundary_cut_metres`. */
+    basis_m: number;
+    basis_kind: string;
+    margin_m: number;
+    /** Every finding this one finger answers for — more than one only when two
+     * findings resolved to the identical corridor end (the named merge). */
+    covers: Array<{ code: string; subject: string }>;
+  }>;
+  /** Per FINDING rather than per finger: what the shape does for each one. */
+  covers: Array<{
+    code: string;
+    subject: string;
+    patch_count: number;
+    basis_kind: string;
+    basis_m: number;
+    length_m: number;
+    measured_source_m: number;
+    extrapolated_m: number;
+  }>;
+  provenance: {
+    source_artifact: string;
+    source_field: string;
+    parent_job: string | null;
+    patch_count: number;
+    finding_count: number;
+    merged_patches: number;
+    basis: string;
+    treatment: string;
+  };
+}
+
+/** Unit #48: why no all-at-once region could be derived. A SENTENCE, never a
+ * control — and never a reason to hide the per-finding proposals, which are
+ * unaffected by whatever made the composite impossible (two fingers wanting the
+ * same stretch of one ring edge, above all). */
+export interface GenesisBoundaryExtensionRefusal {
+  reason_code: string;
+  detail: string;
+}
+
+/** Unit #48: WHY a `v3_orphan_link` is alone — measured against the census's
+ * own trim ledger and cross-checked against the source's coordinates. Absent
+ * when the orphan's way was never cut at the ring, which is the case that must
+ * NOT be offered a region: an isolation the source itself declares is the
+ * world's answer, not the boundary's. Evidence only; the tier never moves. */
+export interface GenesisFixOrphanBoundaryAttribution {
+  status: string;
+  link_id: string;
+  way_id: number;
+  severed_ends: Array<{
+    end: string;
+    metres_cut: number;
+    nodes_cut: number;
+    boundary_node: number;
+    outermost_cut_node: number;
+    /** The ways the SOURCE says meet at the node the trim cut off — why the
+     * link is alone. Measured, never a promise that a re-extract reconnects it:
+     * the new draft decides that and faces the gate on its own. */
+    junction_way_ids: number[];
+    junction_way_ids_in_census: number[];
+  }>;
+  metres_cut_total: number;
+  reason: string;
+}
+
 /** Unit #42: the SECOND ask-first question on a V3 world-gap refusal, and the
  * one `GenesisFixAttestationInvitation` cannot reach — the road may really END
  * here. Some world gaps are real: a department store's parking ramp genuinely
@@ -3573,6 +3674,12 @@ export interface GenesisFixDisposition {
   attestation?: GenesisFixAttestationInvitation;
   regenerate?: GenesisFixRegeneration;
   boundary_extension?: GenesisFixBoundaryExtension;
+  /** Unit #48, `v3_orphan_link` only: why the lasso orphaned this link, and the
+   * region that would undo it — one finger per SEVERED END. Its own keys rather
+   * than #40's pair, because a two-ended orphan cannot fit in a payload with
+   * one `corridor_patch`. */
+  orphan_boundary_attribution?: GenesisFixOrphanBoundaryAttribution;
+  boundary_extension_patches?: GenesisBoundaryExtensionPatches;
   dead_end_confirmation?: GenesisFixDeadEndConfirmation;
   dead_end_refusal?: GenesisFixDeadEndRefusal;
 }
@@ -3601,6 +3708,12 @@ export interface GenesisJobFixes {
    * fix list has ever contained one, and inventing a display for an empty
    * array to date would be speculative chrome). */
   unmapped_finding_codes: string[];
+  /** Unit #48: ONE lasso covering EVERY boundary-caused finding in this
+   * verdict. Key-ABSENT when nothing earned one; when a shape could not be
+   * derived the reason arrives as `boundary_extension_all_refusal` instead, and
+   * the per-finding proposals on the cards are unaffected either way. */
+  boundary_extension_all?: GenesisBoundaryExtensionPatches;
+  boundary_extension_all_refusal?: GenesisBoundaryExtensionRefusal;
 }
 
 export async function fetchGenesisJobFixes(jobId: string): Promise<GenesisJobFixes> {

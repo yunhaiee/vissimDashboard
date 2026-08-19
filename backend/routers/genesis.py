@@ -1561,6 +1561,26 @@ def _render_fix_disposition(
     extension = (proposal.evidence or {}).get("boundary_extension")
     if isinstance(extension, dict):
         disposition["boundary_extension"] = extension
+    # Unit #48: the SAME two keys for the OTHER finding the requested boundary
+    # can cause -- a ``v3_orphan_link`` whose way the lasso cut at one or both
+    # ends (``genesis_jobs.derive_v3_orphan_boundary_attribution``), and the
+    # region that would undo it, one finger per SEVERED END
+    # (``derive_boundary_extension_for_findings`` restricted to this finding).
+    # Deliberately its own key rather than #40's: an orphan cut at both ends
+    # needs TWO fingers, which ``boundary_extension``'s single ``corridor_patch``
+    # cannot carry, and widening that payload would have made every existing
+    # reader guess whether a second patch existed. Same rules as every
+    # enrichment -- key-ABSENT otherwise, presence is the fact, and no tier
+    # change: the entry stays a refusal under CONNECTIVITY_IS_NOT_INVENTED,
+    # because the treatment is a new generation a human asks for on the region
+    # screen, never an edit to this artifact. An orphan the SOURCE itself
+    # leaves unconnected carries the attribution's named refusal and NO region.
+    orphan_attribution = (proposal.evidence or {}).get("orphan_boundary_attribution")
+    if isinstance(orphan_attribution, dict):
+        disposition["orphan_boundary_attribution"] = orphan_attribution
+    orphan_extension = (proposal.evidence or {}).get("boundary_extension_patches")
+    if isinstance(orphan_extension, dict):
+        disposition["boundary_extension_patches"] = orphan_extension
     # Unit #35: when the refusal is a world gap the model COULD still answer --
     # the source shares the gap, but this network holds link ends a connector
     # could reach -- carry the ask-first question's own data: which link ends
@@ -1710,10 +1730,16 @@ def get_job_fixes(job_id: str, user: dict[str, Any] = Depends(current_user)):
     census = draft.metadata if draft is not None else None
 
     entries: list[dict[str, Any]] = []
+    # Unit #48: kept beside `entries` so the job-level composite below consumes
+    # the SAME derivations each card was rendered from -- a second pass over the
+    # findings could disagree with the first, and two shapes proposed for one
+    # job under two buttons is the defect this unit exists to close.
+    derived: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for check_id, origin, finding in genesis_jobs.iter_stored_gate_findings(raw):
         targets = genesis_jobs.derive_fix_targets(
             finding["code"], finding, draft=draft, params=None, job_id=job_id
         )
+        derived.append((finding, targets))
         proposal = genesis_fixes.propose_genesis_fix(
             finding["code"], finding=finding, census=census, targets=targets
         )
@@ -1721,13 +1747,40 @@ def get_job_fixes(job_id: str, user: dict[str, Any] = Depends(current_user)):
             _render_fix_disposition(check_id=check_id, origin=origin, finding=finding, proposal=proposal)
         )
 
-    return {
+    payload: dict[str, Any] = {
         "job_id": job_id,
         "status": record.get("status"),
         "verdict": raw.get("verdict"),
         "findings": entries,
         "unmapped_finding_codes": list(genesis_fixes.get_unmapped_finding_codes()),
     }
+    # Unit #48 -- ONE lasso for EVERY boundary-caused finding in this verdict.
+    #
+    # THE DEFECT IT CLOSES, measured on the user's own 2026-08-19 demo: a job
+    # with a boundary-caused runway shortage AND a boundary-severed orphan
+    # offered two separate widened regions, each derived from the same original
+    # polygon, so taking one discarded the other -- and since the two fingers
+    # open onto different edges of the ring, repeating the extension never
+    # healed the orphan. This key is the region that covers all of them at once.
+    #
+    # Key-ABSENT when nothing earned one; a REFUSAL is carried under its own key
+    # (two fingers colliding on one edge, a corridor whose finger cannot be
+    # drawn, the area cap) so the screen can NAME why the all-at-once option is
+    # missing instead of going quiet -- and the per-finding proposals above are
+    # unaffected either way, which is exactly what makes refusing here safe.
+    combined = genesis_jobs.derive_boundary_extension_for_findings(
+        derived, draft=draft, job_id=job_id
+    )
+    if "reason_code" in combined:
+        # `no_boundary_findings` is the ordinary case for a job with no boundary
+        # story at all, and a refusal key on every such response would be noise
+        # rather than a disclosure -- the cards themselves already say nothing
+        # about a boundary.
+        if combined.get("reason_code") != "no_boundary_findings":
+            payload["boundary_extension_all_refusal"] = combined
+    else:
+        payload["boundary_extension_all"] = combined
+    return payload
 
 
 # ---------------------------------------------------------------------------

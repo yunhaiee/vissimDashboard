@@ -107,7 +107,11 @@ import {
   type RegionMeasurement,
   type RegionShape,
 } from "@/lib/api";
-import { takeRegionPrefill, type RegionPrefill } from "@/lib/region-prefill";
+import {
+  BASIS_BOUNDARY_CUT,
+  takeRegionPrefill,
+  type RegionPrefill,
+} from "@/lib/region-prefill";
 
 /** Leaflet reads `window` at module scope, so the drawing surface is mounted
  * client-only (`01-app/02-guides/lazy-loading.md`), the same way
@@ -771,14 +775,79 @@ export default function GenesisRegionPage() {
             * right: the map below and the table beside it are how a reader
             * disagrees with it. */
           <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-[15px] leading-relaxed text-slate-800">
-            <p>
-              {t(
-                `작업 ${prefill.parent_job}의 ${prefill.finding_code} 부족분 ${prefill.deficit_m} m를 메우려고 넓힌 영역입니다 — 링크 ${prefill.subject}, 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
-                `This region was widened to close job ${prefill.parent_job}'s ${prefill.finding_code} shortage of ${prefill.deficit_m} m — link ${prefill.subject}, +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
-                `ジョブ ${prefill.parent_job} の ${prefill.finding_code} 不足分 ${prefill.deficit_m} m を埋めるために広げた領域です — リンク ${prefill.subject}、面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
-              )}
-            </p>
-            {prefill.extrapolated_m > 0 && (
+            {prefill.covers && prefill.covers.length > 1 ? (
+              /* UNIT #48 -- a proposal that covers SEVERAL findings names every
+                * one of them. The scalar fields below describe only the FIRST
+                * covered finding (see lib/region-prefill.ts), so printing the
+                * single-finding sentence here would tell a reader their extract
+                * treats one shortage when it treats three. The extract button on
+                * this very screen is what makes that difference matter. */
+              <>
+                <p>
+                  {t(
+                    `작업 ${prefill.parent_job}의 경계 소견 ${prefill.covers.length}건을 한 번에 덮으려고 넓힌 영역입니다 — 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
+                    `This region was widened to cover all ${prefill.covers.length} of job ${prefill.parent_job}'s boundary findings at once — +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
+                    `ジョブ ${prefill.parent_job} の境界に起因する検出 ${prefill.covers.length} 件をまとめて覆うために広げた領域です — 面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
+                  )}
+                </p>
+                <ul className="mt-1.5 flex flex-col gap-0.5">
+                  {prefill.covers.map((cover) => (
+                    <li
+                      key={`${cover.finding_code}::${cover.subject}`}
+                      className="font-mono text-[14px] leading-relaxed text-slate-600"
+                    >
+                      {t(
+                        `${cover.finding_code} / ${cover.subject} — ${cover.length_m} m${cover.extrapolated_m > 0 ? ` (원본 선언 ${cover.measured_source_m} m + 외삽 ${cover.extrapolated_m} m)` : ""}`,
+                        `${cover.finding_code} / ${cover.subject} — ${cover.length_m} m${cover.extrapolated_m > 0 ? ` (${cover.measured_source_m} m source-declared + ${cover.extrapolated_m} m extrapolated)` : ""}`,
+                        `${cover.finding_code} / ${cover.subject} — ${cover.length_m} m${cover.extrapolated_m > 0 ? `（ソース宣言 ${cover.measured_source_m} m + 外挿 ${cover.extrapolated_m} m）` : ""}`,
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {prefill.covers.some((cover) => cover.extrapolated_m > 0) && (
+                  /* THE SPLIT'S MEANING, not only its numbers. The per-finding
+                    * lines above already print how many metres of each finger
+                    * the source declared; this sentence is what tells a reader
+                    * WHAT an extrapolated tail is -- a wider extract REQUEST,
+                    * never a claim that the road is there. Without it the
+                    * numbers read as two kinds of measurement. */
+                  <p className="mt-1.5 text-[14px] text-slate-600">
+                    {t(
+                      "위에서 '외삽'으로 표시된 길이는 원본이 도로라고 선언한 구간이 아니라 마지막으로 측정된 방위로 그은 것입니다 — 도로를 지어낸 것이 아니라 그만큼 더 넓게 추출을 요청하는 것이므로, 각 손가락의 끝부분을 지도에서 꼭 확인해 주세요.",
+                      "The metres marked 'extrapolated' above are not road the source declared: they are drawn on the last MEASURED bearing. They widen the EXTRACT REQUEST by that much and claim nothing about the road being there — so check the far end of each finger on the map.",
+                      "上で「外挿」と表示された長さはソースが道路と宣言した区間ではなく、最後に測定された方位へ引いたものです — 道路を作り出したのではなく、その分だけ広く抽出を要求するものですので、各指の先端を地図で必ずご確認ください。",
+                    )}
+                  </p>
+                )}
+              </>
+            ) : prefill.covers?.[0]?.basis_kind === BASIS_BOUNDARY_CUT ? (
+              /* UNIT #48 -- ONE finding, but its metres are NOT a shortage.
+                * An orphan's hand-off is always a single covered finding, so it
+                * lands in this branch, and `deficit_m` here is `basis_m`: the
+                * metres the lasso CUT off a severed way. The payload's own basis
+                * note refuses to call that a deficit ("half of them are not
+                * one"), so this banner does not either — and it says what the
+                * widening DOES (reach far enough to contain the road that was
+                * cut) rather than that it closes anything. Whether the re-extract
+                * leaves the link connected is the new draft's answer, and it
+                * faces the gate on its own. */
+              <p>
+                {t(
+                  `작업 ${prefill.parent_job}의 ${prefill.finding_code}에서 경계가 잘라낸 ${prefill.deficit_m} m를 다시 담을 만큼 넓힌 영역입니다 — 링크 ${prefill.subject}, 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
+                  `This region was widened far enough to take back the ${prefill.deficit_m} m the boundary cut off in job ${prefill.parent_job}'s ${prefill.finding_code} — link ${prefill.subject}, +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
+                  `ジョブ ${prefill.parent_job} の ${prefill.finding_code} で境界が切り落とした ${prefill.deficit_m} m を再び含められるだけ広げた領域です — リンク ${prefill.subject}、面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
+                )}
+              </p>
+            ) : (
+              <p>
+                {t(
+                  `작업 ${prefill.parent_job}의 ${prefill.finding_code} 부족분 ${prefill.deficit_m} m를 메우려고 넓힌 영역입니다 — 링크 ${prefill.subject}, 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
+                  `This region was widened to close job ${prefill.parent_job}'s ${prefill.finding_code} shortage of ${prefill.deficit_m} m — link ${prefill.subject}, +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
+                  `ジョブ ${prefill.parent_job} の ${prefill.finding_code} 不足分 ${prefill.deficit_m} m を埋めるために広げた領域です — リンク ${prefill.subject}、面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
+                )}
+              </p>
+            )}
+            {prefill.extrapolated_m > 0 && (!prefill.covers || prefill.covers.length <= 1) && (
               /* THE SPLIT, on the screen that owns the extract button. The
                 * finger is long enough to close the deficit, but the source could
                 * only DECLARE part of it -- this job's own .osm was fetched
@@ -810,13 +879,20 @@ export default function GenesisRegionPage() {
             onAddVertex={addVertex}
             onClose={() => setRingClosed(true)}
             onDiscardLastVertex={() => setVertices((current) => current.slice(0, -1))}
+            // UNIT #48 -- the map's drag handles land in the SAME callback the
+            // table's typed edit does. That is the whole binding: `vertices`
+            // stays this page's single source of truth, so dragging a corner
+            // updates the row beneath it and typing a degree moves the handle
+            // above it, without either side holding a copy.
+            onMoveVertex={updateVertex}
             centre={DEFAULT_CENTRE}
             ariaLabel={t(
-              "지도에서 영역 그리기",
-              "Draw the region on the map",
-              "地図で領域を描く",
+              "지도에서 영역 그리기 — 꼭짓점을 끌어 옮길 수 있습니다",
+              "Draw the region on the map — corners can be dragged",
+              "地図で領域を描く — 頂点はドラッグで移動できます",
             )}
             fitLabel={t("그린 영역으로 이동", "Zoom to shape", "描いた領域へ移動")}
+            handleLabel={t("점", "Point", "点")}
           />
           {/* 경계 처리 ⓘ hidden (unit #20) -- its sentences moved into the page
             * help drawer above, verbatim. This row is now just the two controls
