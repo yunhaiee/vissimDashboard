@@ -101,6 +101,14 @@ EXPECTED_TOOL_NAMES = {
     # Q6 unit (3): pedestrians (Viswalk).
     "get_pedestrian_inputs",
     "get_pedestrian_areas",
+    # Unit #47 adds propose_car_following_from_saturation_flow
+    # (tools_calibration.py): a MEASURED stop-line saturation flow plus the
+    # node's re-derived CAPACITY_LIMIT diagnosis -> the three MRWA Table 5-6
+    # car-following values as one proposal set. Read-tier for the same reason
+    # run_reality_check is -- it proposes and applies nothing, and the three
+    # writes it describes still go through the approval loop one by one.
+    # Registry pin: bump deliberately, not by accident.
+    "propose_car_following_from_saturation_flow",
 }
 
 # M2.3's tools_edit.py registers these write-tier tools, and M2.4's

@@ -123,6 +123,13 @@ import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
 import services.agent.tools_sweep  # noqa: F401 - Phase 0.1: run_demand_stress_sweep
+
+# Imported LAST, and after tools_metrics, on purpose: it imports tools_metrics
+# and tools_network at module scope, so importing it earlier would flip the
+# registration order those two modules' tools already have in default_registry
+# (which render_contract and native_tool_defs both reflect). Unit #47 -- the
+# product's entry point to #44's Table 5-6 car-following set.
+import services.agent.tools_calibration  # noqa: F401,E402
 from services.agent import approval_focus, car_following_grant, complexity, session_store
 from services.agent.constraints import explain_unsupported_tool
 from services.agent.gates import ApprovalRequired, signature
@@ -532,6 +539,69 @@ def _preflight_extra(gate: WriteGate, action: dict[str, Any]) -> dict[str, Any]:
     if not provenance:
         return {}
     return {car_following_grant.PROVENANCE_KEY: provenance}
+
+
+#: Unit #47: how many node diagnoses ride on ONE ``step`` event. The report
+#: itself is unbounded in principle (one entry per joined node) and this event
+#: is streamed NDJSON a browser holds in memory, so the wire copy is capped and
+#: says so — ``total`` is always the real count, exactly like the bounded
+#: listings in ``tools_network``. Twelve is the whole of every corpus report
+#: measured so far and still small enough to read in a drawer.
+_DIAGNOSIS_WIRE_CAP = 12
+
+
+def _diagnosis_step_payload(envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """Unit #43's per-node diagnosis, shaped for the ``step`` event (unit #47).
+
+    Carries the three things a modeller acts on — the rung, WHY this node landed
+    on it, and the next action with its MRWA step — plus the GEH numbers that
+    established the miss, in all three languages exactly as ``geh_ladder``
+    emitted them. Deliberately NOT the whole report: ``evidence`` (a nested
+    congestion/approach block per node) and ``outcome`` (the full ``FixProposal``
+    dict) stay server-side, where the trace and the audit ledger already have
+    them. Nodes the model reproduces carry ``diagnosis: None`` and are skipped —
+    there is nothing to diagnose and nothing for a reader to do.
+
+    Returns ``None`` when the report is not a diagnosable one, so the key is
+    simply absent rather than present-and-empty.
+    """
+    report = (envelope.get("data") or {}).get("reality_check")
+    if not isinstance(report, dict):
+        return None
+    entries: list[dict[str, Any]] = []
+    for node in report.get("nodes") or ():
+        if not isinstance(node, dict):
+            continue
+        diagnosis = node.get("diagnosis")
+        if not isinstance(diagnosis, dict):
+            continue
+        evidence = diagnosis.get("evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        entries.append(
+            {
+                "node_id": str(node.get("node_id") or ""),
+                "node_name": node.get("node_name"),
+                "rung": diagnosis.get("rung"),
+                "why": diagnosis.get("why"),
+                "next_action": diagnosis.get("next_action"),
+                "missing_evidence": list(diagnosis.get("missing_evidence") or ()),
+                "observed_total": node.get("observed_total"),
+                "modelled_total": node.get("modelled_total"),
+                "node_total_geh": node.get("node_total_geh"),
+                "geh_threshold": evidence.get("geh_threshold"),
+                "node_control": evidence.get("node_control"),
+            }
+        )
+    if not entries:
+        return None
+    by_rung = (report.get("diagnosis") or {}).get("by_rung")
+    return {
+        "nodes": entries[:_DIAGNOSIS_WIRE_CAP],
+        "total": len(entries),
+        "truncated": len(entries) > _DIAGNOSIS_WIRE_CAP,
+        "by_rung": by_rung if isinstance(by_rung, dict) else {},
+        "geh_threshold": report.get("geh_threshold"),
+    }
 
 
 #: M2.4: the tiers that go through the WriteGate/ApprovalRequired/preflight
@@ -1655,6 +1725,18 @@ def run_agent_turn(
             job_id = verification.get("job_id")
             if job_id:
                 step_payload["job_id"] = job_id
+        # Unit #47: the SAME grafting move for unit #43's diagnosis ladder.
+        # Before this, the reality-check report never survived onto the wire at
+        # all -- `step_payload` is the only per-step thing the stream carries,
+        # and the tool envelope's `data` is dropped here -- so `diagnosis`
+        # (rung / why / next_action, in three languages) existed on disk and in
+        # the answer prose and nowhere a user could see it as structure. Read
+        # off the tool's own returned data, never the LLM's summary text, for
+        # the same reason the trajectory hint above is.
+        if decision.tool == "run_reality_check" and envelope["status"] == "ok":
+            diagnosis_payload = _diagnosis_step_payload(envelope)
+            if diagnosis_payload is not None:
+                step_payload["diagnosis"] = diagnosis_payload
         _emit_step(steps, step_payload, on_step)
 
     return finalize(

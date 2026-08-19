@@ -60,6 +60,12 @@ EXPECTED_READ_TOOLS = {
     # Q6 unit (3): pedestrians (Viswalk).
     "get_pedestrian_inputs",
     "get_pedestrian_areas",
+    # Unit #47 adds propose_car_following_from_saturation_flow
+    # (tools_calibration.py): the product's entry point to unit #44's MRWA
+    # Table 5-6 car-following set. Read-tier and applies nothing -- the three
+    # writes it describes go through this engine's own approval loop one by
+    # one, and it is that pause that the set's grant then rides on.
+    "propose_car_following_from_saturation_flow",
 }
 
 # M2.3: tools_edit.py's write tools are now offered to the planner too (see

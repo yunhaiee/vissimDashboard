@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # language and its 403 in another.
 from routers.auth import _language as _auth_language, current_user, require_role
 from services import workspaces
+from services.agent import car_following_broker
 from services.agent.edit_session import (
     VissimEditSession,
     clear_active_edit_session,
@@ -661,6 +662,71 @@ def _delete_pending_approval(work_dir: Path) -> None:
     _pending_approval_path(work_dir).unlink(missing_ok=True)
 
 
+def _car_following_card_payload(
+    set_id: str, session_id: str, shadow_model: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Unit #47: the Table 5-6 SET behind one approval card, for the UI.
+
+    The approval machinery authorises the three writes independently — one action
+    per pause, one signature each — so a card that showed only the action it
+    paused on would present a third of one table row as if it were a whole
+    change. This payload is what lets the card say the set out loud: which three
+    members it has, what the behaviour ends up at if all three land, the
+    bracketing rows the value was rounded DOWN between, where the measurement came
+    from, the guardrail forecast for both paths, and the blast radius the human is
+    being asked to consent to.
+
+    Every sentence in it is the PROPOSAL's own (``rationale``, ``preflight_forecast``
+    ``why``, ``consent_radius_phrase``), in the three languages the builder already
+    wrote them in. Nothing here composes a new claim about the edit.
+
+    ``grant`` reports the re-mint verdict — ``GRANTED`` only when the radius still
+    matches the one the set was built against — so the card can say honestly
+    whether the approved dispatch is expected to be clean or to meet the
+    shared-object refusal. It never carries the grant itself: a grant exists only
+    as a live object inside ``car_following_broker`` and only in this process (see
+    that module's docstring for why nothing about one is ever serialized).
+    """
+    proposals = car_following_broker.recall(set_id, session_id=session_id)
+    if not proposals:
+        return None
+    # Imported here rather than at module scope: this router is imported by the
+    # FastAPI app at startup and ``tools_calibration`` pulls in the whole tool
+    # layer (tools_metrics -> results readers, tools_network -> the shadow model
+    # parser). Every other agent-tool import in this file is deferred the same
+    # way for the same reason.
+    from services.agent.tools_calibration import build_proposal_payload
+
+    payload = build_proposal_payload(proposals, diagnosis=None)
+    # What the behaviour holds RIGHT NOW, for the three members (refuter, #47).
+    # The card pauses on one member at a time, so by the second and third card
+    # some of the set is already in the model — and without this the panel had
+    # no field that could tell them apart and labelled every member it was not
+    # currently asking about "not yet approved", which is false the moment the
+    # first one lands. Read off the same live shadow model the re-mint below
+    # re-derives the radius from, so the two cannot disagree.
+    live_behavior = car_following_broker.behavior_in_model(
+        payload.get("behavior_no"), shadow_model
+    )
+    payload["current_values"] = (
+        {name: live_behavior.get(name) for name in (payload.get("set_members") or ())}
+        if live_behavior is not None
+        else None
+    )
+    verdict = car_following_broker.mint(set_id, shadow_model, session_id=session_id)
+    payload["grant"] = {
+        "reason": verdict["reason"],
+        "available": verdict["grant"] is not None,
+        "consented_radius": verdict["consented_radius"],
+        "current_radius": verdict["current_radius"],
+    }
+    # The grant object itself must never reach a response body, and
+    # build_proposal_payload does not produce one — asserted here because this is
+    # the boundary where a future edit would be tempted to add it.
+    payload.pop("grant_available", None)
+    return payload
+
+
 def _record_approval_decision(
     work_dir: Path,
     session_id: str,
@@ -1132,6 +1198,15 @@ async def _stream_agent_turn(
                 # in `finally` alongside tools_network's, same hygiene rationale.
                 tools_run.set_active_run_source(artifact_manager.working_path)
                 tools_run.set_run_started_callback(on_run_started)
+                # Unit #47: a THIRD module-global in the same family, for the
+                # same reason (a tool receives only its pydantic params, so this
+                # is how `propose_car_following_from_saturation_flow` learns
+                # which session's store to put its proposal set in). The store
+                # itself is keyed per session regardless of what this says — an
+                # unset global means nothing is remembered, never that one
+                # session's set becomes visible to another. Reset in `finally`
+                # alongside the other two.
+                car_following_broker.set_active_session(session_id)
                 if edit_session is not None:
                     set_active_edit_session(edit_session)
                 try:
@@ -1161,6 +1236,12 @@ async def _stream_agent_turn(
                     tools_network.set_active_inpx(None)
                     tools_run.clear_active_run_source()
                     tools_run.clear_run_started_callback()
+                    # The SET stays remembered (an approval card outlives the
+                    # turn that proposed it, and `/agent/approve` re-mints from
+                    # it); only the "which turn is running" pointer is cleared,
+                    # so a later unrelated request cannot write into this
+                    # session's store.
+                    car_following_broker.set_active_session(None)
         except Exception as exc:  # noqa: BLE001 - surfaced as an apologetic `done`, never raised
             holder["error"] = exc
         finally:
@@ -1221,6 +1302,13 @@ async def _stream_agent_turn(
             if "job_id" in value:
                 streamed_step["job_id"] = value["job_id"]
                 step_event["job_id"] = value["job_id"]
+            # Unit #47: unit #43's per-node diagnosis ladder (run_reality_check
+            # only, shaped at orchestrator's own choke point). Forwarded the
+            # same way and for the same reason as the two above -- the drawer
+            # renders the rung as the step lands, without waiting for `done`.
+            if "diagnosis" in value:
+                streamed_step["diagnosis"] = value["diagnosis"]
+                step_event["diagnosis"] = value["diagnosis"]
             streamed_steps.append(streamed_step)
             yield encode_stream_event(step_event)
     finally:
@@ -1294,6 +1382,23 @@ async def _stream_agent_turn(
         # `approval_event["actions"]` (test_agent_approval_endpoint.py,
         # test_agent_run_approval_endpoint.py) needed no changes at all.
         focus = result.pending_approval.get("focus")
+        # Unit #47: is this pause the Table 5-6 car-following set? Asked of the
+        # BROKER, by canonical signature — the same comparison the grant itself
+        # makes — rather than by sniffing the tool name, so "the router thinks
+        # this action belongs to the set" and "the grant covers this action"
+        # cannot disagree.
+        car_following_set_id = car_following_broker.set_id_covering(
+            action_entry, session_id=session_id
+        )
+        car_following_set = (
+            _car_following_card_payload(
+                car_following_set_id,
+                session_id,
+                artifact_manager.shadow_model,
+            )
+            if car_following_set_id
+            else None
+        )
         pending_file_payload = {
             "approval_id": approval_id,
             "created_at": time.time(),
@@ -1318,6 +1423,18 @@ async def _stream_agent_turn(
         # approved action's signature by PreapprovedWriteGate regardless.
         if selection:
             pending_file_payload["selection"] = selection
+        # Unit #47 — a REFERENCE, never a payload. This is the only thing about
+        # the car-following grant that touches disk: an opaque set id naming a
+        # proposal set THIS PROCESS minted earlier in THIS session. Editing this
+        # file to invent one buys nothing — `car_following_broker.recall`
+        # answers None for every id it did not build itself, the approve leg
+        # then constructs its gate with no grant at all, and
+        # `driving_behavior_shared_object_edit` refuses exactly as it did before
+        # #44-b. The grant that eventually reaches the gate is RE-MINTED at
+        # approve time from the live proposal objects, never deserialized from
+        # anything here, so no field in this file can widen what it covers.
+        if car_following_set_id:
+            pending_file_payload["car_following_set_id"] = car_following_set_id
         _write_pending_approval(work_dir, pending_file_payload)
         approval_payload = {
             "approval_id": approval_id,
@@ -1326,6 +1443,12 @@ async def _stream_agent_turn(
             "assumptions": assumptions,
             "focus": focus,
         }
+        if car_following_set is not None:
+            # Attached at PAYLOAD level, sibling of actions/warnings/focus, for
+            # the same reason `focus` is: `action_entry` stays byte-unchanged so
+            # the existing exact-equality assertions on `approval_event["actions"]`
+            # keep passing.
+            approval_payload["car_following_set"] = car_following_set
         yield encode_stream_event(
             {"type": "approval_request", "stream_id": stream_id, **approval_payload}
         )
@@ -1440,7 +1563,21 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
         source_inpx=_session_source_inpx(session_id, work_dir), work_dir=work_dir
     )
     engine = GuardrailEngine()
-    gate = ProposeWriteGate()
+    # Unit #47: the gate is built BEFORE the planner runs, so the Table 5-6 set
+    # a grant would come from does not exist yet — it is minted mid-turn by
+    # `propose_car_following_from_saturation_flow`. Hence a LATE binder rather
+    # than an eager grant: the gate asks the broker at the moment preflight asks
+    # it for provenance, which is after the proposing tool has run. It stays
+    # machinery the planner cannot reach (the planner emits only
+    # `{"tool","params"}`), and it can only ever answer with a grant re-minted
+    # from a real proposal set against the CURRENT working copy. No set, no
+    # session, or a radius that has moved -> no grant, and the ordinary
+    # shared-object refusal applies exactly as it did before #44-b.
+    gate = ProposeWriteGate(
+        grant_provider=car_following_broker.grant_provider(
+            lambda: artifact_manager.shadow_model, session_id=session_id
+        )
+    )
     # P7: resolved HERE, in the request handler, rather than on the streaming
     # worker thread — it is pure file reads (parse + lru_cache), it must not
     # sit inside the per-session turn lock, and resolving before the turn
@@ -1554,6 +1691,17 @@ def approve_agent_action(
 
     language = str(pending.get("language") or "ko")
 
+    # Unit #47: a declined set is forgotten. The pending file is single-use and
+    # already gone, so the set could not be spent through it either way — but a
+    # human who said no is the clearest possible statement that this proposal's
+    # grant should stop existing, and the store is the only place it lives.
+    # Reading the id off the (untrusted) file is safe here in the one direction
+    # that matters: the worst a tampered value can do is forget a set, which
+    # only ever produces refusals.
+    declined_set_id = pending.get("car_following_set_id")
+    if not payload.approved and isinstance(declined_set_id, str) and declined_set_id:
+        car_following_broker.forget(declined_set_id, session_id=payload.session_id)
+
     if not payload.approved:
 
         async def decline_events() -> AsyncIterator[str]:
@@ -1592,7 +1740,35 @@ def approve_agent_action(
         source_inpx=_session_source_inpx(payload.session_id, work_dir), work_dir=work_dir
     )
     engine = GuardrailEngine()
-    gate = PreapprovedWriteGate(set(pending.get("signatures") or []))
+    # Unit #47: RE-MINT, never deserialize. `pending` came off disk and is
+    # treated as untrusted throughout — the only thing read from it here is the
+    # set id, a reference. `mint` looks that id up in this process's own memory
+    # (nothing found -> no grant), runs `saturation_flow.grant_from_proposals`
+    # again over the live proposal objects so every structural check re-runs at
+    # the moment the click is honoured, and re-derives the consent radius from
+    # the CURRENT working copy: a reference graph that moved between the card and
+    # this request yields no grant and a named reason, not a quiet pass. The
+    # constraint engine re-derives the radius a third time at preflight
+    # (`car_following_grant.evaluate`), so a stale grant could not survive there
+    # either.
+    # Bound LATE for one further reason: this handler runs before
+    # `_ensure_working_copy`, so `artifact_manager.shadow_model` is still None
+    # here and the radius would be re-derived against nothing. The provider is
+    # consulted during preflight, on the turn thread, against the re-synced
+    # working copy.
+    car_following_set_ref = pending.get("car_following_set_id")
+    gate = PreapprovedWriteGate(
+        set(pending.get("signatures") or []),
+        grant_provider=(
+            car_following_broker.grant_provider(
+                lambda: artifact_manager.shadow_model,
+                session_id=payload.session_id,
+                set_id=str(car_following_set_ref),
+            )
+            if isinstance(car_following_set_ref, str) and car_following_set_ref
+            else None
+        ),
+    )
     # M2.4: a run-tier approval needs the artifact manager + active-inpx
     # context (set in _stream_agent_turn's run(), same as every turn) but
     # NOT a live VissimEditSession — the job queue owns COM for runs (see

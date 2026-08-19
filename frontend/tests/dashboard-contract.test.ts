@@ -7366,3 +7366,313 @@ test("unit #41-b: the subject trim removes a repeated subject and NOTHING else",
   assert.equal(messageWithoutSubject("", "무언가 잘못되었습니다"), "무언가 잘못되었습니다");
   assert.equal(messageWithoutSubject("링크 42", ""), "");
 });
+
+// ---------------------------------------------------------------------------
+// Unit #47 — the diagnosis ladder (#43) and the Table 5-6 proposal set (#44)
+// reach a surface a user can see, and the #44-b grant reaches the product path
+// without ever becoming a thing a file can claim.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #47: the approval card states the whole SET, not just the one write it pauses on", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const api = read("lib/api.ts");
+
+  pin.match(
+    api,
+    /car_following_set\?: AgentCarFollowingSet;/,
+    "expected the set to ride on the approval payload as a sibling of actions/warnings/focus",
+  );
+  pin.match(
+    floatingAssistant,
+    /carFollowingSet: event\.car_following_set/,
+    "expected the approval state to carry the set through from the wire event",
+  );
+  pin.match(
+    floatingAssistant,
+    /<CarFollowingSetPanel set=\{approval\.carFollowingSet\} action=\{approval\.actions\[0\]\} \/>/,
+    "expected the approval card to render the set panel",
+  );
+  // The whole point: all three members are listed, and the one being approved
+  // now is told apart from the two that are not.
+  pin.match(
+    floatingAssistant,
+    /members\.map\(\(member\) => \{[\s\S]{0,400}?const isThis = member === thisParameter;/,
+    "expected every set member to render, with THIS card's write identified among them",
+  );
+  // A member is one of THREE things, not two (refuter, #47): the write being
+  // approved now, one already in the model, or one that is not applied yet. The
+  // label used to be a flat "미승인 / not yet approved" for both of the other
+  // two, which is false as soon as the first of the three lands -- and this
+  // panel exists precisely so a partly-applied row cannot go unnoticed.
+  pin.match(
+    floatingAssistant,
+    /isThis[\s\S]{0,300}?이 승인[\s\S]{0,160}?현재 값 일치[\s\S]{0,160}?미적용/,
+    "expected a member to be told apart as this approval / already landed / not applied yet",
+  );
+  pin.match(
+    floatingAssistant,
+    /const landed = \(member: string\) =>\s*\n\s*typeof current\[member\] === "number" && current\[member\] === expected\[member\];/,
+    "expected 'already landed' to be read off the live model's value, not an approval history",
+  );
+  pin.match(
+    api,
+    /current_values\?: Record<string, number \| null> \| null;/,
+    "expected the card payload to carry what the behaviour currently holds",
+  );
+  pin.doesNotMatch(
+    withoutComments(floatingAssistant),
+    /미승인|not yet approved/,
+    "the panel must not claim a member is unapproved -- it knows the model's state, not the approval's",
+  );
+  // Both bracketing rows, so rounding DOWN is auditable rather than a number
+  // that appeared from nowhere.
+  pin.match(
+    floatingAssistant,
+    /bracketed[\s\S]{0,700}?bracket_lower\?\.saturation_flow_pcu[\s\S]{0,300}?bracket_upper\?\.saturation_flow_pcu/,
+    "expected a bracketed lookup to show BOTH neighbouring rows",
+  );
+  pin.match(
+    floatingAssistant,
+    /아래 행으로 내림/,
+    "expected the down-rounding policy to be stated where the two rows are shown",
+  );
+  // The measurement is cited on the card, not merely asserted to exist.
+  pin.match(
+    floatingAssistant,
+    /measurement\.attribution \?\? "-"\} · \{measurement\.method \?\? "-"/,
+    "expected the measurement's attribution and method on the card",
+  );
+  // The consent sentence: the forecast plus the radius the human agrees to.
+  pin.match(
+    floatingAssistant,
+    /set\.consent_radius_phrase/,
+    "expected the consented radius phrase (the sentence the exception rests on) on the card",
+  );
+  pin.match(
+    floatingAssistant,
+    /approvedPath\.expected_to_refuse[\s\S]{0,600}?승인해도 거부됩니다[\s\S]{0,200}?승인 시 통과 예상/,
+    "expected the approved-path forecast to say clean or refused, in the user's language",
+  );
+});
+
+contractTest("unit #47: the partial-approval warning is the backend's sentence, quoted, never the UI's", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const saturationFlow = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "saturation_flow.py"),
+    "utf-8",
+  );
+
+  // The sentence has ONE home, and it is the module that knows why it is true.
+  pin.match(
+    saturationFlow,
+    /PARTIAL_APPROVAL_WARNING: dict\[str, str\] = \{/,
+    "expected the set's partial-approval warning to be a named constant the UI can quote",
+  );
+  pin.match(
+    saturationFlow,
+    /행태가 표의 어느 행과도 일치하지 않게 됩니다\./,
+    "expected the Korean sentence to still say a partly-approved set matches no published row",
+  );
+  // ... and it is still spliced back into every member's rationale, so nothing
+  // a reader saw before this extraction stopped being said.
+  for (const lang of ["ko", "en", "ja"]) {
+    pin.match(
+      saturationFlow,
+      literalPattern(`+ PARTIAL_APPROVAL_WARNING["${lang}"]`),
+      `expected the ${lang} rationale to still end with that same sentence`,
+    );
+  }
+
+  pin.match(
+    floatingAssistant,
+    /pickText\(set\.partial_approval_warning, lang\)/,
+    "expected the card to render the backend's own sentence in the user's language",
+  );
+  // The UI must not carry its own copy of it. A second wording is a second
+  // thing to keep true.
+  pin.doesNotMatch(
+    withoutComments(floatingAssistant),
+    /어느 행과도 일치하지 않|matching no published row/,
+    "the UI must never write its own version of the partial-approval warning",
+  );
+});
+
+contractTest("unit #47: the diagnosis ladder renders per node -- rung, next action, and the evidence behind a fold", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const api = read("lib/api.ts");
+  const orchestrator = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "orchestrator.py"),
+    "utf-8",
+  );
+  const assistantRouter = readFileSync(
+    path.join(repoRoot, "backend", "routers", "assistant.py"),
+    "utf-8",
+  );
+
+  // It has to be on the wire at all -- it was not, before this unit.
+  pin.match(
+    orchestrator,
+    /if decision\.tool == "run_reality_check" and envelope\["status"\] == "ok":/,
+    "expected the reality-check step to graft its diagnosis onto the step payload",
+  );
+  pin.match(
+    assistantRouter,
+    /if "diagnosis" in value:\s*\n\s*streamed_step\["diagnosis"\] = value\["diagnosis"\]/,
+    "expected the router to forward the diagnosis onto the streamed step event",
+  );
+  pin.match(api, /diagnosis\?: AgentDiagnosis;/, "expected AgentStep to carry the diagnosis");
+
+  pin.match(
+    floatingAssistant,
+    /<AgentDiagnosisLadder steps=\{message\.agentSteps\} \/>/,
+    "expected the ladder to render in the chat message alongside the step narration",
+  );
+  // Five rungs, in human words.
+  for (const rung of ["DEMAND_LEVEL", "ROUTING_SPLIT", "CAPACITY_LIMIT", "SIGNAL_TIMING", "UNCLASSIFIABLE"]) {
+    pin.match(
+      floatingAssistant,
+      literalPattern(`${rung}: [`),
+      `expected a human label for the ${rung} rung`,
+    );
+  }
+  // The next action -- the thing a modeller does next -- is the backend's own
+  // sentence, and the rung's reasoning folds away behind a disclosure.
+  pin.match(
+    floatingAssistant,
+    /pickText\(node\.next_action\?\.text, lang\)/,
+    "expected the next action to be the backend's own localized sentence",
+  );
+  pin.match(
+    floatingAssistant,
+    /<details[\s\S]{0,600}?pickText\(node\.why, lang\)/,
+    "expected the rung's reasoning to sit behind a disclosure, not in the one-line verdict",
+  );
+  // #44's unwired hand-off, made to follow naturally from the rung that needs it.
+  pin.match(
+    floatingAssistant,
+    /node\.rung === "CAPACITY_LIMIT"[\s\S]{0,400}?Table 5-6/,
+    "expected a capacity-limited node to say that a measurement yields the Table 5-6 set",
+  );
+  // Raw codes are shown, but folded and mono -- the #41 doctrine convention.
+  pin.match(
+    floatingAssistant,
+    /text-slate-400">\s*\{node\.rung\}/,
+    "expected the raw rung/next-action codes to be mono and inside the fold",
+  );
+});
+
+contractTest("unit #47: a grant is re-minted from memory, never carried by the pending-approval file", (pin) => {
+  const assistantRouter = readFileSync(
+    path.join(repoRoot, "backend", "routers", "assistant.py"),
+    "utf-8",
+  );
+  const broker = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "car_following_broker.py"),
+    "utf-8",
+  );
+
+  // The file gets a REFERENCE and nothing else.
+  pin.match(
+    assistantRouter,
+    /pending_file_payload\["car_following_set_id"\] = car_following_set_id/,
+    "expected only an opaque set id to be persisted beside the signatures",
+  );
+  pin.doesNotMatch(
+    assistantRouter,
+    /pending_file_payload\["car_following_grant"\]/,
+    "the pending-approval file must never carry a grant",
+  );
+  // Both gates get the grant LATE, from the broker, against the live model.
+  pin.match(
+    assistantRouter,
+    /gate = ProposeWriteGate\(\s*\n\s*grant_provider=car_following_broker\.grant_provider\(/,
+    "expected the proposing gate to resolve its grant through the broker",
+  );
+  pin.match(
+    assistantRouter,
+    /grant_provider=\(\s*\n\s*car_following_broker\.grant_provider\([\s\S]{0,300}?set_id=str\(car_following_set_ref\)/,
+    "expected the approve gate to be pinned to the set id the file named, and re-mint it",
+  );
+  // The broker never deserializes: it re-runs the real minting path.
+  // Anchored inside mint() specifically: the same call also appears in
+  // remember(), and an unanchored pin stayed green when mint() was mutated to
+  // rehydrate instead (proved by mutation, 2026-08-19).
+  // Anchored on each function's OWN failure branch: the two call sites are
+  // otherwise byte-identical, and a pin that could match either stayed green
+  // while mint() was mutated to rehydrate (proved by mutation, 2026-08-19).
+  pin.match(
+    broker,
+    /grant = saturation_flow\.grant_from_proposals\(actions\)\s*\n\s*except \(ValueError, TypeError, AttributeError\):\s*\n\s*return \{\*\*result, "reason": REMINT_FAILED\}/,
+    "expected mint() to re-run the only minting path rather than rehydrate a payload",
+  );
+  pin.match(
+    broker,
+    /grant = saturation_flow\.grant_from_proposals\(actions\)\s*\n\s*except \(ValueError, TypeError, AttributeError\):\s*\n\s*return None/,
+    "expected remember() to validate a set by actually minting one, and keep nothing when it cannot",
+  );
+  pin.match(
+    broker,
+    /current = car_following_grant\.consent_radius\(behavior\)[\s\S]{0,400}?if current != consented:/,
+    "expected the radius to be re-derived from the live model and compared before any grant is issued",
+  );
+  pin.doesNotMatch(
+    withoutComments(broker),
+    /write_text\(|json\.dump|open\(/,
+    "the broker must never write a grant, or anything a grant can be rebuilt from, to disk",
+  );
+  // The store is an ISLAND (refuter, #47). mint() re-derives the grant off the
+  // remembered objects, so a reference into the store is a lever on what the
+  // grant covers -- measured: mutating a remembered proposal's `value` after
+  // remember() made the grant cover ax=99.0 and stop covering the ax=2.5 the
+  // human was shown. Copy on the way in AND on the way out.
+  pin.match(
+    broker,
+    /sets\[grant\.set_id\] = _snapshot\(actions\)/,
+    "expected remember() to store a private copy, not the caller's objects",
+  );
+  pin.match(
+    broker,
+    /return None if stored is None else _snapshot\(stored\)/,
+    "expected recall() to hand out a copy, not the stored objects",
+  );
+});
+
+contractTest("unit #47: the capacity premise is not obtainable by leaving a field out", (pin) => {
+  const toolsCalibration = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "tools_calibration.py"),
+    "utf-8",
+  );
+
+  // geh_ladder's last branch is `concentrated and control == CONTROL_SIGNALIZED`,
+  // and `control` comes from the CALLER (targets[].node_control). Measured on
+  // one run's evidence: declaring "signalized" gave SIGNAL_TIMING and a refusal;
+  // omitting the field gave CAPACITY_LIMIT, a proposal and a mintable grant. So
+  // the omission is refused by name -- MRWA step 6 precedes step 7.
+  pin.match(
+    toolsCalibration,
+    /NODE_CONTROL_UNDECLARED = "NODE_CONTROL_UNDECLARED"/,
+    "expected the undeclared-control refusal to have a name of its own",
+  );
+  pin.match(
+    toolsCalibration,
+    /if geh_ladder\.NODE_CONTROL_UNKNOWN in \(diagnosis_payload\.get\("missing_evidence"\) or \(\)\):/,
+    "expected the ladder's own caveat to be what triggers the refusal",
+  );
+  pin.match(
+    toolsCalibration,
+    /"reason_code": NODE_CONTROL_UNDECLARED[\s\S]{0,1200}?"ko":[\s\S]{0,600}?"en":[\s\S]{0,600}?"ja":/,
+    "expected the refusal to explain itself in all three languages",
+  );
+  // ... and the description the planner READS must ask for the field, not
+  // assert the derivation is immune to every argument (the retracted sentence).
+  pin.doesNotMatch(
+    toolsCalibration,
+    /no argument a caller can pass/,
+    "the tool must not claim its rung derivation is immune to every caller argument",
+  );
+  pin.match(
+    toolsCalibration,
+    /Include this node's\s*\n?\s*"?\s*"?node_control in targets/,
+    "expected the planner-facing description to ask for node_control by name",
+  );
+});

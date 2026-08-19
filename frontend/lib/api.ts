@@ -1055,6 +1055,46 @@ export interface AgentQueryRequest {
   }[];
 }
 
+// Unit #43's diagnosis ladder for ONE node, unit #47's wire shape for it
+// (backend/services/agent/geh_ladder.py's `_rung`, trimmed by
+// orchestrator.py's `_diagnosis_step_payload`). `rung` is one of
+// DEMAND_LEVEL / ROUTING_SPLIT / CAPACITY_LIMIT / SIGNAL_TIMING /
+// UNCLASSIFIABLE; a node the model already reproduces has no diagnosis at all
+// and never appears here. `why` and `next_action.text` are already localized
+// server-side into all three languages -- the client picks, it never composes.
+// `mrwa_step` is the MRWA §2.12.1 calibration step that AUTHORISES the next
+// action, and is null exactly for SUPPLY_MISSING_EVIDENCE (there is no
+// guideline step for "we could not classify this").
+export interface AgentDiagnosisNode {
+  node_id: string;
+  node_name?: string | null;
+  rung: string;
+  why: { ko: string; en: string; ja: string };
+  next_action: {
+    code: string;
+    mrwa_step: number | null;
+    citation: string;
+    text: { ko: string; en: string; ja: string };
+  };
+  missing_evidence: string[];
+  observed_total?: number | null;
+  modelled_total?: number | null;
+  node_total_geh?: number | null;
+  geh_threshold?: number | null;
+  node_control?: string | null;
+}
+
+// The per-step block above, plus the report-level tally. `nodes` is capped
+// server-side (orchestrator.py's _DIAGNOSIS_WIRE_CAP) while `total` stays the
+// real count, so a big report says so instead of quietly shortening itself.
+export interface AgentDiagnosis {
+  nodes: AgentDiagnosisNode[];
+  total: number;
+  truncated: boolean;
+  by_rung: Record<string, string[]>;
+  geh_threshold?: number | null;
+}
+
 export interface AgentStep {
   summary: string;
   tool: string;
@@ -1065,6 +1105,11 @@ export interface AgentStep {
   // Drives AgentRunDashboardHint's replay-availability note.
   trajectory_recorded?: boolean;
   job_id?: string;
+  // Unit #47: present only for a successful run_reality_check step, from the
+  // same choke point and for the same reason (read off the tool's returned
+  // data, never parsed from prose). Absent -- never present-and-empty -- when
+  // the report had nothing to diagnose.
+  diagnosis?: AgentDiagnosis;
 }
 
 // M2.3: one proposed write action inside an approval_request/done.approval
@@ -1190,12 +1235,88 @@ export interface NetworkSearchResponse {
 // populating, at no future contract-breaking cost. `focus` (v2 UX unit) is
 // additive -- always present (never raises server-side), possibly the
 // null-bbox "no focus" shape.
+// Unit #44's MRWA Table 5-6 car-following proposal SET, as the approval card
+// receives it (unit #47). It exists because the approval machinery authorises
+// each write's signature independently: the card pauses on ONE of the three
+// (`ax`, `bx_add`, `bx_mult`), and one third of one table row is not a change
+// anybody can judge on its own. Every sentence in here is the PROPOSAL's own,
+// already written server-side in three languages -- `partial_approval_warning`
+// is quoted verbatim from saturation_flow.PARTIAL_APPROVAL_WARNING, which is
+// also the last sentence of each member's `rationale`. The UI renders these; it
+// must never compose its own version of any of them.
+//
+// `grant.reason` is the RE-MINT verdict at card-build time (GRANTED /
+// RADIUS_DRIFTED / RADIUS_NOT_FULLY_NAMED / UNKNOWN_SET / ...), never a grant:
+// a grant exists only as a live object inside the server process and nothing
+// about one is ever serialized (backend/services/agent/car_following_broker.py).
+export interface AgentCarFollowingSet {
+  status: "PROPOSED" | "REFUSED";
+  set_id?: string;
+  set_members?: string[];
+  behavior_no?: string;
+  behavior_scope?: string | null;
+  expected_after_apply?: Record<string, number>;
+  // What the behaviour holds RIGHT NOW for those same members, read off the
+  // live shadow model when the card was built (refuter, #47). The set is
+  // approved one member per card, so this is what lets the panel tell a member
+  // that has already landed from one that has not -- a claim about the MODEL,
+  // never about approval history, which nothing here records. Null when the
+  // behaviour could not be read back.
+  current_values?: Record<string, number | null> | null;
+  applied_row?: { saturation_flow_pcu?: number; additive?: number; multiplicative?: number };
+  // BRACKETED carries both neighbouring rows so rounding DOWN is auditable;
+  // EXACT carries neither, because there was nothing to round between.
+  lookup?: {
+    status?: string;
+    measured_pcu?: number | null;
+    bracket_lower?: { saturation_flow_pcu?: number; additive?: number; multiplicative?: number } | null;
+    bracket_upper?: { saturation_flow_pcu?: number; additive?: number; multiplicative?: number } | null;
+    policy?: string;
+    policy_basis?: string;
+    citation?: string;
+  };
+  measurement?: {
+    saturation_flow_pcu?: number | null;
+    provenance?: string;
+    method?: string | null;
+    attribution?: string | null;
+    measured_at?: string | null;
+    samples?: number | null;
+    vehicles_per_sample?: number | null;
+  };
+  partial_approval_warning?: { ko: string; en: string; ja: string };
+  consent_radius?: { reference_count?: number; link_total?: number; complete?: boolean };
+  consent_radius_phrase?: string;
+  // Both paths the modeller can take, forecast by the builder: the write
+  // issued on its own vs. dispatched through the approval machinery.
+  preflight_forecast?: {
+    paths?: Record<string, { expected_to_refuse?: boolean; constraint_id?: string; why?: string }>;
+  };
+  proposals?: {
+    params?: Record<string, unknown> | null;
+    rationale?: { ko: string; en: string; ja: string };
+    reason_code?: string | null;
+  }[];
+  rationale?: { ko: string; en: string; ja: string };
+  reason_code?: string | null;
+  grant?: {
+    reason: string;
+    available: boolean;
+    consented_radius?: Record<string, unknown> | null;
+    current_radius?: Record<string, unknown> | null;
+  };
+}
+
 export interface AgentApproval {
   approval_id: string;
   actions: AgentAction[];
   warnings: AgentWarning[];
   assumptions: string[];
   focus?: AgentApprovalFocus;
+  /** Unit #47: present only when this pause is one member of a Table 5-6
+   * car-following set. Additive, payload-level (a sibling of actions/warnings,
+   * exactly like `focus`) so `actions` stays byte-unchanged. */
+  car_following_set?: AgentCarFollowingSet;
 }
 
 export interface AgentQueryResponse {

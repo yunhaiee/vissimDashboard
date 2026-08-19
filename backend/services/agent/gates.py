@@ -49,7 +49,7 @@ repo has had to un-ship that exact design twice).
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from services.agent.car_following_grant import CarFollowingGrant
@@ -88,6 +88,32 @@ def _write_provenance(
     if grant is None or not grant.covers(action):
         return None
     return {"kind": grant.kind, "grant": grant, "consent": consent}
+
+
+def _resolve_grant(gate: Any, action: dict[str, Any]) -> "CarFollowingGrant | None":
+    """The gate's grant: eager if it has one, else its late binder's answer (#47).
+
+    Both gates are constructed by ``routers/assistant.py`` before the thing the
+    grant is derived from exists -- the proposing turn's set is minted mid-turn by
+    the tool that proposes it, and the approving turn's shadow model is only
+    parsed once the working copy has been re-synced on the turn thread. A gate
+    carrying NEITHER a grant nor a provider (the default everywhere else, and
+    every test and caller that predates #47) resolves to ``None`` here, which is
+    the pre-#44-b behaviour.
+
+    A provider that raises means NO grant, never a failed turn: the fallback is
+    the ordinary shared-object refusal, which is a named message a human can read.
+    """
+    grant = getattr(gate, "grant", None)
+    if grant is not None:
+        return grant
+    provider = getattr(gate, "grant_provider", None)
+    if provider is None:
+        return None
+    try:
+        return provider(action)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def signature(tool: str, params: dict[str, Any]) -> str:
@@ -152,8 +178,22 @@ class ProposeWriteGate:
     which is the sentence the decision's safety argument rests on.
     """
 
-    def __init__(self, grant: "CarFollowingGrant | None" = None) -> None:
+    #: #47: a LATE binder for the same grant, ``action -> CarFollowingGrant |
+    #: None``. This gate is constructed by ``routers/assistant.py`` before the
+    #: planner has run, so on the real product path the set the grant would come
+    #: from does not exist yet -- it is built mid-turn, by the tool that proposes
+    #: it. ``grant`` (eager) stays the primary field and wins whenever it is set;
+    #: the provider is consulted only when it is ``None``, and a gate given
+    #: neither behaves exactly as it did before #44-b. Machinery either way: like
+    #: ``grant``, it is supplied by the router and unreachable from the planner,
+    #: which only ever emits ``{"tool", "params"}``.
+    def __init__(
+        self,
+        grant: "CarFollowingGrant | None" = None,
+        grant_provider: "Callable[[dict[str, Any]], CarFollowingGrant | None] | None" = None,
+    ) -> None:
         self.grant = grant
+        self.grant_provider = grant_provider
 
     def authorize(self, action: dict[str, Any], spec: "ToolSpec") -> bool:
         raise ApprovalRequired(action, spec)
@@ -161,7 +201,7 @@ class ProposeWriteGate:
     def write_provenance(self, action: dict[str, Any]) -> dict[str, Any] | None:
         """See :meth:`PreapprovedWriteGate.write_provenance`. Always
         ``AWAITING_APPROVAL`` -- this gate cannot dispatch anything."""
-        return _write_provenance(self.grant, action, AWAITING_APPROVAL)
+        return _write_provenance(_resolve_grant(self, action), action, AWAITING_APPROVAL)
 
 
 class PreapprovedWriteGate:
@@ -198,12 +238,22 @@ class PreapprovedWriteGate:
     """
 
     def __init__(
-        self, signatures: set[str], grant: "CarFollowingGrant | None" = None
+        self,
+        signatures: set[str],
+        grant: "CarFollowingGrant | None" = None,
+        grant_provider: "Callable[[dict[str, Any]], CarFollowingGrant | None] | None" = None,
     ) -> None:
         self.signatures = set(signatures)
         #: #44-b: the Table 5-6 grant these approved signatures came from, or
         #: ``None`` (every other unit's approvals, unchanged).
         self.grant = grant
+        #: #47: the same grant, resolved late. ``/agent/approve`` builds this
+        #: gate in the request handler, where the working copy has not been
+        #: re-synced yet and ``artifact_manager.shadow_model`` is still ``None``
+        #: — so the radius the grant is re-derived against would be read from
+        #: nothing. Consulted only when ``grant`` is ``None``; a gate given
+        #: neither is byte-identical to its pre-#47 self.
+        self.grant_provider = grant_provider
         # Every signature this instance has ever granted -- superset of the
         # (now-removed-from `signatures`) ones already dispatched this
         # re-run. Powers `refusal_reason` below; never consulted by
@@ -258,7 +308,7 @@ class PreapprovedWriteGate:
             consent = AWAITING_APPROVAL
         else:
             return None
-        return _write_provenance(self.grant, action, consent)
+        return _write_provenance(_resolve_grant(self, action), action, consent)
 
 
 __all__ = [

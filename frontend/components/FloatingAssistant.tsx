@@ -20,6 +20,9 @@ import {
   streamAssistant,
   type AgentAction,
   type AgentApprovalFocus,
+  type AgentCarFollowingSet,
+  type AgentDiagnosis,
+  type AgentDiagnosisNode,
   type AgentStep,
   type AgentWarning,
   type AssistantQueryResponse,
@@ -61,6 +64,11 @@ type AgentApprovalState = {
    * already treats a missing/null bbox as "render nothing", so no separate
    * guard is needed here. */
   focus?: AgentApprovalFocus;
+  /** Unit #47: the MRWA Table 5-6 car-following SET this pause is one member
+   * of, from the same wire event -- see AgentCarFollowingSet in lib/api.ts.
+   * Undefined for every other approval, which is every approval this app had
+   * before this unit; CarFollowingSetPanel renders nothing then. */
+  carFollowingSet?: AgentCarFollowingSet;
 };
 
 type FloatingMessage = {
@@ -256,6 +264,7 @@ function approvalStateFromEvent(
     warnings?: AgentWarning[];
     assumptions?: string[];
     focus?: AgentApprovalFocus;
+    car_following_set?: AgentCarFollowingSet;
   },
   sessionId: string,
 ): AgentApprovalState {
@@ -267,6 +276,7 @@ function approvalStateFromEvent(
     assumptions: event.assumptions ?? [],
     resolution: "pending",
     focus: event.focus,
+    carFollowingSet: event.car_following_set,
   };
 }
 
@@ -1315,6 +1325,7 @@ function FloatingChatMessage({
         ) : (
           <>
             {hasAgentSteps && <AgentStepNarration steps={message.agentSteps!} />}
+            {hasAgentSteps && <AgentDiagnosisLadder steps={message.agentSteps} />}
             <AssistantAnswerContent content={message.content} response={message.response} />
             {hasAgentSteps && <AgentRunDashboardHint steps={message.agentSteps} />}
             {isActiveAssistant &&
@@ -1380,6 +1391,178 @@ function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
           )}
         </p>
       ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Unit #47 (a): unit #43's diagnosis ladder, on a surface a user can see.
+//
+// The ladder shipped 2026-08-18 and reached nobody: the reality-check report
+// never survived onto the HTTP wire (orchestrator.py's step payload was
+// {summary, tool, status}), so a node's rung, the reason it landed there and
+// the MRWA step authorising its next action existed only in the trace, the
+// audit ledger and whatever the answer prose happened to mention. #47 grafts
+// `diagnosis` onto the run_reality_check step; this renders it.
+//
+// ONE LINE PER NODE, PLUS A FOLD. The line is the verdict (rung + node + GEH);
+// everything that justifies it goes behind a native <details>, the same
+// disclosure convention app/genesis/jobs/[id]/page.tsx settled on for #41's
+// doctrine text -- it needs no state, survives a re-render with its answer
+// intact, and is not a <button>, which matters because a diagnosis is
+// information, not a control.
+// ---------------------------------------------------------------------------
+
+// The five rungs geh_ladder.py can return, in the descent order it tries them,
+// as human words. Codes are the backend's identity for these and are shown too
+// (folded, mono) -- the label is what a modeller reads, the code is what they
+// quote in a bug report.
+const AGENT_RUNG_LABELS: Record<string, [string, string, string]> = {
+  DEMAND_LEVEL: ["수요 수준", "Demand level", "需要水準"],
+  ROUTING_SPLIT: ["회전 배분", "Turn distribution", "回転配分"],
+  CAPACITY_LIMIT: ["용량 한계", "Capacity limit", "容量限界"],
+  SIGNAL_TIMING: ["신호 시간", "Signal timing", "信号時間"],
+  UNCLASSIFIABLE: ["분류 불가", "Unclassifiable", "分類不可"],
+};
+
+function rungLabel(rung: string, t: Translate): string {
+  const entry = AGENT_RUNG_LABELS[rung];
+  return entry ? t(entry[0], entry[1], entry[2]) : rung;
+}
+
+/** The tri-lingual blocks the backend already wrote. The client picks; it
+ * never composes one of these sentences itself. */
+function pickText(
+  text: { ko: string; en: string; ja: string } | undefined,
+  lang: string,
+): string {
+  if (!text) return "";
+  if (lang === "ko") return text.ko;
+  if (lang === "ja") return text.ja;
+  return text.en;
+}
+
+function AgentDiagnosisLadder({ steps }: { steps?: AgentStep[] }) {
+  const { t, lang } = useLanguage();
+  // The LAST reality check of the turn: a turn may run more than one (before
+  // and after an edit), and the later one is the current picture.
+  const diagnosis: AgentDiagnosis | undefined = (steps ?? [])
+    .filter((step) => step.tool === "run_reality_check" && step.diagnosis)
+    .map((step) => step.diagnosis!)
+    .pop();
+  if (!diagnosis || diagnosis.nodes.length === 0) return null;
+
+  return (
+    <div className="mb-2 rounded-lg border border-slate-200 bg-slate-50/60 px-2.5 py-2">
+      <p className="text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {t("노드별 진단", "Per-node diagnosis", "ノード別診断")}
+        <span className="ml-1.5 font-mono text-[13px] font-normal normal-case tracking-normal text-slate-400">
+          {diagnosis.truncated
+            ? t(
+                `${diagnosis.nodes.length} / ${diagnosis.total}`,
+                `${diagnosis.nodes.length} of ${diagnosis.total}`,
+                `${diagnosis.nodes.length} / ${diagnosis.total}`,
+              )
+            : `${diagnosis.total}`}
+        </span>
+      </p>
+      <div className="mt-1.5 space-y-1.5">
+        {diagnosis.nodes.map((node) => (
+          <AgentDiagnosisRow key={node.node_id} node={node} lang={lang} t={t} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AgentDiagnosisRow({
+  node,
+  lang,
+  t,
+}: {
+  node: AgentDiagnosisNode;
+  lang: string;
+  t: Translate;
+}) {
+  // THREE-COLOUR RULE (U-1, dashboard-contract.test.ts's "three accent
+  // colours" test): a node carrying a diagnosis is a node whose modelled
+  // volume MISSED its counted one, which is this app's rose "fail" state.
+  // UNCLASSIFIABLE is the one rung that is not a verdict about the network --
+  // it says the evidence did not reach one -- so it renders on the neutral ink
+  // ramp with a heavier hairline, the app-wide WARN treatment, never a fourth
+  // hue.
+  const unclassified = node.rung === "UNCLASSIFIABLE";
+  const chipClass = unclassified
+    ? "border-slate-400 bg-slate-100 text-slate-800"
+    : "border-rose-200 bg-rose-50 text-rose-700";
+  // The next action is the way FORWARD -- sky, this app's "selection /
+  // proposal" accent.
+  const nextAction = pickText(node.next_action?.text, lang);
+  // Unit #44's hand-off, made to follow naturally: a capacity-limited node is
+  // exactly the one MRWA §5.2.5.1 answers, and the treatment needs a measured
+  // stop-line saturation flow before it can propose anything. The ladder's own
+  // next_action text already asks for the measurement (step ⑦); this adds only
+  // what happens once it arrives, which is a fact about THIS app's tooling and
+  // therefore the app's own sentence to write.
+  const capacityHandoff =
+    node.rung === "CAPACITY_LIMIT"
+      ? t(
+          "측정값을 주면 MRWA Table 5-6에서 차량추종 3개 값(ax·bx_add·bx_mult)을 한 세트로 제안합니다.",
+          "Supply that measurement and the three Table 5-6 car-following values (ax, bx_add, bx_mult) are proposed as one set.",
+          "測定値をいただければ、MRWA Table 5-6 から追従の3値（ax・bx_add・bx_mult）を一組として提案します。",
+        )
+      : null;
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-surface px-2 py-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span
+          className={`rounded-full border px-1.5 py-0.5 text-[13px] font-bold uppercase tracking-[0.04em] ${chipClass}`}
+        >
+          {rungLabel(node.rung, t)}
+        </span>
+        <span className="font-mono text-[13px] text-slate-600">
+          {t("노드", "Node", "ノード")} {node.node_id}
+        </span>
+        {typeof node.node_total_geh === "number" && (
+          <span className="font-mono text-[13px] text-slate-500">
+            GEH {node.node_total_geh.toFixed(1)}
+            {typeof node.geh_threshold === "number" ? ` / ${node.geh_threshold}` : ""}
+          </span>
+        )}
+      </div>
+      {nextAction && (
+        <p className="mt-1 rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-[13px] leading-5 text-slate-800">
+          {nextAction}
+          {capacityHandoff && <span className="block mt-0.5 text-slate-600">{capacityHandoff}</span>}
+        </p>
+      )}
+      <details className="mt-1 text-[13px] leading-5 text-slate-600">
+        <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (근거·코드)", "More (reasoning, codes)", "詳細（根拠・コード）")}
+        </summary>
+        <div className="mt-1.5 flex flex-col gap-1.5 border-l border-slate-300 pl-3">
+          <p>{pickText(node.why, lang)}</p>
+          {(typeof node.observed_total === "number" || typeof node.modelled_total === "number") && (
+            <p className="font-mono text-[13px] text-slate-500">
+              {t("실측", "observed", "実測")} {node.observed_total ?? "-"} ·{" "}
+              {t("모델", "modelled", "モデル")} {node.modelled_total ?? "-"}
+            </p>
+          )}
+          {node.next_action?.citation && (
+            <p className="font-mono text-[13px] text-slate-500">{node.next_action.citation}</p>
+          )}
+          {node.missing_evidence.length > 0 && (
+            <p className="font-mono text-[13px] text-slate-500">
+              {t("빠진 근거", "missing evidence", "不足している根拠")}: {node.missing_evidence.join(", ")}
+            </p>
+          )}
+          <p className="font-mono text-[13px] text-slate-400">
+            {node.rung}
+            {node.next_action?.code ? ` · ${node.next_action.code}` : ""}
+          </p>
+        </div>
+      </details>
     </div>
   );
 }
@@ -1927,6 +2110,10 @@ function AgentApprovalCard({
         ))}
       </div>
 
+      {approval.carFollowingSet && (
+        <CarFollowingSetPanel set={approval.carFollowingSet} action={approval.actions[0]} />
+      )}
+
       {approval.focus?.bbox && (
         <ApprovalFocusMap focus={approval.focus} sessionId={approval.sessionId} action={approval.actions[0]} />
       )}
@@ -2036,6 +2223,194 @@ function AgentApprovalCard({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Unit #47 (b): the Table 5-6 SET, on the card that approves one third of it.
+//
+// The approval machinery authorises each write's canonical signature
+// INDEPENDENTLY -- one action per pause, one signature each -- so a card that
+// showed only the action it paused on would present one third of one published
+// table row as though it were a whole change. Unit #44 recorded that gap and
+// could not close it (preventing a partial approval means changing approval
+// machinery shared with every other unit, which is a human decision); what it
+// did instead was make the set DATA. This panel is the reader for it.
+//
+// Every sentence here comes from the backend. `partial_approval_warning` is
+// saturation_flow.PARTIAL_APPROVAL_WARNING verbatim -- the same three sentences
+// that already end each member's rationale -- and the forecast/radius strings
+// are the builder's own. The only prose this component writes is labels.
+// ---------------------------------------------------------------------------
+
+const CAR_FOLLOWING_MEMBER_LABELS: Record<string, [string, string, string]> = {
+  ax: ["정지 간격", "standstill distance", "停止時車間"],
+  bx_add: ["안전거리 가산부", "additive safety distance", "安全距離の加算部"],
+  bx_mult: ["안전거리 승산부", "multiplic. safety distance", "安全距離の乗算部"],
+};
+
+function CarFollowingSetPanel({
+  set,
+  action,
+}: {
+  set: AgentCarFollowingSet;
+  action?: AgentAction;
+}) {
+  const { t, lang } = useLanguage();
+  if (set.status !== "PROPOSED") return null;
+
+  const members = set.set_members ?? [];
+  const expected = set.expected_after_apply ?? {};
+  // Which of the three this card is actually asking about. The other two are
+  // still pending -- that is the whole reason this panel exists.
+  const thisParameter = typeof action?.params?.parameter === "string" ? action.params.parameter : "";
+  // ... and of those two, which are ALREADY in the model. The set is approved
+  // one member at a time, so on the second and third card part of it has landed
+  // (refuter, #47: the label used to read "not yet approved" for all of them,
+  // which stops being true the moment the first one is applied). Answered from
+  // `current_values` -- what the live behaviour holds, read server-side at
+  // card-build time -- so this states the MODEL's state, which is the thing the
+  // client can actually know, and never an approval history it cannot.
+  const current = set.current_values ?? {};
+  const landed = (member: string) =>
+    typeof current[member] === "number" && current[member] === expected[member];
+  const approvedPath = set.preflight_forecast?.paths?.approved_set;
+  const directPath = set.preflight_forecast?.paths?.direct_edit;
+  const measurement = set.measurement ?? {};
+  const lookup = set.lookup ?? {};
+  const bracketed = Boolean(lookup.bracket_lower && lookup.bracket_upper);
+
+  return (
+    <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50/50 px-2.5 py-2">
+      <p className="text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {t("MRWA Table 5-6 세트", "MRWA Table 5-6 set", "MRWA Table 5-6 の組")}
+        <span className="ml-1.5 font-mono text-[13px] font-normal normal-case tracking-normal text-slate-500">
+          {t(
+            `행태 ${set.behavior_no ?? "-"} · ${members.length}건 중 1건 승인`,
+            `behaviour ${set.behavior_no ?? "-"} · approving 1 of ${members.length}`,
+            `挙動 ${set.behavior_no ?? "-"} · ${members.length} 件中 1 件を承認`,
+          )}
+        </span>
+      </p>
+
+      {/* The three members, with THIS card's one marked. A member is either
+          the write being approved now (sky, the app's selection accent) or one
+          of the two that are not. */}
+      <div className="mt-1.5 space-y-0.5">
+        {members.map((member) => {
+          const isThis = member === thisParameter;
+          const label = CAR_FOLLOWING_MEMBER_LABELS[member];
+          return (
+            <div
+              key={member}
+              className={`flex items-baseline justify-between gap-2 rounded-md px-2 py-1 text-[13px] leading-5 ${
+                isThis ? "border border-sky-300 bg-surface text-slate-900" : "text-slate-600"
+              }`}
+            >
+              <span>
+                <span className="font-mono">{member}</span>
+                {label && <span className="ml-1.5">{t(label[0], label[1], label[2])}</span>}
+              </span>
+              <span className="flex items-baseline gap-1.5">
+                <span className="font-mono font-semibold">{expected[member] ?? "-"}</span>
+                <span className="text-[13px] text-slate-500">
+                  {isThis
+                    ? t("이 승인", "this approval", "この承認")
+                    : landed(member)
+                      ? t("현재 값 일치", "already at this value", "現在値と一致")
+                      : t("미적용", "not applied yet", "未適用")}
+                </span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* The partial-approval warning, quoted. Neutral ink + heavier hairline
+          is this app's WARN treatment (never a fourth hue) -- the same
+          treatment the preflight warnings a few lines below wear. */}
+      {set.partial_approval_warning && (
+        <p className="mt-1.5 rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[13px] leading-5 text-slate-800">
+          {pickText(set.partial_approval_warning, lang)}
+        </p>
+      )}
+
+      {/* The forecast -- what the guardrail will say on each path -- and the
+          radius sentence, which is the thing the human is actually consenting
+          to (DECISIONS.md 2026-08-19). */}
+      {approvedPath && (
+        <p
+          className={`mt-1.5 rounded-md border px-2 py-1 text-[13px] leading-5 ${
+            approvedPath.expected_to_refuse
+              ? "border-rose-200 bg-rose-50 text-rose-700"
+              : "border-emerald-200 bg-emerald-50 text-slate-800"
+          }`}
+        >
+          <span className="font-semibold">
+            {approvedPath.expected_to_refuse
+              ? t("승인해도 거부됩니다", "Refused even once approved", "承認しても拒否されます")
+              : t("승인 시 통과 예상", "Expected to pass once approved", "承認時は通過見込み")}
+          </span>
+          {set.consent_radius_phrase && (
+            <span className="ml-1.5 font-mono text-[13px] text-slate-600">
+              {set.consent_radius_phrase}
+            </span>
+          )}
+        </p>
+      )}
+
+      <details className="mt-1.5 text-[13px] leading-5 text-slate-600">
+        <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (측정 출처·표의 행·예보)", "More (measurement, table row, forecast)", "詳細（測定の出所・表の行・予報）")}
+        </summary>
+        <div className="mt-1.5 flex flex-col gap-1.5 border-l border-slate-300 pl-3">
+          <p>
+            <span className="font-semibold">{t("측정 출처", "Measurement source", "測定の出所")}: </span>
+            <span className="font-mono">{measurement.saturation_flow_pcu ?? "-"} pcu</span>
+            {" · "}
+            {measurement.attribution ?? "-"} · {measurement.method ?? "-"}
+            {measurement.measured_at ? ` · ${measurement.measured_at}` : ""}
+          </p>
+          {/* BOTH bracketing rows, so rounding DOWN is auditable rather than
+              a number that appeared from somewhere. */}
+          {bracketed ? (
+            <p>
+              <span className="font-semibold">{t("표의 행", "Table row", "表の行")}: </span>
+              <span className="font-mono">
+                {lookup.bracket_lower?.saturation_flow_pcu} ↔ {lookup.bracket_upper?.saturation_flow_pcu} pcu
+              </span>
+              {" — "}
+              {t("아래 행으로 내림", "rounded DOWN to the lower row", "下の行に切り下げ")}{" "}
+              <span className="font-mono">
+                {set.applied_row?.saturation_flow_pcu} pcu (
+                {set.applied_row?.additive} / {set.applied_row?.multiplicative})
+              </span>
+            </p>
+          ) : (
+            <p>
+              <span className="font-semibold">{t("표의 행", "Table row", "表の行")}: </span>
+              <span className="font-mono">
+                {set.applied_row?.saturation_flow_pcu} pcu ({set.applied_row?.additive} /{" "}
+                {set.applied_row?.multiplicative})
+              </span>
+            </p>
+          )}
+          {directPath?.why && (
+            <p>
+              <span className="font-semibold">
+                {t("승인 밖 경로", "Outside this approval", "この承認の外")}:{" "}
+              </span>
+              {directPath.why}
+            </p>
+          )}
+          {approvedPath?.why && <p>{approvedPath.why}</p>}
+          <p className="font-mono text-[13px] text-slate-400">
+            {lookup.citation ?? ""}
+            {set.grant?.reason ? ` · ${set.grant.reason}` : ""}
+          </p>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 // M2.3 tool -> human label map for the approval card (docs/phase2/02-ROADMAP.md
 // M4's "plan-approval card" bullet). Falls back to the raw tool name for
 // anything not in this table (e.g. a future write verb landing ahead of a
@@ -2047,6 +2422,13 @@ const AGENT_ACTION_LABELS: Record<string, [string, string, string]> = {
   set_sim_duration: ["시뮬레이션 시간 변경", "Change simulation duration", "シミュレーション時間の変更"],
   set_random_seed: ["랜덤 시드 변경", "Change random seed", "ランダムシードの変更"],
   run_simulation: ["시뮬레이션 실행", "Run simulation", "シミュレーション実行"],
+  // Unit #47: the write unit #44's Table 5-6 set is made of. Reachable through
+  // an approval card since this unit, so it needs a human label like the rest.
+  set_driving_behavior_parameter: [
+    "주행 행태 파라미터 변경",
+    "Change driving behaviour parameter",
+    "走行挙動パラメータの変更",
+  ],
 };
 
 function agentActionLabel(tool: string, t: Translate): string {

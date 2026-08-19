@@ -908,6 +908,26 @@ _PARAMETER_SOURCES: tuple[tuple[str, str], ...] = (
     ("bx_mult", "multiplicative"),
 )
 
+#: The set's own warning, lifted out of :func:`_build_actions`'s rationale
+#: f-strings (unit #47) so a CONSUMER can show it without re-typing it.
+#:
+#: It was already the last sentence of all three rationales and still is — the
+#: strings below are spliced back into exactly the same place, so every existing
+#: rationale is byte-for-byte what it was. The reason it now has a name is that
+#: the approval card has to state it on its own: the approval machinery
+#: authorises the three signatures independently, so the card pauses on ONE of
+#: them, and a card that only printed that one action would be showing a third
+#: of one table row as though it were a whole change. A UI must be able to quote
+#: this, and the one thing it must not do is write its own version of it.
+PARTIAL_APPROVAL_WARNING: dict[str, str] = {
+    "ko": "이 값은 ax·bx_add·bx_mult 세 개가 한 세트(표의 한 행)이므로, 일부만 승인하면 "
+    "행태가 표의 어느 행과도 일치하지 않게 됩니다.",
+    "en": "ax, bx_add and bx_mult are one set (one row of the table): approving only some "
+    "of them leaves the behaviour matching no published row.",
+    "ja": "ax・bx_add・bx_mult は表の一行として一組であり、一部のみ承認すると挙動が"
+    "どの公表行とも一致しなくなります。",
+}
+
 _PARAM_LABELS: dict[str, dict[str, str]] = {
     "ax": {"ko": "정지 간격", "en": "standstill distance", "ja": "停止時車間"},
     "bx_add": {"ko": "안전거리 가산부", "en": "additive part of safety distance",
@@ -1413,8 +1433,7 @@ def _build_actions(
                 f"{_fmt(value)}로 설정할 것을 제안합니다. 근거: {mrwa_reference.TABLE_5_6_CITATION} / "
                 f"{mrwa_reference.CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION}. "
                 f"측정 출처: {source_ko}.{policy_ko} {scope_ko} "
-                "이 값은 ax·bx_add·bx_mult 세 개가 한 세트(표의 한 행)이므로, 일부만 승인하면 "
-                "행태가 표의 어느 행과도 일치하지 않게 됩니다.",
+                + PARTIAL_APPROVAL_WARNING["ko"],
                 en=f"Node {node_id} is diagnosed as a capacity limit — every input is measured and "
                 f"the network still cannot pass the demand. For a measured stop-line straight-"
                 f"movement saturation flow of {measured} pcu, {basis_en} sets the "
@@ -1422,8 +1441,7 @@ def _build_actions(
                 f"{_fmt(value)}. Basis: {mrwa_reference.TABLE_5_6_CITATION} / "
                 f"{mrwa_reference.CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION}. "
                 f"Measurement source: {source_en}.{policy_en} {scope_en} "
-                "ax, bx_add and bx_mult are one set (one row of the table): approving only some "
-                "of them leaves the behaviour matching no published row.",
+                + PARTIAL_APPROVAL_WARNING["en"],
                 ja=f"ノード {node_id} は、インプットがすべて実測でありながら需要を通せない容量限界と"
                 f"診断されました。測定された停止線の直進飽和交通流 {measured} pcu に対し、"
                 f"{basis_ja}に従って走行挙動 {behavior_no} の{label['ja']}({parameter})を "
@@ -1431,8 +1449,7 @@ def _build_actions(
                 f"{mrwa_reference.TABLE_5_6_CITATION} / "
                 f"{mrwa_reference.CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION}。"
                 f"測定の出所: {source_ja}。{policy_ja} {scope_ja} "
-                "ax・bx_add・bx_mult は表の一行として一組であり、一部のみ承認すると挙動が"
-                "どの公表行とも一致しなくなります。",
+                + PARTIAL_APPROVAL_WARNING["ja"],
                 assumptions=assumptions,
                 registry=registry,
             )
