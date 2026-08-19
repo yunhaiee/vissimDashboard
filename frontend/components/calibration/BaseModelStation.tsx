@@ -1,5 +1,22 @@
 "use client";
 
+// ---------------------------------------------------------------------------
+// The SCORING STATION of the calibration workspace (unit #50).
+//
+// This was `app/base-model/page.tsx` — its own route in nav group ③ — until
+// the user's 2026-08-19 decision that base-model validation IS the scoring
+// step of the calibration flow rather than a separate destination. So it was
+// MOVED here whole and is now rendered inside /calibration; `/base-model`
+// redirects there (next.config.ts) so bookmarks still land.
+//
+// Moved, deliberately not rewritten. Everything this screen already does —
+// the counts/travel-time workbook, the Category 1/2/3 profile selector, the
+// GEH and flow-band distributions, the R² scatter, the per-route travel-time
+// bands and the §5.6.3 criteria-coverage card — is validated work with pins on
+// it, and re-implementing a subset of it inside a new page would have quietly
+// deleted the rest. The only edits here are the file's name and its export's.
+// ---------------------------------------------------------------------------
+
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
@@ -186,13 +203,27 @@ const COUNT_DIRECTION_LABELS: Record<CountDirection, { ko: string; en: string; s
   total: { ko: "전체", en: "Total", short: "T", arrow: "·" },
 };
 
-export default function BaseModelPage() {
+export default function BaseModelStation() {
   const { t } = useLanguage();
   const [scenarios, setScenarios] = useState<ScenarioMeta[]>([]);
-  const [period, setPeriod] = useState<Period>("AM");
+  const [periodIntent, setPeriod] = useState<Period>("AM");
   const [amScenarioId, setAmScenarioId] = useState("");
   const [pmScenarioId, setPmScenarioId] = useState("");
   const [workbook, setWorkbook] = useState<BaseWorkbookResponse>(EMPTY_WORKBOOK);
+
+  // Only offer the time periods the uploaded workbook actually contains. Before
+  // an upload (or for older payloads without `periods`) fall back to AM/PM.
+  const availablePeriods = useMemo<Period[]>(() => {
+    const fromWorkbook = (workbook.periods ?? []).filter((value): value is Period => value === "AM" || value === "PM");
+    return fromWorkbook.length ? fromWorkbook : ["AM", "PM"];
+  }, [workbook.periods]);
+
+  // Keep the selected period valid when a newly uploaded workbook lacks it.
+  // Derived during render: as an effect this corrected itself one render late,
+  // so a workbook carrying only PM data briefly charted "AM" over PM rows.
+  // Declared here, beside the workbook it is derived from, because everything
+  // downstream reads `period` -- deriving is what forced the move.
+  const period = availablePeriods.includes(periodIntent) ? periodIntent : availablePeriods[0];
   const [scenarioResult, setScenarioResult] = useState<ScenarioResults | null>(null);
   const [loading, setLoading] = useState(true);
   const [resultLoading, setResultLoading] = useState(false);
@@ -227,9 +258,19 @@ export default function BaseModelPage() {
   const [criticalNodeIdsInput, setCriticalNodeIdsInput] = useState("");
   const requestSerial = useRef(0);
 
+  // HYDRATION EXCEPTION to this app's set-state-in-effect convention (see
+  // lib/asyncResource.ts): the stored category lives in localStorage, which the
+  // server cannot read. Seeding it with a lazy useState initialiser would make
+  // the server's HTML and the client's first render disagree whenever a user
+  // has ever picked a category, which is a hydration error rather than a
+  // performance note. So it stays an effect, and the rule is silenced on this
+  // ONE line with the reason attached.
   useEffect(() => {
     const stored = readStoredValidationCategory();
-    if (stored) setCategory(stored);
+    if (stored) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage; must run after hydration
+      setCategory(stored);
+    }
   }, []);
 
   const handleCategoryChange = useCallback((next: ValidationCategory) => {
@@ -328,20 +369,6 @@ export default function BaseModelPage() {
     () => workbook.counts.filter((row) => row.period === period),
     [period, workbook.counts],
   );
-
-  // Only offer the time periods the uploaded workbook actually contains. Before
-  // an upload (or for older payloads without `periods`) fall back to AM/PM.
-  const availablePeriods = useMemo<Period[]>(() => {
-    const fromWorkbook = (workbook.periods ?? []).filter((value): value is Period => value === "AM" || value === "PM");
-    return fromWorkbook.length ? fromWorkbook : ["AM", "PM"];
-  }, [workbook.periods]);
-
-  // Keep the selected period valid when a newly uploaded workbook lacks it.
-  useEffect(() => {
-    if (!availablePeriods.includes(period)) {
-      setPeriod(availablePeriods[0]);
-    }
-  }, [availablePeriods, period]);
 
   const countComparisons = useMemo(
     () => buildCountComparisons(countRows, scenarioResult),

@@ -22,10 +22,11 @@
 // component's -- it has no opinion on how the host represents "the same
 // target, asked again".
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { fetchNetworkSearch, type NetworkSearchHit } from "@/lib/api";
+import { fetchNetworkSearch, type NetworkSearchHit, type NetworkSearchResponse } from "@/lib/api";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import { searchHitTypeLabel, type SearchHitLabelParts } from "@/lib/networkSearchLabel";
 
 // Long enough that a number typed at speed ("2140") is one request rather than
@@ -59,12 +60,39 @@ export default function NetworkSearchBox({
 }) {
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<NetworkSearchHit[]>([]);
-  const [status, setStatus] = useState<Status>("idle");
-  const [total, setTotal] = useState(0);
-  const [truncated, setTruncated] = useState(false);
+  // The typed query with its whitespace already gone IS this box's request key
+  // (lib/asyncResource.ts): the four values the dropdown reads -- hits, total,
+  // truncation and the status line -- are all one answer to one question, so
+  // they are derived from it during render rather than written by the effect
+  // before it calls anything. `idle` is what makes an EMPTY box read as "no
+  // question asked" instead of as a search that never finishes -- and it is
+  // also what empties `results` the moment the box is cleared, which is what
+  // stops Enter from re-selecting a hit belonging to a query no longer on
+  // screen.
+  const trimmedQuery = query.trim();
+  const [searchLoaded, setSearchLoaded] = useState<Loaded<NetworkSearchResponse> | null>(null);
+  const {
+    data: payload,
+    error: searchError,
+    loading: searchLoading,
+  } = resolve(searchLoaded, trimmedQuery, { idle: !trimmedQuery });
+  const results = useMemo<NetworkSearchHit[]>(() => payload?.results ?? [], [payload]);
+  const total = payload?.total ?? 0;
+  const truncated = payload?.truncated ?? false;
+  const status: Status = !trimmedQuery ? "idle" : searchLoading ? "loading" : searchError ? "error" : "ok";
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(-1);
+  // The highlighted row is the user's INTENT (arrow keys, hover) resolved
+  // against the hits actually on screen, tagged with the query it was formed
+  // for: a fresh answer therefore highlights its own first row without an
+  // effect having to reach in and reset the index one render after the list
+  // already changed underneath it.
+  const [activeIntent, setActiveIntent] = useState<{ query: string; index: number } | null>(null);
+  const activeIndex =
+    results.length === 0
+      ? -1
+      : activeIntent && activeIntent.query === trimmedQuery
+        ? Math.min(activeIntent.index, results.length - 1)
+        : 0;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -81,38 +109,30 @@ export default function NetworkSearchBox({
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
     abortRef.current?.abort();
 
-    const trimmed = query.trim();
-    if (!trimmed) {
-      setResults([]);
-      setStatus("idle");
-      setTotal(0);
-      setTruncated(false);
-      setActiveIndex(-1);
-      return;
-    }
+    // An empty box asks nothing: no timer, no request, and nothing to write --
+    // `idle` above already says what the screen shows for it. (Keyed on the
+    // TRIMMED query, so typing a trailing space is the same question and no
+    // longer re-fires the request that answered it.)
+    if (!trimmedQuery) return;
 
-    setStatus("loading");
     debounceRef.current = window.setTimeout(() => {
       const controller = new AbortController();
       abortRef.current = controller;
-      fetchNetworkSearch(trimmed, { limit: RESULT_LIMIT, signal: controller.signal })
-        .then((payload) => {
+      fetchNetworkSearch(trimmedQuery, { limit: RESULT_LIMIT, signal: controller.signal })
+        .then((response) => {
           if (controller.signal.aborted) return;
-          setResults(payload.results);
-          setTotal(payload.total);
-          setTruncated(payload.truncated);
-          setStatus("ok");
+          setSearchLoaded(ok(trimmedQuery, response));
           setOpen(true);
-          setActiveIndex(payload.results.length > 0 ? 0 : -1);
         })
-        .catch(() => {
+        .catch((caught) => {
           // Includes AbortError from the cancellation above -- an aborted
           // request is not a user-visible error, it is superseded by
           // whichever keystroke triggered the abort (which will report its
-          // own status once it resolves).
+          // own status once it resolves). Recording nothing for an abort is
+          // what keeps the box reading "검색 중" until the keystroke that
+          // superseded it answers for itself.
           if (controller.signal.aborted) return;
-          setResults([]);
-          setStatus("error");
+          setSearchLoaded(failed(trimmedQuery, caught));
           setOpen(true);
         });
     }, DEBOUNCE_MS);
@@ -120,7 +140,7 @@ export default function NetworkSearchBox({
     return () => {
       if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [trimmedQuery]);
 
   // Unmount safety net: an in-flight request must not resolve into a
   // component that no longer exists.
@@ -158,12 +178,15 @@ export default function NetworkSearchBox({
       event.preventDefault();
       if (!results.length) return;
       if (!open) setOpen(true);
-      setActiveIndex((index) => Math.min(index < 0 ? 0 : index + 1, results.length - 1));
+      setActiveIntent({
+        query: trimmedQuery,
+        index: Math.min(activeIndex < 0 ? 0 : activeIndex + 1, results.length - 1),
+      });
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       if (!results.length) return;
       if (!open) setOpen(true);
-      setActiveIndex((index) => Math.max(index < 0 ? 0 : index - 1, 0));
+      setActiveIntent({ query: trimmedQuery, index: Math.max(activeIndex < 0 ? 0 : activeIndex - 1, 0) });
     } else if (event.key === "Enter") {
       if (!open || activeIndex < 0 || activeIndex >= results.length) return;
       event.preventDefault();
@@ -201,7 +224,7 @@ export default function NetworkSearchBox({
     listRef.current?.children[activeIndex]?.scrollIntoView({ block: "nearest" });
   }, [open, activeIndex]);
 
-  const showDropdown = open && query.trim().length > 0;
+  const showDropdown = open && trimmedQuery.length > 0;
   const statusMessage =
     status === "loading"
       ? t("검색 중…", "Searching…", "検索中…")
@@ -289,7 +312,7 @@ export default function NetworkSearchBox({
                       aria-selected={active}
                       aria-disabled={!focusable}
                       disabled={!focusable}
-                      onMouseEnter={() => setActiveIndex(index)}
+                      onMouseEnter={() => setActiveIntent({ query: trimmedQuery, index })}
                       onClick={() => selectHit(hit)}
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${
                         !focusable

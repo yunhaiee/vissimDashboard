@@ -13,6 +13,7 @@ import {
   type ActiveDataset,
   type NetworkData,
 } from "@/lib/api";
+import { failedWith, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import {
   buildFocusFlash,
@@ -70,9 +71,11 @@ export default function NetworkPage() {
 
 function NetworkPageContent() {
   const { t } = useLanguage();
-  const [network, setNetwork] = useState<NetworkData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // One keyed answer instead of the three loose flags this page used to open
+  // its fetch effect with -- lib/asyncResource.ts. `network`, `error` and
+  // `loading` are all derived from it during render, below, once the last
+  // input to the key (`agentSessionId`) has been declared.
+  const [networkLoaded, setNetworkLoaded] = useState<Loaded<NetworkData> | null>(null);
   const [datasetRevision, setDatasetRevision] = useState("default");
   const [reloadNonce, setReloadNonce] = useState(0);
   const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
@@ -129,6 +132,15 @@ function NetworkPageContent() {
   // that session's in-progress edited working copy on demand -- see
   // docs/phase2/DECISIONS.md's P2 entry.
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+
+  // What the diagram fetch is currently answering. Every input that should
+  // re-fetch is in the key, so "is what I hold current?" is one comparison --
+  // and the frame in which the dataset had already changed while `loading` was
+  // still false and `network` still described the PREVIOUS dataset cannot
+  // happen: the render that changes the key is the render that reports
+  // loading. Same shape app/dashboard/page.tsx's diagram fetch carries.
+  const networkKey = `${datasetRevision}|${reloadNonce}|${agentSessionId ?? ""}`;
+  const { data: network, error, loading } = resolve(networkLoaded, networkKey);
 
   // --- Approval-card focus handoff (2026-07-28) --------------------------
   // The approval card's 네트워크에서 보기 button navigates here with the
@@ -287,23 +299,24 @@ function NetworkPageContent() {
   // dataset changes or a retry is requested.
   useEffect(() => {
     let cancelled = false;
-    setNetwork(null);
-    setError(null);
-    setLoading(true);
     fetchNetwork(agentSessionId ?? undefined)
       .then((data) => {
-        if (!cancelled) setNetwork(data);
+        if (!cancelled) setNetworkLoaded(ok(networkKey, data));
       })
       .catch(() => {
-        if (!cancelled) setError(t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram."));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        // The screen writes its own translated sentence rather than surfacing
+        // the raw fetch error, so the failure is recorded WITH that sentence
+        // (failedWith, not failed) -- same wording, same box, same retry.
+        if (!cancelled) {
+          setNetworkLoaded(
+            failedWith(networkKey, t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram.")),
+          );
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [datasetRevision, reloadNonce, agentSessionId, t]);
+  }, [networkKey, agentSessionId, t]);
 
   // P2: mirror the floating assistant's current agent session id -- see
   // FloatingAssistant.tsx's own "vissim:agent-session" dispatch effect and

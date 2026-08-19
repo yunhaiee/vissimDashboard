@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -29,6 +29,47 @@ const repoRoot = path.resolve(rootDir, "..");
 
 function read(relativePath: string) {
   return readFileSync(path.join(rootDir, relativePath), "utf-8");
+}
+
+/**
+ * The approval surface, which is now TWO files.
+ *
+ * Unit #50 lifted unit #47's approval and diagnosis cards out of
+ * FloatingAssistant.tsx into components/agent/ApprovalCards.tsx so the
+ * calibration workspace renders the same cards instead of a second copy of
+ * them. The drawer kept what only a drawer has -- the stream and
+ * `runAgentApproval`, the handler that POSTs the decision -- so a pin that
+ * describes "what the approval surface does" legitimately spans both files
+ * now, and reading them as one source is what keeps those pins meaning the
+ * same thing they meant before the move.
+ *
+ * This makes `doesNotMatch` pins STRICTER, not looser: a banned pattern is now
+ * banned from the card module too. Pins that must stay scoped to one file
+ * still call `read` directly.
+ */
+function readApprovalSurface(): string {
+  return `${read("components/FloatingAssistant.tsx")}\n${read("components/agent/ApprovalCards.tsx")}`;
+}
+
+/** Every `.ts`/`.tsx` under `app/` and `components/`, repo-relative.
+ *
+ * The suite reads files BY NAME everywhere else, on purpose: a named pin says
+ * which file it is about. This walker exists for the one shape a named list
+ * cannot express -- "and nowhere ELSE in the app" -- which is what bounds an
+ * escape hatch to a known inventory instead of letting it spread silently into
+ * the next screen somebody writes. */
+function appSourceFiles(): string[] {
+  const found: string[] = [];
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(path.join(rootDir, relative), { withFileTypes: true })) {
+      const child = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (/\.tsx?$/.test(entry.name)) found.push(child);
+    }
+  };
+  walk("app");
+  walk("components");
+  return found.sort();
 }
 
 /**
@@ -326,7 +367,17 @@ contractTest("app shell exposes the merged dashboard routes", (pin) => {
 
   pin.doesNotMatch(shell, /href: "\/intersections"/, "expected intersections route to be removed from top navigation");
   pin.doesNotMatch(shell, /href: "\/"/, "expected prompt home route to be removed from top navigation");
-  pin.match(shell, /href: "\/base-model"/, "expected base-model validation route in top navigation");
+  // RE-PINNED, unit #50 (the user's 2026-08-19 page-cleanup decision):
+  // /base-model stopped being a nav route. The SCREEN did not go anywhere --
+  // it is the scoring station inside /calibration
+  // (components/calibration/BaseModelStation.tsx) and /base-model 308s there
+  // (next.config.ts) -- but the sidebar row it used to have is now 보정.
+  pin.match(shell, /href: "\/calibration"/, "expected the calibration workspace route in top navigation");
+  pin.doesNotMatch(
+    shell,
+    /href: "\/base-model"/,
+    "expected /base-model to have no nav row -- it was absorbed into /calibration and redirects there",
+  );
   pin.match(shell, /href: "\/dashboard"/, "expected dashboard route in top navigation");
   pin.match(shell, /href: "\/health"/, "expected model health-check route in top navigation");
   pin.doesNotMatch(shell, /label: "Prompt"/, "expected prompt-only entry to be removed once assistant is floating");
@@ -376,10 +427,17 @@ contractTest("app shell exposes the merged dashboard routes", (pin) => {
   pin.doesNotMatch(shell, /href: "\/simulation"/, "expected simulation route to be hidden from top navigation");
   pin.match(simulationPage, /SimulationPage/, "expected simulation page implementation to remain available in the codebase");
   pin.doesNotMatch(shell, /Intersection Comparison/, "expected separate intersection comparison label to be removed");
+  // RE-PINNED, unit #50: the row this label named is now 보정 / Calibration,
+  // and the base-model screen it pointed at is that page's scoring station.
   pin.match(
     shell,
+    /label: t\("보정", "Calibration", "補正"\)/,
+    "expected the calibration workspace label in top navigation",
+  );
+  pin.doesNotMatch(
+    shell,
     /Base Model Validation/,
-    "expected base model validation label in top navigation",
+    "expected the base-model row's label to be gone with its route",
   );
 });
 
@@ -399,6 +457,11 @@ contractTest("#18: the sidebar is the pipeline — selector on top, four numbere
   const networkGroup = sliceBetween(shell, 'ordinal: "①"', 'ordinal: "②"');
   pin.match(networkGroup, /href: "\/genesis"/, "expected 생성 under ① 네트워크");
   pin.match(networkGroup, /href: "\/network"/, "expected the network view under ① 네트워크");
+  // Unit #50 (user decision, 2026-08-19): 모델 검진 answers "is this network
+  // coded correctly", which is MRWA §2.12.1's step ① and the first thing the
+  // calibration flow rail reads -- so it sits with the screens that BUILD the
+  // network, not with the ones that score runs.
+  pin.match(networkGroup, /href: "\/health"/, "expected 모델 검진 under ① 네트워크");
   // RETIRED (unit #27, backlog item 8, 2026-08-14): 변경 비교 stopped being a
   // row of this group -- the mockup's own "+비교" annotation, user-ordered --
   // and became a mode of /network instead. See "unit #27: 변경 비교 is a mode
@@ -416,9 +479,12 @@ contractTest("#18: the sidebar is the pipeline — selector on top, four numbere
   pin.match(dataGroup, /실측 관측/, "expected the observations row to carry its Korean label");
 
   const simGroup = sliceBetween(shell, 'ordinal: "③"', 'ordinal: "④"');
+  // RE-PINNED, unit #50 (user decision, 2026-08-19): ③ is exactly two rows now
+  // -- 대시보드 and 보정. 베이스모델 검증 became 보정's scoring station and
+  // 모델 검진 moved up to ①, both pinned in their new homes above.
   pin.match(simGroup, /href: "\/dashboard"/, "expected the dashboard under ③ 시뮬·보정");
-  pin.match(simGroup, /href: "\/base-model"/, "expected base-model validation under ③ 시뮬·보정");
-  pin.match(simGroup, /href: "\/health"/, "expected the health check under ③ 시뮬·보정");
+  pin.match(simGroup, /href: "\/calibration"/, "expected the calibration workspace under ③ 시뮬·보정");
+  pin.doesNotMatch(simGroup, /href: "\/health"/, "expected 모델 검진 to have moved out of ③ into ① 네트워크");
 
   const reportGroup = sliceBetween(shell, 'ordinal: "④"', "// Unit P④");
   pin.match(reportGroup, /href: "\/report"/, "expected the report builder under ④ 보고서");
@@ -576,7 +642,7 @@ contractTest("root entry redirects to the project overview, not the dashboard", 
 // for the 2026-08-05 measurement that motivated the split.
 
 contractTest("base model page wires the validation workbook lifecycle", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
 
   pin.match(page, /fetchBaseWorkbook\(\)/, "expected base workbook loading");
   pin.match(page, /uploadBaseWorkbook/, "expected standalone workbook upload support");
@@ -589,7 +655,7 @@ contractTest("base model page wires the validation workbook lifecycle", (pin) =>
 });
 
 contractTest("base model page publishes assistant page context", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
 
   pin.match(page, /vissim:page-context/, "expected base-model page to publish assistant page context");
   pin.match(page, /selectedScenarioIds: selectedScenarioId \? \[selectedScenarioId\] : \[\]/, "expected selected base scenario to be passed to floating assistant context");
@@ -609,7 +675,7 @@ contractTest("base model page publishes assistant page context", (pin) => {
 // original intent -- setup controls share one aligned card row -- is re-expressed
 // against the layout that actually shipped.
 contractTest("base model setup controls share one aligned card row", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
 
   pin.match(page, /mt-4 grid gap-3 lg:grid-cols-\[1\.6fr_1fr\]/, "expected base-model setup controls to align in one card row");
   pin.match(page, /<div className="grid gap-3 sm:grid-cols-2">/, "expected the dataset and workbook cards to pair up inside that row");
@@ -617,7 +683,7 @@ contractTest("base model setup controls share one aligned card row", (pin) => {
 });
 
 contractTest("base model page keeps the Category 1 GEH and travel-time checks", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
   // Category 1/2/3 thresholds moved out of page.tsx into a shared module
   // (Phase 0 item 0.6, 2026-07-31) so every consumer reads the same numbers
   // instead of each hard-coding its own CATEGORY_ONE-style constant.
@@ -681,7 +747,7 @@ contractTest("validation profiles cite doc pages, the right section title, and t
 });
 
 contractTest("base model page surfaces the three §5.6.3 criteria it could not before", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
   const profiles = read("lib/validationProfiles.ts");
   const jaDictionary = read("lib/i18n-ja.ts");
 
@@ -884,7 +950,7 @@ test("section-5: the critical-intersection override is load-bearing, not decorat
 });
 
 contractTest("base model page gates scenario selection on an uploaded dataset", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
 
   pin.match(page, /fetchActiveDataset/, "expected base-model page to check whether a VISSIM dataset is uploaded");
   pin.match(page, /shouldLoadScenarioSelection \? fetchScenarios\(\) : Promise\.resolve<ScenarioMeta\[\]>\(\[\]\)/, "expected default dataset state to keep scenario dropdowns empty");
@@ -893,7 +959,7 @@ contractTest("base model page gates scenario selection on an uploaded dataset", 
 });
 
 contractTest("base model page renders the intersection-by-direction count matrix", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
 
   pin.match(page, /CountComparisonOverview/, "expected visual count comparison overview");
   pin.match(page, /CountNodeDirectionMatrixRow/, "expected node rows in the intersection-by-direction matrix");
@@ -912,7 +978,7 @@ contractTest("base model page renders the intersection-by-direction count matrix
 });
 
 contractTest("base model page labels follow the language toggle", (pin) => {
-  const page = read("app/base-model/page.tsx");
+  const page = read("components/calibration/BaseModelStation.tsx");
 
   pin.match(page, /t\("노드", "Node"\)/, "expected node label to follow the language toggle");
   pin.match(page, /t\("루트", "Route"\)/, "expected route label to follow the language toggle");
@@ -1301,7 +1367,7 @@ contractTest("U9: the login page's Korean strings all exist in the ja dictionary
 
 contractTest("U9: the approval card reacts to 401/403 from the server, never to a guessed role", (pin) => {
   const api = read("lib/api.ts");
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
   const shell = read("components/AppShell.tsx");
 
   pin.match(
@@ -1355,7 +1421,7 @@ contractTest("U9: the approval card reacts to 401/403 from the server, never to 
 // ---------------------------------------------------------------------------
 
 contractTest("U-2-core: the approval card renders the proposal's own rationale verbatim, and names what this flow does not produce", (pin) => {
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
   const assistantRouter = readFileSync(path.join(repoRoot, "backend", "routers", "assistant.py"), "utf-8");
 
   // `action.summary` -- the planner's own step narration -- was already on
@@ -1415,7 +1481,7 @@ contractTest("U-2-core: the approval card renders the proposal's own rationale v
 });
 
 contractTest("U-2-core: the reviewer's optional reason reaches the SAME approve/decline POST, capped to the backend's own limit", (pin) => {
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
   const api = read("lib/api.ts");
   const assistantRouter = readFileSync(path.join(repoRoot, "backend", "routers", "assistant.py"), "utf-8");
 
@@ -1515,7 +1581,7 @@ contractTest("U-2-core: the reviewer's optional reason reaches the SAME approve/
 // ---------------------------------------------------------------------------
 
 contractTest("U-2: an approval renders on exactly one surface -- the card, never the step log", (pin) => {
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
 
   // THE REMOVED DUPLICATE: AgentStepNarration used to print its own
   // "(승인 대기)" status chip on a "pending_approval" step, restating the
@@ -3141,9 +3207,12 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
     /아직 추출한 영역이 없습니다/,
     "the removed list must not leave its empty state behind",
   );
+  // (The listing became a nonce-keyed resource, lib/asyncResource.ts, so the
+  // call moved out of an async `loadFetches` and into the effect that answers
+  // its key -- same endpoint, same entries, same state filled from them.)
   pin.match(
     page,
-    /const entries = await fetchRegionFetches\(\);/,
+    /fetchRegionFetches\(\)\s*\n\s*\.then\(\(entries\) => \{/,
     "the listing plumbing stays -- the LIST was removed, not the endpoint or the state it fills",
   );
   // The failure that list used to report has to keep a home, or removing the
@@ -3206,13 +3275,22 @@ contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets
   );
 
   // An empty ring must be genuinely empty: `parsed` is null before three
-  // corners, and the measure effect returns on null `parsed` BEFORE it arms
-  // the debounce timer -- so opening this page fires no Overpass-limits
-  // preview for a shape nobody drew yet.
+  // corners, the measure effect returns on null `parsed` BEFORE it arms the
+  // debounce timer -- so opening this page fires no Overpass-limits preview for
+  // a shape nobody drew yet -- and no measurement is readable for it either.
+  // That second half is now a DERIVATION (`idle`, lib/asyncResource.ts) instead
+  // of a setState the effect ran before its own call: it also closes the window
+  // in which an EDITED ring still read the previous ring's within_region_cap
+  // verdict, which is the verdict the extract button is enabled by.
   pin.match(
     page,
-    /if \(!parsed\) \{\s*\n\s*setMeasurement\(null\);/,
-    "expected an unfinished shape to clear the measurement and return BEFORE the preview is scheduled -- zero corners must fire no request",
+    /const \{ data: measurement, error: measureFailure \} = resolve\(measureLoaded, measureKey, \{\s*\n\s*idle: !parsed,/,
+    "expected the measurement to be readable ONLY for the ring currently drawn, and idle before three corners",
+  );
+  pin.match(
+    page,
+    /if \(!parsed\) return;\s*\n\s*let cancelled = false;\s*\n\s*const timer = setTimeout\(/,
+    "expected an unfinished shape to return BEFORE the preview is scheduled -- zero corners must fire no request",
   );
   pin.match(page, /previewRegion\(parsed\)/, "the polygon must be measured by the same server preview");
   pin.match(
@@ -3307,10 +3385,18 @@ contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets
   // INDEX, so deleting a row out of the MIDDLE of the table does not remount
   // every row after it -- without a resync, the row now sitting at a shifted
   // index would go on showing the deleted-away neighbour's stale draft text
-  // while `vertices` (and the map) already hold the correct value there.
+  // while `vertices` (and the map) already hold the correct value there. The
+  // resync is a RENDER-TIME read of a draft tagged with the vertex it was typed
+  // against (it used to be an effect, which landed one frame late); an invalid
+  // draft still survives, because an invalid draft never changes `lat`/`lon`.
   pin.match(
     page,
-    /useEffect\(\(\) => \{\s*\n\s*setLatText\(String\(lat\)\);\s*\n\s*setLonText\(String\(lon\)\);\s*\n\s*\}, \[lat, lon\]\);/,
+    /const boundTo = `\$\{lat\}\|\$\{lon\}`;/,
+    "expected a row's draft to be tagged with the vertex it was typed against",
+  );
+  pin.match(
+    page,
+    /const latText = draft && draft\.boundTo === boundTo \? draft\.lat : String\(lat\);\s*\n\s*const lonText = draft && draft\.boundTo === boundTo \? draft\.lon : String\(lon\);/,
     "expected a row's draft text to resync when the vertex it is bound to changes underneath it (e.g. a delete shifting every later index)",
   );
   pin.match(
@@ -3326,11 +3412,13 @@ contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets
   // ADVERSARIAL GUARD: deleting a vertex down below three corners while the
   // ring is still "closed" must not leave the map drawing a degenerate filled
   // polygon, nor leave its own click handler refusing to accept new corners
-  // (`RegionLassoMap`'s `if (current.closed) return;`). This effect is what
-  // keeps "closed" meaning "a real ring" no matter which path shrank the array.
+  // (`RegionLassoMap`'s `if (current.closed) return;`). What the map is handed
+  // is DERIVED from the user's closed-intent and the corner count, so "closed"
+  // means "a real ring" in the same render that shrank the array -- as an
+  // effect the degenerate polygon was drawn for one frame before it corrected.
   pin.match(
     page,
-    /if \(vertices\.length < 3 && ringClosed\) setRingClosed\(false\);/,
+    /const ringClosed = ringClosedIntent && vertices\.length >= 3;/,
     "expected the ring-closed flag to reset itself if an edit or a delete drops the vertex count below three",
   );
   pin.match(
@@ -3692,21 +3780,34 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
   // fetch. Removing the dependency is race-free at every delay tested.
   // Found live 2026-08-12, second finding on this same effect; re-verified
   // empirically 2026-08-12.
-  // The dependency array moved to GenesisTileMap.tsx with the fetch, and lost
-  // `open` (the panel no longer collapses -- the drawer is the disclosure now).
-  // Both halves of the eternal-spinner fix are still asserted: `loadError` is
-  // IN the guard, and `loading` is OUT of the deps.
-  const fetchEffectDeps = sliceBetween(tileMap, "}, [network, loadError,", "]);");
+  // RE-PINNED 2026-08-19 (the app-wide set-state-in-effect pass). Both findings
+  // above are about state the EFFECT ITSELF SET: `loading` could not be a
+  // dependency because the effect raised it, and `loadError` had to sit in the
+  // guard because the effect cleared it. GenesisTileMap now holds one keyed
+  // answer (`Loaded<DraftMap>`, lib/asyncResource.ts) from which `loading` and
+  // `loadError` are DERIVED during render, so neither is state and neither can
+  // re-fire the effect. The two measured failures are not merely still fixed --
+  // they are no longer expressible.
+  //
+  // So these pins now protect the PROPERTY rather than the old spelling: the
+  // fetch effect must not raise a loading flag, and must not re-fetch a job it
+  // has already answered.
+  const fetchEffectDeps = sliceBetween(tileMap, "}, [hasArtifact, jobId,", "]);");
   pin.match(fetchEffectDeps, /\S/, "expected the fetch effect's dependency array in GenesisTileMap.tsx (markers moved? the doesNotMatch below would pass vacuously on empty input)");
   pin.doesNotMatch(
-    fetchEffectDeps,
-    /\bloading\b/,
-    "the fetch effect must not depend on `loading` -- it sets `loading` itself, so a dependency on it makes the effect cancel its own in-flight fetch via cleanup, producing an eternal spinner",
+    tileMap,
+    /setLoading\(/,
+    "the fetch effect must not raise a loading flag of its own -- `loading` is derived from the keyed answer, which is what makes the eternal-spinner race unexpressible",
   );
   pin.match(
     tileMap,
-    /if \(network \|\| loadError !== null \|\| !hasArtifact\) return;/,
-    "expected `loadError` to stay IN the fetch guard -- without it a failed fetch clears its own error and retries forever",
+    /if \(!hasArtifact \|\| mapLoaded\?\.key === jobId\) return;/,
+    "expected the guard to be 'nothing to fetch, or this job is already answered' -- a failure stores an answer under the same key, so it stays terminal for the job without a separate error flag",
+  );
+  pin.match(
+    tileMap,
+    /const \{ data: draft, error: loadError, loading \} = resolve\(mapLoaded, jobId/,
+    "expected loading/loadError to be DERIVED from the keyed answer rather than kept as their own state",
   );
 });
 
@@ -4523,11 +4624,20 @@ contractTest("U-19: map selection is one state, driven by one resolver, in both 
 
   // ONE selection state, owned by the container (GenesisTileMap) -- neither
   // renderer grows its own copy.
-  const selectionStateCount = (tileMap.match(/useState<SelectedItem>/g) ?? []).length;
+  // RE-PINNED 2026-08-19: the selection now carries the job it was made in
+  // (`{ jobId, item }`), so switching jobs clears it during render instead of
+  // through a reset effect one render later. Still exactly ONE, which is what
+  // this pin has always been about.
+  const selectionStateCount = (tileMap.match(/useState<\{ jobId: string; item: SelectedItem \}>/g) ?? []).length;
   pin.match(
     `count=${selectionStateCount}`,
     /^count=1$/,
-    "expected exactly one useState<SelectedItem> in GenesisTileMap.tsx -- FindingsTileLayer must not carry its own copy",
+    "expected exactly one selection state in GenesisTileMap.tsx -- FindingsTileLayer must not carry its own copy",
+  );
+  pin.match(
+    tileMap,
+    /const selected = selectedState\.jobId === jobId \? selectedState\.item : null;/,
+    "expected the selection to be scoped to its job by derivation, so a stale selection cannot outlive the job it was made in",
   );
   pin.doesNotMatch(localMap, /useState<SelectedItem>/, "expected DraftLocalMap not to carry its own selection state either");
   pin.match(tileMap, /onClearSelection=\{handleClearSelection\}/, "expected the leaflet layer to receive the shared clear function (matched twice: itself and DraftLocalMap)");
@@ -5479,9 +5589,14 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
   // 3. THE PRE-FILL LANDS IN THE PAGE'S OWN STATE, so the map, the editable
   //    table and the server-side measurement all keep reading one array -- and
   //    the page's own extract button stays the only thing that fetches.
+  // (The one line between the guard and the write is the hydration
+  // eslint-disable this read carries -- sessionStorage cannot be read during
+  // render without desynchronising the server's HTML from the client's first
+  // paint, which is why this is the page's only remaining state-setting effect.
+  // See lib/asyncResource.ts's closing note.)
   pin.match(
     region,
-    /const handed = takeRegionPrefill\(getWorkspaceId\(\)\);\s*\n\s*if \(!handed\) return;\s*\n\s*setPrefill\(handed\);\s*\n\s*setVertices\(handed\.polygon\);/,
+    /const handed = takeRegionPrefill\(getWorkspaceId\(\)\);\s*\n\s*if \(!handed\) return;\s*\n(?:\s*\/\/[^\n]*\n)?\s*setPrefill\(handed\);\s*\n\s*setVertices\(handed\.polygon\);/,
     "expected the pre-fill to become this page's own vertices rather than a second shape beside them",
   );
   const arrival = sliceBetween(region, "const handed = takeRegionPrefill(", "const loadFetches");
@@ -5708,14 +5823,23 @@ contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), a
   // toggle must not trigger a second network round trip the report fetch
   // needs for a different reason (gate.py renders check titles per-language
   // server-side).
+  // The cache key is now written once, as `fixesKey`, and used by both the
+  // fetch and the render-side read below (lib/asyncResource.ts's shape, spelled
+  // out by hand here because this screen needs the GenesisError instance rather
+  // than a message string). It is still (job id, checked_at) and nothing else.
   pin.match(
     page,
-    /fetchGenesisJobFixes\(gatedJobId\)\s*\n\s*\.then\(\(payload\) => \{\s*\n\s*if \(!cancelled\) \{\s*\n\s*setFixesEntry\(\{ jobId: gatedJobId, checkedAt: gateCheckedAt \?\? "", payload \}\);/,
+    /const fixesKey = gatedJobId \? `\$\{gatedJobId\}\|\$\{gateCheckedAt \?\? ""\}` : "";/,
     "expected the fixes fetch to key its cache entry on (job id, checked_at)",
   );
   pin.match(
     page,
-    /\}, \[gatedJobId, gateCheckedAt\]\);/,
+    /fetchGenesisJobFixes\(gatedJobId\)\s*\n\s*\.then\(\(payload\) => \{\s*\n\s*if \(!cancelled\) setFixesAnswer\(\{ key: fixesKey, payload, error: null \}\);/,
+    "expected the fixes fetch to record its payload against that key",
+  );
+  pin.match(
+    page,
+    /\}, \[gatedJobId, gateCheckedAt, fixesKey\]\);/,
     "expected the fixes effect's own dependency array to omit `lang` -- one fetch per (job, verdict), not per (job, verdict, language)",
   );
   pin.match(
@@ -5727,7 +5851,7 @@ contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), a
   // back only when the key still matches" discipline `report` uses.
   pin.match(
     page,
-    /fixesEntry && selected && fixesEntry\.jobId === selected\.id && fixesEntry\.checkedAt === \(selected\.gate\?\.checked_at \?\? ""\)/,
+    /const fixesCurrent = fixesAnswer && fixesAnswer\.key === fixesKey \? fixesAnswer : null;/,
     "expected the displayed fixes payload to be read back only when its cache key still matches the selected job's current verdict",
   );
 
@@ -6515,7 +6639,10 @@ contractTest("unit #41: a finding row is a map control exactly when the census c
   // ONE selection state still, owned by the map: an outside request PUSHES
   // into it and is applied on the sequence number alone, so the census
   // arriving cannot re-stamp a click the reader made after the request.
-  const selectionStates = (tileMap.match(/useState<SelectedItem>/g) ?? []).length;
+  // RE-PINNED 2026-08-19 with its sibling above: the one state now carries the
+  // job it belongs to, so the shape being counted changed while the claim --
+  // exactly one, owned by the map -- did not.
+  const selectionStates = (tileMap.match(/useState<\{ jobId: string; item: SelectedItem \}>/g) ?? []).length;
   pin.match(`count=${selectionStates}`, /^count=1$/, "expected the map to keep owning exactly one selection state");
   pin.match(
     tileMap,
@@ -7391,7 +7518,7 @@ test("unit #41-b: the subject trim removes a repeated subject and NOTHING else",
 // ---------------------------------------------------------------------------
 
 contractTest("unit #47: the approval card states the whole SET, not just the one write it pauses on", (pin) => {
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
   const api = read("lib/api.ts");
 
   pin.match(
@@ -7473,7 +7600,7 @@ contractTest("unit #47: the approval card states the whole SET, not just the one
 });
 
 contractTest("unit #47: the partial-approval warning is the backend's sentence, quoted, never the UI's", (pin) => {
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
   const saturationFlow = readFileSync(
     path.join(repoRoot, "backend", "services", "agent", "saturation_flow.py"),
     "utf-8",
@@ -7515,7 +7642,7 @@ contractTest("unit #47: the partial-approval warning is the backend's sentence, 
 });
 
 contractTest("unit #47: the diagnosis ladder renders per node -- rung, next action, and the evidence behind a fold", (pin) => {
-  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const floatingAssistant = readApprovalSurface();
   const api = read("lib/api.ts");
   const orchestrator = readFileSync(
     path.join(repoRoot, "backend", "services", "agent", "orchestrator.py"),
@@ -8086,5 +8213,357 @@ contractTest("unit #48: the multi-finding hand-off round-trips, and a broken cov
   } finally {
     if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
     else (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Unit #50 — the calibration workspace: one screen where the whole flow is
+// visible, in MRWA §2.12.1's own order, and NOTHING is shown as finished that
+// no artifact says is finished.
+//
+// The page-cleanup half of this unit (the user's 2026-08-19 decision) is pinned
+// in the nav tests above: ③ is 대시보드 + 보정, /base-model has no row and
+// redirects, /health moved to ①.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #50: the flow rail renders the guideline's thirteen steps and states nothing of its own", (pin) => {
+  const rail = read("components/calibration/FlowRail.tsx");
+
+  // The statuses are the SERVER's vocabulary. A sixth word invented on the
+  // client would be a status no backend rule can produce, and therefore a
+  // claim nothing measured.
+  pin.match(
+    rail,
+    /const STATUS_LABELS: Record<CalibrationStepStatus, \[string, string, string\]>/,
+    "expected the five statuses to be labelled from the wire type, not from a client-side list",
+  );
+  for (const status of ["DONE", "IN_PROGRESS", "NEXT", "NOT_APPLICABLE", "NO_EVIDENCE"]) {
+    pin.match(rail, literalPattern(`${status}:`), `expected the rail to label the ${status} status`);
+  }
+
+  // The step's own basis sentence is the backend's, picked by language.
+  pin.match(rail, /pick\(step\.basis, lang\)/, "expected the rail to print the server's basis sentence, never its own");
+  pin.match(rail, /\{rail\.citation\}/, "expected the rail to carry §2.12.1's citation");
+  pin.match(rail, /rail\.principles\.map/, "expected the guideline's ordering principles to be shown, not just the order");
+
+  // NO_EVIDENCE must read as a real state a human acts on, not as a disabled
+  // row -- that is the whole honesty claim of this screen.
+  pin.match(
+    rail,
+    /step\.manual_area && \(/,
+    "expected a manual-check area to be named on the step, not silently blank",
+  );
+  pin.match(rail, /수동 확인 영역/, "expected the Korean manual-check wording on the rail");
+
+  // The rail is a control too: clicking a step goes to the station whose
+  // evidence produced it, using the SERVER's anchor so it cannot point at a
+  // section that moved.
+  pin.match(rail, /onSelectStep\(step\)/, "expected a step to be clickable through to its work area");
+});
+
+contractTest("unit #50: the rail's step status is never computed on the client", (pin) => {
+  const rail = read("components/calibration/FlowRail.tsx");
+  const page = read("app/calibration/page.tsx");
+  const source = withoutComments(`${rail}\n${page}`);
+
+  // The one rule the whole screen rests on. Any client-side derivation of a
+  // step status would be a second opinion about calibration state, competing
+  // with services/calibration_rail.py -- and the two would eventually disagree
+  // in front of a client.
+  pin.doesNotMatch(
+    source,
+    /status: "DONE"/,
+    "expected no client-side assignment of DONE -- statuses come from /api/calibration/rail",
+  );
+  pin.doesNotMatch(
+    source,
+    /threshold = 5|geh < 5\b/,
+    "expected no hard-coded GEH threshold -- the report carries its own",
+  );
+});
+
+contractTest("unit #50: the workspace reads through the shared API bindings, never a bare fetch", (pin) => {
+  const page = read("app/calibration/page.tsx");
+  const proposals = read("components/calibration/ProposalRail.tsx");
+  const api = read("lib/api.ts");
+
+  for (const binding of [
+    "fetchCalibrationRail",
+    "fetchCalibrationRealityCheck",
+    "fetchCalibrationAppliedRows",
+    "fetchCalibrationPendingApprovals",
+  ]) {
+    pin.match(api, literalPattern(`export async function ${binding}(`), `expected a shared binding for ${binding}`);
+  }
+
+  // A bare fetch would skip withWorkspaceHeader and silently read the DEFAULT
+  // project's calibration state -- the same hole the genesis section is pinned
+  // against.
+  pin.doesNotMatch(
+    withoutComments(`${page}\n${proposals}`),
+    /\n\s*(const|await) [a-zA-Z]+ = await fetch\(/,
+    "calibration calls must not bypass the workspace-header fetch helpers",
+  );
+});
+
+contractTest("unit #50: the approval card is shared with the drawer, never reimplemented", (pin) => {
+  const cards = read("components/agent/ApprovalCards.tsx");
+  const drawer = read("components/FloatingAssistant.tsx");
+  const proposals = read("components/calibration/ProposalRail.tsx");
+
+  // The MOVE: the drawer no longer defines these, it imports them.
+  pin.match(cards, /export function AgentApprovalCard\(/, "expected the approval card to live in the shared module");
+  pin.match(cards, /export function CarFollowingSetPanel\(/, "expected the Table 5-6 set panel to be shared too");
+  pin.match(cards, /export function AgentDiagnosisLadder\(/, "expected the #43 diagnosis ladder to be shared");
+  pin.doesNotMatch(
+    withoutComments(drawer),
+    /function AgentApprovalCard\(/,
+    "expected the drawer to import the approval card rather than declare a second one",
+  );
+  pin.match(
+    drawer,
+    /from "@\/components\/agent\/ApprovalCards"/,
+    "expected the drawer to import the shared cards",
+  );
+
+  // The calibration page renders the SAME card, and the decision still goes to
+  // the one endpoint that owns approvals.
+  pin.match(proposals, /<AgentApprovalCard/, "expected the proposal rail to render the shared card");
+  pin.match(proposals, /approveAgentAction\(/, "expected the proposal rail to approve through the existing endpoint");
+  pin.doesNotMatch(
+    withoutComments(proposals),
+    /\/api\/calibration\/[a-z-]*approve/,
+    "expected NO second approval endpoint -- #50 is a read-only surface",
+  );
+});
+
+contractTest("unit #50: the scoring station scores the RUN, and says what it will not use", (pin) => {
+  const table = read("components/calibration/NodeScoreTable.tsx");
+  const page = read("app/calibration/page.tsx");
+
+  // Pass/fail is the report's own threshold, and an undefined GEH is neither.
+  pin.match(table, /report\.geh_threshold/, "expected the threshold to come from the report");
+  pin.match(table, /passes === null/, "expected an undefined GEH to be neither pass nor fail");
+  pin.match(table, /border-emerald-200 bg-emerald-50/, "expected a passing node to read emerald");
+  pin.match(table, /border-rose-200 bg-rose-50/, "expected a failing node to read rose");
+
+  // #43's rung, next action and its MRWA step -- the three things a modeller
+  // acts on -- and the raw codes behind a fold (#41's doctrine).
+  pin.match(table, /node\.diagnosis\.rung/, "expected the diagnosis rung on the node row");
+  pin.match(table, /nextAction\.mrwa_step/, "expected the next action to name its MRWA step");
+  pin.match(table, /<details/, "expected the raw evidence to sit behind a fold");
+
+  // A refusal is an ANSWER: the report's own tri-lingual sentence, not ours.
+  pin.match(table, /report\.status !== "CHECKED"/, "expected a non-CHECKED report to render its own refusal sentence");
+  pin.match(table, /pick\(report\.message, lang\)/, "expected the refusal wording to be the backend's");
+
+  // The workbook's pasted model column is the thing reality_check refuses to
+  // read; the page says so rather than quietly using a second source.
+  pin.match(page, /워크북에 붙여넣은 모델 열/, "expected the page to state that the workbook's model column is not used");
+});
+
+contractTest("unit #50: the Table 5-6 station cannot mistake the Vissim default for a calibration", (pin) => {
+  const station = read("components/calibration/BehaviourStation.tsx");
+
+  // The trap: stock Wiedemann-74 sits ON a published row (2050 pcu), so a row
+  // match alone is true for a network nobody touched. The standstill distance
+  // is what separates them, and it gets its own column and its own sentence.
+  pin.match(station, /standstill_matches_guideline/, "expected the standstill verdict to be shown per behaviour");
+  pin.match(
+    station,
+    /summary\.default_coincident > 0 && summary\.guideline_standstill === 0/,
+    "expected the default-coincidence case to be called out explicitly",
+  );
+  pin.match(station, /측정이 제출됐다는 증거가 아닙니다/, "expected the Korean sentence denying that a default match is evidence");
+
+  // #44's own `why` sentence, quoted -- it is the one that names a partially
+  // applied set, and the UI must not paraphrase it.
+  pin.match(station, /\{verdict\.why\}/, "expected verify_applied_row's own sentence, verbatim");
+  pin.match(station, /\{rows\.citation\}/, "expected Table 5-6's citation to travel with its numbers");
+});
+
+contractTest("unit #50: a bookmarked /base-model still lands on the work", (pin) => {
+  // COMMENT-STRIPPED, and this one is not a precaution. Measured 2026-08-19
+  // (refuter, by mutation): `next.config.ts` EXPLAINS itself with the sentence
+  // "`permanent: true` (308) because this is not a trial", so a raw-source
+  // `/permanent: true/` pin was satisfied by the prose. Flipping the actual
+  // redirect to `permanent: false` -- a 307, i.e. the exact "this is a trial"
+  // the comment denies -- left this test green. That is the failure mode
+  // `withoutComments` exists for, in its other direction: a `match` pin a
+  // comment answers for cannot fail, and the suite reports it as passing.
+  const config = withoutComments(read("next.config.ts"));
+
+  pin.match(config, /async redirects\(\)/, "expected a redirects() entry so the retired route is not a 404");
+  pin.match(config, /source: "\/base-model"/, "expected /base-model to be the redirect source");
+  pin.match(config, /destination: "\/calibration"/, "expected it to land on the calibration workspace");
+  pin.match(config, /permanent: true/, "expected a permanent (308) redirect -- the page is not coming back");
+
+  // The screen itself moved, it was not rewritten: every feature that had pins
+  // on it (the workbook, the profiles, the travel times, the criteria card)
+  // still lives in one file.
+  const station = read("components/calibration/BaseModelStation.tsx");
+  pin.match(station, /export default function BaseModelStation\(/, "expected the absorbed screen to keep one entry point");
+  pin.match(
+    read("app/calibration/page.tsx"),
+    /<BaseModelStation \/>/,
+    "expected the calibration workspace to render the absorbed screen rather than a partial copy of it",
+  );
+});
+
+contractTest("unit #50: every new calibration string carries its own Japanese", (pin) => {
+  // The newer pages are pinned to the 3-argument t(ko, en, ja) form because
+  // lib/i18n-ja.ts has no generator -- a 2-argument call on a new string would
+  // silently fall back to English for ja readers.
+  for (const file of [
+    "app/calibration/page.tsx",
+    "components/calibration/FlowRail.tsx",
+    "components/calibration/NodeScoreTable.tsx",
+    "components/calibration/BehaviourStation.tsx",
+    "components/calibration/ProposalRail.tsx",
+  ]) {
+    pin.doesNotMatch(
+      read(file),
+      /\bt\(\s*"[^"]*"\s*,\s*"[^"]*"\s*,?\s*\)/,
+      `a two-argument t() in ${file} would fall back to English for ja`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The convention for state that comes from outside React (2026-08-19).
+//
+// `react-hooks/set-state-in-effect` used to have THREE answers living side by
+// side in this tree: most files simply carried the error, three files switched
+// the rule off wholesale in eslint.config.mjs (inherited from the original
+// source import), and some screens deferred their setState through
+// `Promise.resolve().then(...)` to slip past it. lib/asyncResource.ts replaces
+// the first two outright.
+//
+// CORRECTED 2026-08-19 (refuter). This block used to end "lib/asyncResource.ts
+// is the single answer now", and that was measurably false: the microtask
+// deferral is still live in FOUR files / EIGHT sites, two of which this unit
+// itself touched (app/dashboard/page.tsx, and the deferral that travelled into
+// components/calibration/BaseModelStation.tsx with the absorbed screen). The
+// lint gate cannot see them -- a deferred setState does not fire the rule at
+// all -- so "the rule reports zero" was never evidence for "there is one
+// convention". It is evidence for "nothing is left that the rule can see".
+//
+// So the deferral is now an INVENTORY rather than a claim: named below, bounded
+// to those files, and unable to spread to a fifth without failing this suite.
+// Converting them is the next unit's work, not a sentence in a comment.
+// ---------------------------------------------------------------------------
+
+/** The files still using `Promise.resolve().then(...)` to defer a setState out
+ * of an effect body. Measured 2026-08-19; every one of them predates unit #50
+ * (`git show HEAD:` confirms the same counts before the pass). */
+const MICROTASK_DEFERRAL_FILES = [
+  "app/dashboard/page.tsx",
+  "app/genesis/demand/page.tsx",
+  "app/genesis/phases/page.tsx",
+  "components/calibration/BaseModelStation.tsx",
+];
+
+contractTest("the microtask deferral is a NAMED remainder, and cannot spread", (pin) => {
+  const carriers = appSourceFiles().filter((file) =>
+    /Promise\.resolve\(\)\.then\(/.test(withoutComments(read(file))),
+  );
+
+  // Both directions. A new file adopting the trick fails here, which is the
+  // point; a listed file that got converted also fails here, which is how the
+  // list stops being stale the moment the debt is actually paid.
+  //
+  // ANCHORED, and that is load-bearing: `literalPattern` builds an UNANCHORED
+  // regex, so the first draft of this pin compared "files=A,B,C,D" against a
+  // haystack of "files=A,B,C,D,E" and passed on the prefix -- it caught a
+  // conversion and missed the one thing it was written to catch, a fifth file
+  // adopting the trick. Measured by mutation before this line existed.
+  const expected = MICROTASK_DEFERRAL_FILES.join(",").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  pin.match(
+    `files=${carriers.join(",")}`,
+    new RegExp(`^files=${expected}$`),
+    "the microtask-deferral escape hatch must stay confined to the files that already carry it -- " +
+      "add nothing, and strike a file from MICROTASK_DEFERRAL_FILES when it is converted",
+  );
+
+  // And the convention module must not describe itself as the only answer
+  // while this list is non-empty -- the over-claim this pin was written for.
+  pin.doesNotMatch(
+    read("lib/asyncResource.ts"),
+    /now the only one/,
+    "lib/asyncResource.ts must not claim to be the app's only answer while the deferral inventory above is non-empty",
+  );
+});
+
+contractTest("the async-state convention has exactly one home, and no file-wide escape hatch", (pin) => {
+  const config = read("eslint.config.mjs");
+  const helper = read("lib/asyncResource.ts");
+
+  // THE POINT OF THE WHOLE PASS: no file may be exempted from the rule. A
+  // per-file "off" is a second convention, and two conventions is the state
+  // this unit existed to end.
+  pin.doesNotMatch(
+    config,
+    /"react-hooks\/set-state-in-effect":\s*"off"/,
+    "no file may switch the rule off -- the fix belongs in lib/asyncResource.ts, not in the config",
+  );
+
+  // The helper's four primitives. Named individually so deleting one shows up
+  // here rather than as a mystery refactor somewhere downstream.
+  for (const primitive of [
+    "export type Loaded<T>",
+    "export function ok<T>(",
+    "export function failed<T>(",
+    "export function failedWith<T>(",
+    "export function resolve<T>(",
+    "export function resolveSelection<T, K>(",
+  ]) {
+    pin.match(helper, literalPattern(primitive), `expected ${primitive} in the async-state convention`);
+  }
+
+  // `keepPrevious` must stay opt-in. Defaulting it on would silently show the
+  // PREVIOUS selection's data under the new selection's heading -- which on the
+  // calibration and observations screens means one run's or one survey's
+  // numbers presented as another's.
+  pin.match(
+    helper,
+    /if \(options\?\.keepPrevious && loaded\) \{/,
+    "expected keepPrevious to be opt-in, never the default",
+  );
+  pin.match(
+    helper,
+    /deliberately NOT the default/,
+    "expected the helper to say why keepPrevious is opt-in, not just that it is",
+  );
+});
+
+contractTest("an effect may only set state after hydration, and says so on the line", (pin) => {
+  // The ONE exception the convention allows: a value that cannot be read during
+  // render without desynchronising the server's HTML from the client's first
+  // render. Every suppression in the app must be this shape -- a single line,
+  // with a reason -- so a blanket one cannot reappear disguised as a fix.
+  for (const file of [
+    "components/calibration/BaseModelStation.tsx",
+    "components/LanguageProvider.tsx",
+    "components/ProjectSelector.tsx",
+    // The region page reads a one-shot hand-off out of sessionStorage, which
+    // does not exist while the server renders the route -- same exception,
+    // same one-line shape.
+    "app/genesis/region/page.tsx",
+    "app/report/page.tsx",
+  ]) {
+    const source = read(file);
+    const suppressions = source.match(/eslint-disable[^\n]*set-state-in-effect[^\n]*/g) ?? [];
+    for (const line of suppressions) {
+      pin.match(
+        line,
+        /eslint-disable-next-line react-hooks\/set-state-in-effect -- .+/,
+        `a suppression in ${file} must be one line and carry its reason`,
+      );
+      pin.doesNotMatch(
+        line,
+        /eslint-disable\s+react-hooks\/set-state-in-effect/,
+        `${file} must not disable the rule for a whole block or file`,
+      );
+    }
   }
 });

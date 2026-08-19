@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import { InfoTip } from "@/components/genesis/ui";
 import { fetchGenesisGateReport, type GenesisGateReport, type GenesisJob } from "@/lib/api";
+import { failedWith, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import {
   buildNetworkStatDeltas,
   compareGenesisChecks,
@@ -106,6 +107,14 @@ function excludedZoneDisplay(result: ExcludedZoneResult | null, t: Translate): s
   return t("불러오지 못함", "failed to load", "読み込み失敗");
 }
 
+/** One prior-vs-current comparison. Bundled because the three parts are only
+ * ever meaningful together — see the keyed state in the component below. */
+type PriorComparison = {
+  report: GenesisGateReport;
+  statDeltas: ReturnType<typeof buildNetworkStatDeltas>;
+  excludedZoneResults: { prior: ExcludedZoneResult; current: ExcludedZoneResult };
+};
+
 export default function GenesisComparisonPanel({
   jobs,
   currentJob,
@@ -121,36 +130,37 @@ export default function GenesisComparisonPanel({
   const candidates = useMemo(() => jobs.filter((job) => job.id !== currentJob.id), [jobs, currentJob.id]);
 
   const [priorId, setPriorId] = useState<string>("");
-  const [priorReport, setPriorReport] = useState<GenesisGateReport | null>(null);
-  const [priorJob, setPriorJob] = useState<GenesisJob | null>(null);
-  const [statDeltas, setStatDeltas] = useState<ReturnType<typeof buildNetworkStatDeltas> | null>(null);
-  const [excludedZoneResults, setExcludedZoneResults] = useState<{
-    prior: ExcludedZoneResult;
-    current: ExcludedZoneResult;
-  } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  // The four values below all describe ONE comparison, so they are one keyed
+  // answer rather than four states an effect had to blank in step before every
+  // fetch (lib/asyncResource.ts). Blanking them separately was also a real
+  // hazard here: each `setX(null)` was its own line, and a comparison that
+  // cleared three of the four would have drawn one generation's stat deltas
+  // beside another generation's gate report.
+  const [comparisonLoaded, setComparisonLoaded] = useState<Loaded<PriorComparison> | null>(null);
+  const comparisonKey = `${priorId}|${lang}|${currentJob.id}`;
+  // Memoized, not just derived: `priorReport` below feeds two useMemo dep
+  // lists, and the React Compiler cannot prove a value read out of a freshly
+  // built object is stable -- it refuses to compile the component rather than
+  // risk it. Reading through one memoized answer gives it something it can
+  // track, and costs one comparison.
+  const resolved = useMemo(
+    () => resolve(comparisonLoaded, comparisonKey, { idle: !priorId }),
+    [comparisonLoaded, comparisonKey, priorId],
+  );
+  const { error, loading } = resolved;
+  const priorReport = resolved.data?.report ?? null;
+  const statDeltas = resolved.data?.statDeltas ?? null;
+  const excludedZoneResults = resolved.data?.excludedZoneResults ?? null;
+  // Pure lookup, so it is a derivation -- it never needed to be state, and as
+  // state it was one render behind the id that selected it.
+  const priorJob = priorId ? candidates.find((candidate) => candidate.id === priorId) ?? null : null;
 
   useEffect(() => {
-    if (!priorId) {
-      setPriorReport(null);
-      setPriorJob(null);
-      setStatDeltas(null);
-      setExcludedZoneResults(null);
-      setError(null);
-      return;
-    }
-    const job = candidates.find((candidate) => candidate.id === priorId) ?? null;
-    setPriorJob(job);
-    if (!job) return;
+    const job = priorJob;
+    if (!priorId || !job) return;
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setPriorReport(null);
-    setStatDeltas(null);
-    setExcludedZoneResults(null);
-
     Promise.all([
       fetchGenesisGateReport(priorId, lang),
       loadExcludedZoneCount(job),
@@ -158,35 +168,37 @@ export default function GenesisComparisonPanel({
     ])
       .then(([report, priorExcluded, currentExcluded]) => {
         if (cancelled) return;
-        setPriorReport(report);
-        setExcludedZoneResults({ prior: priorExcluded, current: currentExcluded });
-        setStatDeltas(
-          buildNetworkStatDeltas(
-            job.network,
-            currentJob.network,
-            excludedZoneCountOrNull(priorExcluded),
-            excludedZoneCountOrNull(currentExcluded),
-          ),
+        setComparisonLoaded(
+          ok(comparisonKey, {
+            report,
+            excludedZoneResults: { prior: priorExcluded, current: currentExcluded },
+            statDeltas: buildNetworkStatDeltas(
+              job.network,
+              currentJob.network,
+              excludedZoneCountOrNull(priorExcluded),
+              excludedZoneCountOrNull(currentExcluded),
+            ),
+          }),
         );
       })
       .catch((caught) => {
         if (!cancelled) {
-          setError(
-            caught instanceof Error
-              ? caught.message
-              : t("이 생성의 게이트 결과를 불러오지 못했습니다.", "Could not load that generation's gate result.", "この生成のゲート結果を読み込めませんでした。"),
+          setComparisonLoaded(
+            failedWith(
+              comparisonKey,
+              caught instanceof Error
+                ? caught.message
+                : t("이 생성의 게이트 결과를 불러오지 못했습니다.", "Could not load that generation's gate result.", "この生成のゲート結果を読み込めませんでした。"),
+            ),
           );
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [priorId, lang, currentJob.id]);
+  }, [comparisonKey, priorId, priorJob, lang, currentJob.id]);
 
   const checkTitles = useMemo(() => {
     const titles: Record<string, string> = {};

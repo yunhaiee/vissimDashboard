@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { roleLabel, useAuth } from "@/components/AuthProvider";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -18,9 +18,10 @@ import {
   setAdminUserPassword,
   setAdminUserRole,
   type AuthUser,
-  type WorkspaceMember,
+  type WorkspaceMemberListResponse,
   type WorkspaceSummary,
 } from "@/lib/api";
+import { failedWith, ok, resolve, resolveSelection, type Loaded } from "@/lib/asyncResource";
 import { loginHref } from "@/lib/authRedirect";
 
 /**
@@ -60,16 +61,30 @@ import { loginHref } from "@/lib/authRedirect";
 
 type Access = "loading" | "ok" | "forbidden" | "error";
 
+/** Everything the page renders, read in ONE round trip so it can be ONE
+ * `Loaded` value (lib/asyncResource.ts). A list of accounts rendered beside
+ * "목록을 불러오지 못했습니다" would be a screen contradicting itself, and on this
+ * screen the lists are the evidence for every decision the operator makes. */
+type AdminLists = { users: AuthUser[]; roles: string[]; workspaces: WorkspaceSummary[] };
+
+/** This page asks ONE question and it takes no parameters -- "who exists, and
+ * what projects exist" -- so its request key is a constant rather than a
+ * selection or a refresh nonce. A re-read therefore keeps the current lists on
+ * screen rather than flashing an empty one, which is what this page has always
+ * done after a mutation. */
+const LISTS_KEY = "admin-lists";
+
 export default function AdminPage() {
   const { t } = useLanguage();
   const router = useRouter();
   const { user, status } = useAuth();
 
   const [access, setAccess] = useState<Access>("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [users, setUsers] = useState<AuthUser[]>([]);
-  const [roles, setRoles] = useState<string[]>([]);
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [listsLoaded, setListsLoaded] = useState<Loaded<AdminLists> | null>(null);
+  const { data: lists, error: loadError } = resolve(listsLoaded, LISTS_KEY);
+  const users = lists?.users ?? [];
+  const roles = lists?.roles ?? [];
+  const workspaces = lists?.workspaces ?? [];
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -103,23 +118,51 @@ export default function AdminPage() {
     [t],
   );
 
+  /** The one wire call. It RETURNS the lists instead of storing them, which is
+   * what lets two callers share it: the mount effect stores the answer from the
+   * fetch's own callback (an effect may not set state in its body -- see
+   * lib/asyncResource.ts), while `load` below awaits it inline. */
+  const readLists = useCallback(async (): Promise<AdminLists> => {
+    const [userPayload, workspacePayload] = await Promise.all([
+      fetchAdminUsers(),
+      fetchAdminWorkspaces(),
+    ]);
+    return {
+      users: userPayload.users,
+      roles: userPayload.roles,
+      workspaces: workspacePayload.workspaces,
+    };
+  }, []);
+
+  /** Where an answer -- or a refusal -- becomes screen state. One place each,
+   * so the effect's callback and `load`'s await cannot drift apart. */
+  const applyLists = useCallback((next: AdminLists) => {
+    setListsLoaded(ok(LISTS_KEY, next));
+    setAccess("ok");
+  }, []);
+
+  const applyLoadFailure = useCallback(
+    (caught: unknown) => {
+      if (handleAccessFailure(caught)) return;
+      // `failedWith`, not `failed`: the sentence rendered is `describe`'s, which
+      // supplies a translated one when the server sent no message at all.
+      setListsLoaded(failedWith(LISTS_KEY, describe(caught)));
+      setAccess("error");
+    },
+    [describe, handleAccessFailure],
+  );
+
+  /** A re-read that CALLERS CAN AWAIT -- the 다시 시도 button, and `run` below,
+   * which must not report a success before the list it is describing has been
+   * refreshed. That await is why this is a plain async function and not the
+   * bump-a-nonce reload the polling screens use. */
   const load = useCallback(async () => {
     try {
-      const [userPayload, workspacePayload] = await Promise.all([
-        fetchAdminUsers(),
-        fetchAdminWorkspaces(),
-      ]);
-      setUsers(userPayload.users);
-      setRoles(userPayload.roles);
-      setWorkspaces(workspacePayload.workspaces);
-      setLoadError(null);
-      setAccess("ok");
+      applyLists(await readLists());
     } catch (caught) {
-      if (handleAccessFailure(caught)) return;
-      setLoadError(describe(caught));
-      setAccess("error");
+      applyLoadFailure(caught);
     }
-  }, [describe, handleAccessFailure]);
+  }, [applyLists, applyLoadFailure, readLists]);
 
   // Waits for the first whoami() to settle. An anonymous visitor goes to the
   // login screen without the backend round trip that would answer 401 anyway;
@@ -130,8 +173,18 @@ export default function AdminPage() {
       router.replace(loginHref("/admin"));
       return;
     }
-    void load();
-  }, [load, router, status]);
+    let cancelled = false;
+    readLists()
+      .then((next) => {
+        if (!cancelled) applyLists(next);
+      })
+      .catch((caught) => {
+        if (!cancelled) applyLoadFailure(caught);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLists, applyLoadFailure, readLists, router, status]);
 
   /** Every mutation runs through here: one place that clears the previous
    * message, one place that maps a 401/403 onto the access screens, and one
@@ -546,54 +599,67 @@ function MembershipSection({
   describe: (caught: unknown) => string;
 }) {
   const { t } = useLanguage();
-  const [selectedId, setSelectedId] = useState<string>("");
-  const [members, setMembers] = useState<WorkspaceMember[]>([]);
-  const [openToEveryone, setOpenToEveryone] = useState(false);
-  const [membersError, setMembersError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [addUserId, setAddUserId] = useState<string>("");
 
+  // The picker holds the operator's INTENT; the project actually in play is
+  // derived from it during render (lib/asyncResource.ts's `resolveSelection`).
+  //
   // Default to the first NON-default project when there is one: the default
   // project has no roster to manage (it is open to everyone), so opening on it
-  // would show a screen with nothing to do.
-  useEffect(() => {
-    if (selectedId || workspaces.length === 0) return;
-    const firstManageable = workspaces.find((entry) => !entry.is_default) ?? workspaces[0];
-    setSelectedId(firstManageable.id);
-  }, [selectedId, workspaces]);
-
-  // Names whichever project was asked for most recently. Without it, switching
-  // the picker faster than the roster loads lets an EARLIER response resolve
-  // last and paint project A's members under project B's name -- on a screen
-  // whose entire job is telling the operator who can see which client's data,
-  // showing the wrong roster confidently is the one unacceptable outcome.
-  const latestRequestRef = useRef<string>("");
-
-  const loadMembers = useCallback(
-    async (workspaceId: string) => {
-      if (!workspaceId) return;
-      latestRequestRef.current = workspaceId;
-      setLoading(true);
-      try {
-        const payload = await fetchWorkspaceMembers(workspaceId);
-        if (latestRequestRef.current !== workspaceId) return;
-        setMembers(payload.members);
-        setOpenToEveryone(payload.open_to_everyone);
-        setMembersError(null);
-      } catch (caught) {
-        if (latestRequestRef.current !== workspaceId) return;
-        if (!onFailure(caught)) setMembersError(describe(caught));
-      } finally {
-        // A superseded request must not clear the spinner the live one set.
-        if (latestRequestRef.current === workspaceId) setLoading(false);
-      }
-    },
-    [describe, onFailure],
+  // would show a screen with nothing to do. `resolveSelection`'s own fallback
+  // is "the first item", so that preference is expressed by handing it a list
+  // ordered that way -- a stable sort, so the server's order survives within
+  // each group and the <select> below still renders `workspaces` untouched.
+  //
+  // As an effect this corrected itself one render late, in both directions: the
+  // frame in which the workspace list arrived painted a picker on no project
+  // with an empty roster beneath it, and a project that LEFT the list (revoked,
+  // deleted) stayed named in the picker, because the effect only ran while
+  // `selectedId` was still empty.
+  const [selectedIntent, setSelectedIntent] = useState<string | null>(null);
+  const rosterFirst = useMemo(
+    () => [...workspaces].sort((a, b) => Number(a.is_default) - Number(b.is_default)),
+    [workspaces],
   );
+  const selectedId = resolveSelection(selectedIntent, rosterFirst, (entry) => entry.id) ?? "";
+
+  // The roster, tagged with the project it describes. THAT is what makes
+  // switching the picker faster than the roster loads safe: a response for
+  // project A is stored under A's key and simply does not answer B, so project
+  // A's members can never paint under project B's name -- on a screen whose
+  // entire job is telling the operator who can see which client's data, showing
+  // the wrong roster confidently is the one unacceptable outcome. (This was a
+  // `latestRequestRef` compared by hand at three points, including a "superseded
+  // request must not clear the spinner" guard in a `finally`; comparing the key
+  // during render replaces all three, and additionally cannot leave a spinner
+  // running after the reader picks a project whose answer is already in hand.)
+  const [membersLoaded, setMembersLoaded] = useState<Loaded<WorkspaceMemberListResponse> | null>(null);
+  const {
+    data: membersData,
+    error: membersError,
+    loading,
+  } = resolve(membersLoaded, selectedId, { idle: !selectedId });
+  const members = useMemo(() => membersData?.members ?? [], [membersData]);
+  const openToEveryone = membersData?.open_to_everyone ?? false;
+  const [addUserId, setAddUserId] = useState<string>("");
 
   useEffect(() => {
-    void loadMembers(selectedId);
-  }, [loadMembers, selectedId]);
+    if (!selectedId) return;
+    let cancelled = false;
+    fetchWorkspaceMembers(selectedId)
+      .then((payload) => {
+        if (!cancelled) setMembersLoaded(ok(selectedId, payload));
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        // A 401 navigates away and a 403 replaces the whole page with the
+        // refusal screen, so neither leaves a roster for an error to sit in.
+        if (onFailure(caught)) return;
+        setMembersLoaded(failedWith(selectedId, describe(caught)));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [describe, onFailure, selectedId]);
 
   const memberIds = useMemo(() => new Set(members.map((entry) => entry.user_id)), [members]);
   const addable = users.filter((account) => !memberIds.has(account.id));
@@ -616,7 +682,7 @@ function MembershipSection({
         <select
           id="admin-workspace-picker"
           value={selectedId}
-          onChange={(event) => setSelectedId(event.target.value)}
+          onChange={(event) => setSelectedIntent(event.target.value)}
           className="ui-input mt-1.5"
         >
           {workspaces.map((workspace) => (
@@ -671,9 +737,11 @@ function MembershipSection({
                 type="button"
                 onClick={() =>
                   void run(async () => {
+                    // The mutation's response IS the roster, so it lands in the
+                    // same keyed resource the fetch writes to -- a second copy
+                    // of the members list is a second copy that can be wrong.
                     const payload = await revokeWorkspaceMember(selectedId, member.user_id);
-                    setMembers(payload.members);
-                    setOpenToEveryone(payload.open_to_everyone);
+                    setMembersLoaded(ok(selectedId, payload));
                   }, t("접근 권한을 해제했습니다.", "Access was removed.", "アクセス権限を解除しました。"))
                 }
                 className="ui-button-ghost inline-flex items-center px-3 py-1.5 text-[14px]"
@@ -710,8 +778,7 @@ function MembershipSection({
           onClick={() =>
             void run(async () => {
               const payload = await grantWorkspaceMember(selectedId, Number(addUserId));
-              setMembers(payload.members);
-              setOpenToEveryone(payload.open_to_everyone);
+              setMembersLoaded(ok(selectedId, payload));
               setAddUserId("");
             }, t("접근 권한을 부여했습니다.", "Access was granted.", "アクセス権限を付与しました。"))
           }

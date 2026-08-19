@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { resolveSelection } from "@/lib/asyncResource";
+
 import type { ScenarioMeta, ScenarioResults } from "@/lib/api";
 
 type MetricKey = "speed" | "delay" | "travelTime";
@@ -73,7 +75,7 @@ function compareSegmentIds(left: string, right: string) {
 export default function CorridorSectionComparison({ scenarios, selected, results }: Props) {
   const [metric, setMetric] = useState<MetricKey>("speed");
   const [sortBy, setSortBy] = useState<SortKey>("objectId");
-  const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
+  const [activeSegmentIdIntent, setActiveSegmentId] = useState<string | null>(null);
   const activeScenarios = useMemo(
     () => scenarios.filter((scenario) => selected.includes(scenario.id)),
     [scenarios, selected],
@@ -122,13 +124,12 @@ export default function CorridorSectionComparison({ scenarios, selected, results
     [rows],
   );
 
-  useEffect(() => {
-    if (topSegments.length === 0) {
-      setActiveSegmentId(null);
-      return;
-    }
-    setActiveSegmentId((prev) => (prev && topSegments.some((row) => row.segmentId === prev) ? prev : topSegments[0].segmentId));
-  }, [topSegments]);
+  // Resolved during render rather than corrected by an effect one frame later.
+  const activeSegmentId = resolveSelection(
+    activeSegmentIdIntent,
+    topSegments,
+    (row) => row.segmentId,
+  );
 
   if (activeScenarios.length === 0) return null;
 

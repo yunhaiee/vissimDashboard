@@ -2,6 +2,8 @@
 
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
+import { resolveSelection } from "@/lib/asyncResource";
+
 import type { ScenarioMeta, ScenarioResults } from "@/lib/api";
 
 interface Props {
@@ -95,9 +97,12 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
   const [sortKey, setSortKey] = useState<SortKey>("spread");
   const [query, setQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<DirectionFilter>("all");
-  const [comparisonBaseline, setComparisonBaseline] = useState<ComparisonBaseline>("average");
+  // Resolved during render: a baseline scenario that leaves the selection
+  // falls back to "average" immediately, instead of one render later (which
+  // showed a column comparing against a scenario no longer on screen).
+  const [comparisonBaselineIntent, setComparisonBaseline] = useState<ComparisonBaseline>("average");
   const [showChangedOnly, setShowChangedOnly] = useState(false);
-  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [activeNodeIdIntent, setActiveNodeId] = useState<string | null>(null);
   const deferredQuery = useDeferredValue(query);
 
   const resetFilters = () => {
@@ -111,14 +116,11 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
     [scenarios, selected],
   );
 
-  useEffect(() => {
-    if (
-      comparisonBaseline !== "average" &&
-      !activeScenarios.some((scenario) => scenario.id === comparisonBaseline)
-    ) {
-      setComparisonBaseline("average");
-    }
-  }, [activeScenarios, comparisonBaseline]);
+  const comparisonBaseline: ComparisonBaseline =
+    comparisonBaselineIntent === "average" ||
+    activeScenarios.some((scenario) => scenario.id === comparisonBaselineIntent)
+      ? comparisonBaselineIntent
+      : "average";
 
   const nodes = useMemo(
     () => buildNodeSummaries(activeScenarios, results),
@@ -197,15 +199,9 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
   );
   const topBottleneckCount = topBottleneckNodes.length;
 
-  useEffect(() => {
-    if (!filteredNodes.length) {
-      setActiveNodeId(null);
-      return;
-    }
-    setActiveNodeId((prev) =>
-      prev && filteredNodes.some((node) => node.node_id === prev) ? prev : filteredNodes[0].node_id,
-    );
-  }, [filteredNodes]);
+  // Same derivation as the baseline above: the row the table highlights is the
+  // user's intent resolved against the rows that actually exist right now.
+  const activeNodeId = resolveSelection(activeNodeIdIntent, filteredNodes, (node) => node.node_id);
 
   if (!activeScenarios.length) return null;
 

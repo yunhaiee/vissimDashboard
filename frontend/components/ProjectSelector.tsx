@@ -65,7 +65,16 @@ export function useWorkspacePicker() {
   // guard is worth keeping at all).
   const [datasetBusy, setDatasetBusy] = useState(false);
 
+  // THE HYDRATION EXCEPTION (lib/asyncResource.ts): `isDatasetBusy()` is an
+  // imperative store's CURRENT value, not React state -- the module-level flag
+  // lib/datasetEvents.ts keeps. Reading it during render would let the server's
+  // HTML and the client's first render disagree about whether an upload is in
+  // flight. The subscription returned below is the steady-state channel; this
+  // one read only catches an upload that STARTED BEFORE this picker mounted,
+  // which is exactly the case the guard exists for (the picker mounts in the
+  // sidebar, the upload it must not interrupt is owned by a banner on the page).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- imperative store's current value; must run after hydration
     setDatasetBusy(isDatasetBusy());
     return subscribeToDatasetBusy(setDatasetBusy);
   }, []);

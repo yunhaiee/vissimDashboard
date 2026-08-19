@@ -52,6 +52,7 @@ import {
 } from "@/components/genesis/findings";
 import { InfoTip } from "@/components/genesis/ui";
 import type { GenesisGateReport } from "@/lib/api";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import {
   fetchGenesisDraftGeoJson,
   fetchGenesisDraftNetwork,
@@ -102,6 +103,16 @@ const MAP_HEIGHT = 420;
  * row twice re-focus instead of no-op. */
 export type GenesisMapSelectionRequest = { seq: number; item: SelectedItem };
 
+/** One generation's drawable draft: the census that decides whether the panel
+ * can render at all, the GeoJSON that places it on a basemap, and — when the
+ * server refused to place it — the sentence saying why. One answer, because a
+ * census without its refusal note is a map that silently lost its caption. */
+type DraftMap = {
+  census: GenesisDraftNetwork;
+  geo: GenesisGeoJson | null;
+  geoRefusal: string | null;
+};
+
 export default function GenesisTileMap({
   jobId,
   report,
@@ -125,77 +136,75 @@ export default function GenesisTileMap({
 }) {
   const { t } = useLanguage();
 
-  const [network, setNetwork] = useState<GenesisDraftNetwork | null>(null);
-  const [geo, setGeo] = useState<GenesisGeoJson | null>(null);
+  // Keyed by the job it describes (lib/asyncResource.ts). This replaces five
+  // separate states AND the effect that used to blank them all when `jobId`
+  // changed: a stale network under a new job's findings is now impossible by
+  // construction rather than by remembering to clear every one of them.
+  //
+  // It also dissolves the measured hazard the old effect below documented. That
+  // effect could not depend on `loading` because it was the thing that SET
+  // `loading`, and it needed `loadError` in its guard so a failure would not
+  // retry forever. Neither is state any more -- both are read off the one
+  // answer during render -- so neither can re-fire the effect. The failure is
+  // still terminal for the job (nothing in the dependency list changes after
+  // it) and still cleared by switching jobs (the key changes).
+  const [mapLoaded, setMapLoaded] = useState<Loaded<DraftMap> | null>(null);
+  const { data: draft, error: loadError, loading } = resolve(mapLoaded, jobId, {
+    idle: !hasArtifact,
+  });
+  const network = draft?.census ?? null;
+  const geo = draft?.geo ?? null;
   /** Why the basemap is not available for THIS generation, in the server's own
    * words. Not an error: the census loaded and the shape is still drawn — this
    * is the sentence that says the map underneath it is missing and why. */
-  const [geoRefusal, setGeoRefusal] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<SelectedItem>(null);
+  const geoRefusal = draft?.geoRefusal ?? null;
+
+  // The user's own selection, tagged with the job it was made in, so switching
+  // jobs clears it during render instead of through the reset effect that used
+  // to do it one render later.
+  const [selectedState, setSelectedState] = useState<{ jobId: string; item: SelectedItem }>({
+    jobId,
+    item: null,
+  });
+  const selected = selectedState.jobId === jobId ? selectedState.item : null;
+  const setSelected = useCallback(
+    (item: SelectedItem) => setSelectedState({ jobId, item }),
+    [jobId],
+  );
   const [showNormal, setShowNormal] = useState(true);
   const [showRefuse, setShowRefuse] = useState(true);
   const [showWarn, setShowWarn] = useState(true);
 
-  // Reset everything the moment the job changes -- a stale network under a new
-  // job's findings would silently mislabel every highlight.
   useEffect(() => {
-    setNetwork(null);
-    setGeo(null);
-    setGeoRefusal(null);
-    setLoadError(null);
-    setSelected(null);
-  }, [jobId]);
-
-  useEffect(() => {
-    // `loadError` MUST be in this guard: without it, a failed fetch re-fires
-    // the effect, which clears its own error and retries forever -- the user
-    // sees an eternal "loading" instead of the named failure. Found live
-    // 2026-08-12 (logged-out user, auth-required artifact fetch). The error
-    // state is terminal for this job; switching jobs resets it above.
-    //
-    // `loading` must NOT be a dependency of this effect, because the effect is
-    // what sets it: with `loading` in deps, `setLoading(true)` re-fires the
-    // effect, and React runs the *previous* run's cleanup first, cancelling the
-    // fetch that same call just started. Measured against react-dom 19.2.4: a
-    // near-instant response (~<2 ms, cache/loopback) could lose the race
-    // outright -- every write discarded, `loading` stuck `true` forever;
-    // anything slower survived but paid for a wasted duplicate fetch whose
-    // first result was thrown away. Removing the dependency is race-free at
-    // every delay tested, including 0-1 ms. Found live 2026-08-12; re-verified
-    // empirically the same day.
-    if (network || loadError !== null || !hasArtifact) return;
+    // The guard is now only "is there anything to fetch, and have we already
+    // answered THIS job". Both of the fragile conditions this used to carry
+    // (see the keyed state above) are gone with the state they guarded.
+    if (!hasArtifact || mapLoaded?.key === jobId) return;
     let cancelled = false;
-    setLoading(true);
     // The census decides whether this panel can render at all, so its failure
     // is THE failure. The GeoJSON's failure is a DEGRADATION, not an error:
     // caught here and turned into a named reason, so a draft the server refuses
-    // to place still shows its shape and its findings.
+    // to place still shows its shape and its findings. Carried alongside the
+    // census in one answer rather than written to its own state mid-flight.
+    let refusal: string | null = null;
     Promise.all([
       fetchGenesisDraftNetwork(jobId),
       fetchGenesisDraftGeoJson(jobId).catch((caught) => {
-        if (!cancelled) {
-          setGeoRefusal(caught instanceof Error ? caught.message : String(caught));
-        }
+        refusal = caught instanceof Error ? caught.message : String(caught);
         return null;
       }),
     ])
       .then(([census, geojson]) => {
         if (cancelled) return;
-        setNetwork(census);
-        setGeo(geojson);
+        setMapLoaded(ok(jobId, { census, geo: geojson, geoRefusal: refusal }));
       })
       .catch((caught) => {
-        if (!cancelled) setLoadError(caught instanceof Error ? caught.message : String(caught));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setMapLoaded(failed(jobId, caught));
       });
     return () => {
       cancelled = true;
     };
-  }, [network, loadError, hasArtifact, jobId]);
+  }, [hasArtifact, jobId, mapLoaded]);
 
   const linksById = useMemo(() => {
     const map = new Map<number, GenesisDraftLink>();

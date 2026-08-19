@@ -125,7 +125,14 @@ export default function ReportPage() {
     };
   }, []);
 
+  // THE HYDRATION EXCEPTION (lib/asyncResource.ts): the profile is in
+  // localStorage, which the server cannot read, so reading it during render
+  // would desynchronise the server's HTML from the client's first render.
+  // `styleLoaded` is set in the same landing because the persist effect below
+  // waits for it -- the two writes are one event ("the stored profile, or the
+  // absence of one, is now known"), not two.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage; must run after hydration
     setStyleProfile(readStoredReportStyleProfile());
     setStyleLoaded(true);
   }, []);

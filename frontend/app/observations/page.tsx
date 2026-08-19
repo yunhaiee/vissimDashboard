@@ -40,12 +40,13 @@ import {
   uploadObservationWorkbook,
   type ObservationGateIssue,
   type ObservationGateSummary,
-  type ObservationRegistryHealth,
   type ObservationSetRecord,
   type ObservationSetSummary,
+  type ObservationSetsResponse,
   type ObservationSiteAggregate,
   type StagedObservationUpload,
 } from "@/lib/api";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import { formatTimestamp } from "@/lib/genesisArtifacts";
 
 type Translate = (ko: string, en: string, ja: string) => string;
@@ -218,50 +219,65 @@ export default function ObservationsPage() {
   const [justStored, setJustStored] = useState<ObservationSetRecord | null>(null);
 
   // -- Sets list + registry health -----------------------------------------
-  const [sets, setSets] = useState<ObservationSetSummary[]>([]);
-  const [setsError, setSetsError] = useState<string | null>(null);
-  const [registryHealth, setRegistryHealth] = useState<ObservationRegistryHealth | null>(null);
-
-  const loadSets = useCallback(async () => {
-    try {
-      const response = await fetchObservationSets();
-      setSets(response.sets);
-      setRegistryHealth(response.registry_health);
-      setSetsError(null);
-    } catch (caught) {
-      setSetsError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }, []);
+  // One `Loaded` for the whole listing response (lib/asyncResource.ts): the
+  // rows and the registry-quarantine disclosure arrive together and describe
+  // the same read, so they cannot be two states that disagree. Keyed by a
+  // REFRESH nonce -- "read the list again", after an ingest or a delete, is a
+  // change to the request key, which is what lets the effect set state only
+  // inside the fetch's own callback. `keepPrevious` because every one of those
+  // re-reads is the SAME question: blanking the table between a delete and its
+  // refreshed list would read as "everything is gone", not as progress.
+  const [setsNonce, setSetsNonce] = useState(0);
+  const [setsLoaded, setSetsLoaded] = useState<Loaded<ObservationSetsResponse> | null>(null);
+  const { data: setsData, error: setsError } = resolve(setsLoaded, String(setsNonce), {
+    keepPrevious: true,
+  });
+  const sets = setsData?.sets ?? [];
+  const registryHealth = setsData?.registry_health ?? null;
+  const loadSets = useCallback(() => setSetsNonce((nonce) => nonce + 1), []);
 
   useEffect(() => {
-    void loadSets();
-  }, [loadSets]);
+    let cancelled = false;
+    fetchObservationSets()
+      .then((response) => {
+        if (!cancelled) setSetsLoaded(ok(String(setsNonce), response));
+      })
+      .catch((caught) => {
+        if (!cancelled) setSetsLoaded(failed(String(setsNonce), caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setsNonce]);
 
   // -- Master-detail selection (no dynamic route -- a local id + a fetch) --
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<ObservationSetRecord | null>(null);
-  const [selectedLoading, setSelectedLoading] = useState(false);
-  const [selectedError, setSelectedError] = useState<string | null>(null);
+  const [selectedLoaded, setSelectedLoaded] = useState<Loaded<ObservationSetRecord> | null>(null);
+  // The open row's detail, resolved against the id that is open RIGHT NOW
+  // (lib/asyncResource.ts). `idle` because a closed detail is not a request in
+  // flight -- without it, "no row open" would read as loading forever.
+  //
+  // Deliberately NOT `keepPrevious`: the key changes here because the READER
+  // clicked a different set, and the reset used to arrive one render late --
+  // clicking row B left row A's periods, gate findings and per-site totals on
+  // screen under B's name until B's response landed, which on this page means
+  // showing one survey's numbers as another's.
+  const {
+    data: selectedRecord,
+    error: selectedError,
+    loading: selectedLoading,
+  } = resolve(selectedLoaded, selectedId ?? "", { idle: selectedId === null });
 
   useEffect(() => {
-    if (!selectedId) {
-      setSelectedRecord(null);
-      setSelectedError(null);
-      return;
-    }
+    if (!selectedId) return;
     let cancelled = false;
-    setSelectedLoading(true);
-    setSelectedError(null);
-    void (async () => {
-      try {
-        const record = await fetchObservationSet(selectedId);
-        if (!cancelled) setSelectedRecord(record);
-      } catch (caught) {
-        if (!cancelled) setSelectedError(caught instanceof Error ? caught.message : String(caught));
-      } finally {
-        if (!cancelled) setSelectedLoading(false);
-      }
-    })();
+    fetchObservationSet(selectedId)
+      .then((record) => {
+        if (!cancelled) setSelectedLoaded(ok(selectedId, record));
+      })
+      .catch((caught) => {
+        if (!cancelled) setSelectedLoaded(failed(selectedId, caught));
+      });
     return () => {
       cancelled = true;
     };
@@ -279,7 +295,17 @@ export default function ObservationsPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const confirmDelete = useCallback(async () => {
+  // Not a useCallback, and measured rather than assumed: once `loadSets` became
+  // a two-line nonce bump the compiler could see through, it inferred a
+  // narrower dependency set for this handler than the hand-written list, and
+  // react-hooks/preserve-manual-memoization refused to compile the component at
+  // all ("Existing memoization could not be preserved") -- while
+  // exhaustive-deps kept demanding the wider list, so no dep array satisfies
+  // both. The manual memo was buying nothing anyway: the only call site is
+  // `onClick={() => void confirmDelete()}`, an arrow rebuilt every render.
+  // Every other handler here keeps its useCallback; this is the one the
+  // compiler and the deps rule disagreed about.
+  const confirmDelete = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     setDeleteError(null);
@@ -287,13 +313,13 @@ export default function ObservationsPage() {
       await deleteObservationSet(deleteTarget.id);
       setDeleteTarget(null);
       if (selectedId === deleteTarget.id) setSelectedId(null);
-      void loadSets();
+      loadSets();
     } catch (caught) {
       setDeleteError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setDeleting(false);
     }
-  }, [deleteTarget, selectedId, loadSets]);
+  };
 
   // -- Upload: stage every selected file, one raw-body POST per workbook ---
   const uploadFiles = useCallback(async () => {
@@ -373,7 +399,7 @@ export default function ObservationsPage() {
       setName("");
       setAdapter("");
       setPeriods([emptyPeriod()]);
-      void loadSets();
+      loadSets();
     } catch (caught) {
       setIngestError(caught instanceof Error ? caught : new Error(String(caught)));
     } finally {

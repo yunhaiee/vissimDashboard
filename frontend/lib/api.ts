@@ -2364,6 +2364,210 @@ export function healthCheckDownloadUrl(): string {
   return apiUrl("/api/health-check?format=json");
 }
 
+// ---------------------------------------------------------------------------
+// Unit #50 — /api/calibration, the calibration workspace's read side.
+//
+// Four GETs over services that already existed. Nothing here writes: the
+// screen's approval button calls `approveAgentAction` below, the same endpoint
+// the drawer has always used, so there is exactly one approval path in this
+// app.
+// ---------------------------------------------------------------------------
+
+/** One of the five words the flow rail is allowed to say about a step. */
+export type CalibrationStepStatus =
+  | "DONE"
+  | "IN_PROGRESS"
+  | "NEXT"
+  | "NOT_APPLICABLE"
+  | "NO_EVIDENCE";
+
+export interface CalibrationRailStep {
+  number: number;
+  /** MRWA op §2.12.1's own English label, verbatim. */
+  label: string;
+  /** This product's translations of it — `label_source` says so on the wire. */
+  label_ko: string;
+  label_ja: string;
+  label_source: string;
+  citation: string;
+  /** The section id on the workspace page this step's work lives in. */
+  anchor: string;
+  /** True for the seven steps this product measures nothing for. */
+  manual_area: boolean;
+  status: CalibrationStepStatus;
+  /** Which artifact answered — "none" only ever accompanies NO_EVIDENCE. */
+  source: string;
+  basis: { ko: string; en: string; ja: string };
+  detail: Record<string, unknown>;
+  /** Unit #51's locked second track. Present on step 12 only. */
+  tracks?: {
+    key: string;
+    unit: string;
+    locked: boolean;
+    label: { ko: string; en: string; ja: string };
+    why: { ko: string; en: string; ja: string };
+  }[];
+}
+
+export interface CalibrationRail {
+  steps: CalibrationRailStep[];
+  counts: Record<CalibrationStepStatus, number>;
+  citation: string;
+  principles: { text: string; citation: string }[];
+  statuses: CalibrationStepStatus[];
+  /** Which evidence bundles the server actually found — lets the UI tell "the
+   * rail read this and found nothing" from "the rail was given nothing". */
+  sources: {
+    gate: boolean;
+    health: boolean;
+    phase_diagrams: boolean;
+    shadow_model: boolean;
+    reality_check: boolean;
+    scenario_id: string | null;
+  };
+}
+
+/** One node of the run-vs-observed report. The `diagnosis` block is unit #43's
+ * ladder, the SAME shape the drawer renders from the stream. */
+export interface CalibrationRealityNode {
+  node_id: string;
+  node_name?: string | null;
+  observed_total?: number | null;
+  modelled_total?: number | null;
+  node_total_geh?: number | null;
+  outcome: {
+    outcome: string;
+    scope: string;
+    reason_code?: string | null;
+    confidence?: string | null;
+    verb?: string | null;
+    params?: Record<string, unknown> | null;
+    evidence?: Record<string, unknown>;
+    rationale?: Record<string, unknown>;
+  };
+  diagnosis?: {
+    rung: string;
+    why: { ko: string; en: string; ja: string };
+    next_action: AgentDiagnosisNode["next_action"];
+    missing_evidence: string[];
+    evidence?: Record<string, unknown>;
+  } | null;
+}
+
+export interface CalibrationRealityCheck {
+  status: string;
+  reason_code?: string | null;
+  message: { ko: string; en: string; ja: string };
+  geh_threshold?: number | null;
+  period?: string | null;
+  checked_at?: string;
+  sources?: Record<string, string>;
+  coverage?: {
+    counts?: Record<string, number>;
+    ungradable_movements?: unknown[];
+    run_nodes_without_observed?: unknown[];
+    observed_nodes_absent_from_run?: unknown[];
+  };
+  nodes?: CalibrationRealityNode[];
+  proposals?: CalibrationRealityNode[];
+  refusals?: CalibrationRealityNode[];
+  diagnosis?: { by_rung?: Record<string, string[]> };
+}
+
+export interface CalibrationAppliedRow {
+  behavior_no: string;
+  behavior_name: string;
+  reference_count?: number | null;
+  car_following_model?: number | null;
+  /** `saturation_flow.verify_applied_row`'s verdict, verbatim. */
+  verdict: {
+    status: "MATCHES_PUBLISHED_ROW" | "MATCHES_NO_PUBLISHED_ROW" | "PARAMETERS_UNREADABLE";
+    applied: Record<string, number | null>;
+    row: { saturation_flow_pcu: number; additive: number; multiplicative: number } | null;
+    per_parameter_rows: Record<string, number[]>;
+    standstill_matches_guideline: boolean | null;
+    why: string;
+    citation: string;
+  };
+}
+
+export interface CalibrationAppliedRows {
+  available: boolean;
+  reason: string | null;
+  behaviors: CalibrationAppliedRow[];
+  summary: {
+    readable: number;
+    on_published_row: number;
+    off_published_row: number;
+    guideline_standstill: number;
+    default_coincident: number;
+    unreadable: number;
+    default_coincident_row_pcu: number | null;
+  };
+  citation: string;
+}
+
+/** A pause waiting for a human, read WITHOUT spending the single-use token. */
+export interface CalibrationPendingApproval {
+  session_id: string;
+  approval_id: string;
+  created_at?: number | null;
+  message?: string | null;
+  language?: string | null;
+  actions: AgentAction[];
+  warnings: AgentWarning[];
+  assumptions: string[];
+  focus?: AgentApprovalFocus | null;
+  car_following_set?: AgentCarFollowingSet | null;
+}
+
+export async function fetchCalibrationRail(params?: {
+  scenarioId?: string | null;
+  period?: string | null;
+  observationSetId?: string | null;
+  observationPeriod?: string | null;
+}): Promise<CalibrationRail> {
+  const query = new URLSearchParams();
+  if (params?.scenarioId) query.set("scenario_id", params.scenarioId);
+  if (params?.period) query.set("period", params.period);
+  if (params?.observationSetId) query.set("observation_set_id", params.observationSetId);
+  if (params?.observationPeriod) query.set("observation_period", params.observationPeriod);
+  const suffix = query.toString();
+  const r = await apiFetch(`/api/calibration/rail${suffix ? `?${suffix}` : ""}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function fetchCalibrationRealityCheck(params: {
+  scenarioId: string;
+  period?: string | null;
+  observationSetId?: string | null;
+  observationPeriod?: string | null;
+}): Promise<CalibrationRealityCheck> {
+  const query = new URLSearchParams({ scenario_id: params.scenarioId });
+  if (params.period) query.set("period", params.period);
+  if (params.observationSetId) query.set("observation_set_id", params.observationSetId);
+  if (params.observationPeriod) query.set("observation_period", params.observationPeriod);
+  const r = await apiFetch(`/api/calibration/reality-check?${query.toString()}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function fetchCalibrationAppliedRows(): Promise<CalibrationAppliedRows> {
+  const r = await apiFetch("/api/calibration/applied-rows", { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function fetchCalibrationPendingApprovals(): Promise<{
+  pending: CalibrationPendingApproval[];
+  workspace_id: string;
+}> {
+  const r = await apiFetch("/api/calibration/pending-approvals", { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
 export async function startSimulation(params: {
   name: string;
   scenario_id?: string;

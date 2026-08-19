@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import {
   apiFetch,
   downloadAgentModel,
@@ -149,34 +150,39 @@ export default function DownloadsPage() {
   // listed newest-first (backend/routers/agent_downloads.py's unscoped
   // GET /api/agent/downloads — the latest saved version per session that
   // has actually saved a write).
-  const [agentDownloads, setAgentDownloads] = useState<AgentDownloadEntry[]>([]);
-  const [agentDownloadsLoading, setAgentDownloadsLoading] = useState(true);
-  const [agentDownloadsError, setAgentDownloadsError] = useState<string | null>(null);
+  //
+  // Keyed by a REFRESH nonce (lib/asyncResource.ts): "read the list again" is a
+  // change to the request key, which is what lets the effect set state only
+  // inside the fetch's own callback. `keepPrevious` because every re-read here
+  // is the SAME question -- the 새로고침 button and the agent-session broadcast
+  // below both ask for this one unscoped listing again -- so the list must not
+  // blank between the ask and the answer.
+  const [agentDownloadsNonce, setAgentDownloadsNonce] = useState(0);
+  const [agentDownloadsLoaded, setAgentDownloadsLoaded] = useState<Loaded<AgentDownloadEntry[]> | null>(null);
+  const {
+    data: agentDownloadsData,
+    error: agentDownloadsError,
+    loading: agentDownloadsLoading,
+  } = resolve(agentDownloadsLoaded, String(agentDownloadsNonce), { keepPrevious: true });
+  const agentDownloads = agentDownloadsData ?? [];
   const [agentDownloadBusyKey, setAgentDownloadBusyKey] = useState<string | null>(null);
   const [agentDownloadStatus, setAgentDownloadStatus] = useState<Record<string, "ok" | "err">>({});
 
-  const loadAgentDownloads = useCallback(() => {
+  const loadAgentDownloads = useCallback(() => setAgentDownloadsNonce((nonce) => nonce + 1), []);
+
+  useEffect(() => {
     let cancelled = false;
-    setAgentDownloadsLoading(true);
     fetchAgentDownloads({ limit: 20 })
       .then((entries) => {
-        if (!cancelled) {
-          setAgentDownloads(entries);
-          setAgentDownloadsError(null);
-        }
+        if (!cancelled) setAgentDownloadsLoaded(ok(String(agentDownloadsNonce), entries));
       })
-      .catch((e) => {
-        if (!cancelled) setAgentDownloadsError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setAgentDownloadsLoading(false);
+      .catch((caught) => {
+        if (!cancelled) setAgentDownloadsLoaded(failed(String(agentDownloadsNonce), caught));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => loadAgentDownloads(), [loadAgentDownloads]);
+  }, [agentDownloadsNonce]);
 
   // Refresh the list the moment the floating chat's agent session id
   // changes — the same "vissim:agent-session" broadcast app/dashboard/

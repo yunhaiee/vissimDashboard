@@ -94,6 +94,11 @@ import {
 
 type Translate = (ko: string, en: string, ja: string) => string;
 
+/** "No element on this job's map can be placed yet" -- one shared empty set, so
+ * the render-time derivation of `placeable` (see the map wiring below) does not
+ * mint a new identity on every render. */
+const EMPTY_PLACEABLE: ReadonlySet<string> = new Set<string>();
+
 /** The generation form's own unknown-code sentence -- kept here too (not only
  * on the hub) because `selected.refusal` (a job that failed before it ever
  * reached a gate report) renders through the same `refusalHeadline` fallback
@@ -2485,18 +2490,21 @@ export default function GenesisJobDetailPage() {
     { jobId: string; language: string; payload: GenesisGateReport } | null
   >(null);
   const [reportError, setReportError] = useState<string | null>(null);
-  const [fixesEntry, setFixesEntry] = useState<
-    { jobId: string; checkedAt: string; payload: GenesisJobFixes } | null
-  >(null);
-  const [fixesError, setFixesError] = useState<GenesisError | Error | null>(null);
+  // ONE answer for the fix strip, carrying the (job, verdict) it describes --
+  // the shape lib/asyncResource.ts's `Loaded` names, written out by hand here
+  // because this screen needs the GenesisError INSTANCE (it says something
+  // different for a 401 than for anything else) and `Loaded.error` is a bare
+  // string. Payload and failure share one key, so neither can be read under a
+  // request it does not answer.
+  const [fixesAnswer, setFixesAnswer] = useState<{
+    key: string;
+    payload: GenesisJobFixes | null;
+    error: GenesisError | Error | null;
+  } | null>(null);
 
   const report =
     reportEntry && selected && reportEntry.jobId === selected.id && reportEntry.language === lang
       ? reportEntry.payload
-      : null;
-  const fixes =
-    fixesEntry && selected && fixesEntry.jobId === selected.id && fixesEntry.checkedAt === (selected.gate?.checked_at ?? "")
-      ? fixesEntry.payload
       : null;
 
   // Poll the job named by the URL. A tick that never once resolved for this
@@ -2545,6 +2553,16 @@ export default function GenesisJobDetailPage() {
   // (live-check evidence) changes the verdict without changing the job id.
   const gatedJobId = selected?.gate ? selected.id : null;
   const gateCheckedAt = selected?.gate?.checked_at ?? null;
+  // The fix strip's request key, and the render-time read of it. A key that
+  // does not match is "not this job's answer" -- which is also how the
+  // previous job's "수정 제안을 불러오지 못했습니다" stops being on screen. It
+  // used to be cleared by the fetch effect instead, one render after the new
+  // job's id had already arrived, so the strip carried the old job's failure
+  // for that frame.
+  const fixesKey = gatedJobId ? `${gatedJobId}|${gateCheckedAt ?? ""}` : "";
+  const fixesCurrent = fixesAnswer && fixesAnswer.key === fixesKey ? fixesAnswer : null;
+  const fixes = gatedJobId ? fixesCurrent?.payload ?? null : null;
+  const fixesError = gatedJobId ? fixesCurrent?.error ?? null : null;
   useEffect(() => {
     if (!gatedJobId) return;
     let cancelled = false;
@@ -2572,23 +2590,23 @@ export default function GenesisJobDetailPage() {
   useEffect(() => {
     if (!gatedJobId) return;
     let cancelled = false;
-    setFixesError(null);
     fetchGenesisJobFixes(gatedJobId)
       .then((payload) => {
-        if (!cancelled) {
-          setFixesEntry({ jobId: gatedJobId, checkedAt: gateCheckedAt ?? "", payload });
-          setFixesError(null);
-        }
+        if (!cancelled) setFixesAnswer({ key: fixesKey, payload, error: null });
       })
       .catch((caught) => {
         if (!cancelled) {
-          setFixesError(caught instanceof Error ? caught : new Error(String(caught)));
+          setFixesAnswer({
+            key: fixesKey,
+            payload: null,
+            error: caught instanceof Error ? caught : new Error(String(caught)),
+          });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [gatedJobId, gateCheckedAt]);
+  }, [gatedJobId, gateCheckedAt, fixesKey]);
 
   // A live check re-gates THIS job from another job's worker thread, so the
   // verdict on screen can change without anything on this page having asked
@@ -2611,11 +2629,44 @@ export default function GenesisJobDetailPage() {
   // replacing a controlled value, because the map still owns the state (see
   // `GenesisMapSelectionRequest`) and because clicking the SAME row twice must
   // re-centre rather than no-op.
-  const [mapRequest, setMapRequest] = useState<GenesisMapSelectionRequest | null>(null);
-  const [placeable, setPlaceable] = useState<ReadonlySet<string>>(() => new Set<string>());
-  const requestSelection = useCallback((item: SelectedItem) => {
-    setMapRequest((current) => ({ seq: (current?.seq ?? 0) + 1, item }));
-  }, []);
+  //
+  // A different job is a different network: both values below are therefore
+  // stored WITH the job they were minted against and read back only while that
+  // is still the job on screen (the map clears its own selection on the same
+  // signal, see its reset effect). As an effect that cleared them, the request
+  // and the placeable set belonging to the PREVIOUS job survived into the
+  // first render of the next one -- a rail row highlighted as placeable
+  // against a census that had already been replaced.
+  const [mapRequestState, setMapRequestState] = useState<
+    { jobId: string; request: GenesisMapSelectionRequest } | null
+  >(null);
+  const [placeableState, setPlaceableState] = useState<
+    { jobId: string; ids: ReadonlySet<string> } | null
+  >(null);
+  const mapRequest = mapRequestState && mapRequestState.jobId === jobId ? mapRequestState.request : null;
+  const placeable = placeableState && placeableState.jobId === jobId ? placeableState.ids : EMPTY_PLACEABLE;
+  const requestSelection = useCallback(
+    (item: SelectedItem) => {
+      // The sequence number still only ever counts up WITHIN one job, which is
+      // what makes clicking the same row twice re-centre instead of no-op.
+      setMapRequestState((current) => ({
+        jobId,
+        request: { seq: (current?.jobId === jobId ? current.request.seq : 0) + 1, item },
+      }));
+    },
+    [jobId],
+  );
+  // Wrapped rather than handed `setPlaceableState` directly so the set can be
+  // tagged with its job -- and it keeps the identity check the raw setter got
+  // for free, so re-publishing the SAME set does not re-render.
+  const handlePlaceableChange = useCallback(
+    (ids: ReadonlySet<string>) => {
+      setPlaceableState((current) =>
+        current && current.jobId === jobId && current.ids === ids ? current : { jobId, ids },
+      );
+    },
+    [jobId],
+  );
   const focusFinding = useCallback(
     (ref: FindingRef | null, point?: { lat: number; lon: number; label: string }) =>
       requestSelection({ kind: "finding", refs: ref ? [ref] : [], point }),
@@ -2629,13 +2680,6 @@ export default function GenesisJobDetailPage() {
       requestSelection({ kind: "element", elementKind: kind, id, name: "", refs: [] }),
     [requestSelection],
   );
-  // A different job is a different network: a request minted against the old
-  // one must not survive into it (the map clears its own selection on the same
-  // signal, see its reset effect).
-  useEffect(() => {
-    setMapRequest(null);
-    setPlaceable(new Set<string>());
-  }, [jobId]);
 
   // On a 202 from POST .../fixes/apply: the sibling job now HAS its own URL,
   // so approving a fix navigates there instead of re-pointing an in-page
@@ -2927,7 +2971,7 @@ export default function GenesisJobDetailPage() {
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[65fr_35fr] xl:items-start mb-8">
         <div className="min-w-0">
           {report ? (
-            <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} selectionRequest={mapRequest} onPlaceableChange={setPlaceable} />
+            <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} selectionRequest={mapRequest} onPlaceableChange={handlePlaceableChange} />
           ) : (
             <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-10 text-center">
               <p className="text-[15px] text-slate-500">

@@ -57,6 +57,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import { ModalDialog, refusalHeadline } from "@/components/genesis/ui";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import {
   GenesisError,
   fetchGenesisJobs,
@@ -150,29 +151,45 @@ export default function GenesisPage() {
   // nothing on this page assembles a document, it only names a token
   // startGenesisJob already accepts. Both default to "" (none), the
   // geometry-only path this form has always taken.
-  const [sideInputs, setSideInputs] = useState<StagedSideInputEntry[]>([]);
+  // Both lists are keyed by a REFRESH nonce: "read them again" is a change to
+  // the request key, which is what lets the effect set state only inside the
+  // fetch's own callback (lib/asyncResource.ts). `keepPrevious` matters here --
+  // the job list polls, and blanking it every tick would be a new bug.
+  const [sideInputsNonce, setSideInputsNonce] = useState(0);
+  const [sideInputsLoaded, setSideInputsLoaded] = useState<Loaded<StagedSideInputEntry[]> | null>(null);
+  const { data: sideInputsData } = resolve(sideInputsLoaded, String(sideInputsNonce), {
+    keepPrevious: true,
+  });
+  const sideInputs = useMemo(() => sideInputsData ?? [], [sideInputsData]);
+  const loadSideInputs = useCallback(() => setSideInputsNonce((nonce) => nonce + 1), []);
+
+  const [jobsNonce, setJobsNonce] = useState(0);
+  const [jobsLoaded, setJobsLoaded] = useState<Loaded<GenesisJob[]> | null>(null);
+  const { data: jobsData, error: jobsError } = resolve(jobsLoaded, String(jobsNonce), {
+    keepPrevious: true,
+  });
+  const jobs = useMemo(() => jobsData ?? [], [jobsData]);
+  const loadJobs = useCallback(() => setJobsNonce((nonce) => nonce + 1), []);
   const [demandToken, setDemandToken] = useState("");
   const [signalsToken, setSignalsToken] = useState("");
 
-  const [jobs, setJobs] = useState<GenesisJob[]>([]);
-  const [jobsError, setJobsError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const loadJobs = useCallback(async () => {
-    try {
-      const entries = await fetchGenesisJobs();
-      setJobs(entries);
-      setJobsError(null);
-    } catch (caught) {
-      setJobsError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }, []);
-
   useEffect(() => {
-    void loadJobs();
-  }, [loadJobs]);
+    let cancelled = false;
+    fetchGenesisJobs()
+      .then((entries) => {
+        if (!cancelled) setJobsLoaded(ok(String(jobsNonce), entries));
+      })
+      .catch((caught) => {
+        if (!cancelled) setJobsLoaded(failed(String(jobsNonce), caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobsNonce]);
 
   // Keep the list live while anything on it is still running -- a job
   // started from the modal below appears here with a "생성 중" chip that
@@ -182,23 +199,25 @@ export default function GenesisPage() {
   // dependency on `jobs` stops re-arming the timer.
   useEffect(() => {
     if (!jobs.some((job) => !isTerminal(job.status))) return;
-    const timer = setTimeout(() => void loadJobs(), POLL_INTERVAL_MS);
+    const timer = setTimeout(() => loadJobs(), POLL_INTERVAL_MS);
     return () => clearTimeout(timer);
   }, [jobs, loadJobs]);
 
-  const loadSideInputs = useCallback(async () => {
-    try {
-      setSideInputs(await fetchStagedSideInputs());
-    } catch {
-      // Best-effort: a picker with nothing in it still lets the geometry-only
-      // path work, so a failed listing must not block the form.
-      setSideInputs([]);
-    }
-  }, []);
-
   useEffect(() => {
-    void loadSideInputs();
-  }, [loadSideInputs]);
+    let cancelled = false;
+    fetchStagedSideInputs()
+      .then((entries) => {
+        if (!cancelled) setSideInputsLoaded(ok(String(sideInputsNonce), entries));
+      })
+      .catch(() => {
+        // Best-effort: a picker with nothing in it still lets the geometry-only
+        // path work, so a failed listing must not block the form.
+        if (!cancelled) setSideInputsLoaded(ok(String(sideInputsNonce), []));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sideInputsNonce]);
 
   const submit = useCallback(async () => {
     if (!file) return;
@@ -223,12 +242,12 @@ export default function GenesisPage() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       setDemandToken("");
       setSignalsToken("");
-      void loadJobs();
+      loadJobs();
       // The chosen tokens are discarded server-side once the job owns its
       // frozen copies (keep_side_inputs defaults to false), so the pickers'
       // list has to be re-read -- otherwise a used token would keep showing as
       // available until the next full page load.
-      void loadSideInputs();
+      loadSideInputs();
     } catch (caught) {
       setSubmitError(caught instanceof Error ? caught : new Error(String(caught)));
     } finally {

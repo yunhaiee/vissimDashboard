@@ -107,6 +107,7 @@ import {
   type RegionMeasurement,
   type RegionShape,
 } from "@/lib/api";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import {
   BASIS_BOUNDARY_CUT,
   takeRegionPrefill,
@@ -136,6 +137,10 @@ const POLL_INTERVAL_MS = 1000;
 const PREVIEW_DEBOUNCE_MS = 350;
 
 const TERMINAL: RegionFetchStatus[] = ["staged", "refused", "error"];
+
+/** One shared empty list, so "the listing has not answered yet" does not mint a
+ * new array identity on every render. */
+const EMPTY_FETCHES: RegionFetch[] = [];
 
 function isTerminal(status: RegionFetchStatus): boolean {
   return TERMINAL.includes(status);
@@ -311,13 +316,14 @@ function isValidLongitude(value: number): boolean {
  * INDEX (see the caller), so deleting a row out of the middle of the table
  * does not remount every row after it -- React matches the same key to the
  * same component instance and hands it new `lat`/`lon` props, shifted down by
- * one. Without the effect below, the row now sitting at that index would go
+ * one. Without the resync below, the row now sitting at that index would go
  * on showing the TEXT the row that used to occupy it had typed, silently
  * disagreeing with what `vertices` (and the map) now hold at that position --
- * a table that lies about its own state is worse than no table. The effect
- * resyncs the draft whenever the vertex THIS row is bound to actually changes
- * -- a delete elsewhere, or this row's own valid commit landing back through
- * props -- and it does NOT fire while a keystroke is merely invalid, because
+ * a table that lies about its own state is worse than no table. The draft is
+ * therefore TAGGED with the vertex it was typed against and read back only
+ * while that vertex is still the one this row is bound to -- a delete
+ * elsewhere, or this row's own valid commit landing back through props,
+ * retires it. It is NOT retired while a keystroke is merely invalid, because
  * an invalid draft never reaches `onCommit` and so `lat`/`lon` never change;
  * that is exactly the case that must keep the half-typed text on screen.
  */
@@ -336,25 +342,27 @@ function VertexRow({
   onDelete: (index: number) => void;
   t: Translate;
 }) {
-  const [latText, setLatText] = useState(() => String(lat));
-  const [lonText, setLonText] = useState(() => String(lon));
-
   // ADVERSARIAL FIX, found in this unit's own self-review: `key={index}` (see
   // the caller) means deleting a row from the MIDDLE of the table does not
   // remount every row after it -- React matches the same key to the same
   // component instance and just hands it new `lat`/`lon` props, so without
-  // this effect the row now sitting at that index would keep showing the
+  // the resync below the row now sitting at that index would keep showing the
   // TEXT the row that used to live there had typed, while `vertices` itself
-  // already held the correct, shifted value. This resyncs the draft whenever
-  // the vertex THIS row is bound to actually changes underneath it -- a
-  // delete elsewhere, or this row's own valid commit landing back through
-  // props. It does NOT fire while a keystroke is merely invalid (an invalid
-  // draft never reaches `onCommit`, so `lat`/`lon` never change), which is
-  // exactly the case that must keep the half-typed text on screen.
-  useEffect(() => {
-    setLatText(String(lat));
-    setLonText(String(lon));
-  }, [lat, lon]);
+  // already held the correct, shifted value.
+  //
+  // The draft carries the vertex it was typed against (`boundTo`) and is read
+  // back DURING RENDER only while that is still this row's vertex -- a delete
+  // elsewhere, or this row's own valid commit landing back through props,
+  // retires it in the SAME render that changed the props. As an effect the
+  // resync landed one render late, so a deleted row left the vanished row's
+  // digits visible for a frame in the table beside the map. It is still not
+  // retired while a keystroke is merely invalid (an invalid draft never
+  // reaches `onCommit`, so `lat`/`lon` never change), which is exactly the
+  // case that must keep the half-typed text on screen.
+  const boundTo = `${lat}|${lon}`;
+  const [draft, setDraft] = useState<{ boundTo: string; lat: string; lon: string } | null>(null);
+  const latText = draft && draft.boundTo === boundTo ? draft.lat : String(lat);
+  const lonText = draft && draft.boundTo === boundTo ? draft.lon : String(lon);
 
   const latOk = latText.trim() !== "" && isValidLatitude(Number(latText));
   const lonOk = lonText.trim() !== "" && isValidLongitude(Number(lonText));
@@ -386,7 +394,7 @@ function VertexRow({
             value={latText}
             onChange={(event) => {
               const next = event.target.value;
-              setLatText(next);
+              setDraft({ boundTo, lat: next, lon: lonText });
               commit(next, lonText);
             }}
             aria-invalid={!latOk}
@@ -401,7 +409,7 @@ function VertexRow({
             value={lonText}
             onChange={(event) => {
               const next = event.target.value;
-              setLonText(next);
+              setDraft({ boundTo, lat: latText, lon: next });
               commit(latText, next);
             }}
             aria-invalid={!lonOk}
@@ -458,7 +466,10 @@ export default function GenesisRegionPage() {
   // deep link or a browser Back lands on this same initial state rather than on
   // a half-restored one.
   const [vertices, setVertices] = useState<Array<[number, number]>>([]);
-  const [ringClosed, setRingClosed] = useState(false);
+  // The user's INTENT to close the ring. What the map is actually told is
+  // `ringClosed`, derived from it further down -- see the adversarial guard
+  // there for why the two are not the same thing.
+  const [ringClosedIntent, setRingClosedIntent] = useState(false);
   // UNIT #40: the ONE way this page can open on a shape it did not draw -- a
   // V4 refusal whose runway shortage the backend attributed to this very
   // boundary, handed over with the region that would close it. Read ONCE from
@@ -468,8 +479,10 @@ export default function GenesisRegionPage() {
   // lands on the same empty ring a first visit does.
   const [prefill, setPrefill] = useState<RegionPrefill | null>(null);
   const [name, setName] = useState("");
-  const [measurement, setMeasurement] = useState<RegionMeasurement | null>(null);
-  const [measureError, setMeasureError] = useState<string | null>(null);
+  // The server's measurement of the ring currently drawn, held as ONE answer
+  // carrying the ring it describes (lib/asyncResource.ts). Derived below, once
+  // `parsed` exists.
+  const [measureLoaded, setMeasureLoaded] = useState<Loaded<RegionMeasurement> | null>(null);
   // The corner cap, READ from `GET /region/limits` rather than written here. Same
   // rule as every other number on this page: a limit the browser carried its own
   // copy of is a limit that can disagree with the one that actually refuses.
@@ -478,11 +491,11 @@ export default function GenesisRegionPage() {
   // The staged-extract listing. Its LIST UI was removed on 2026-08-13 (the note
   // at the bottom of this file carries the user's reason), and the plumbing was
   // deliberately left standing: `loadFetches` still calls the endpoint, still
-  // selects the newest fetch, and this state still holds what came back, so the
-  // master-detail rebuild the backlog schedules under U-1-flow has it without a
-  // second round trip through the backend. `fetches` is therefore written and
-  // not yet read — that is the removal, not an oversight.
-  const [fetches, setFetches] = useState<RegionFetch[]>([]);
+  // selects the newest fetch, and this page still holds what came back (see the
+  // keyed `fetches` resource below), so the master-detail rebuild the backlog
+  // schedules under U-1-flow has it without a second round trip through the
+  // backend. `fetches` is therefore written and not yet read — that is the
+  // removal, not an oversight.
   const [selectedId, setSelectedId] = useState<string>("");
   // Stored WITH the id it was fetched for and read back only while that id still
   // matches, so a selection change can never show the previous fetch's
@@ -502,6 +515,28 @@ export default function GenesisRegionPage() {
   const parsed = useMemo<RegionShape | null>(() => {
     return vertices.length >= 3 ? { polygon: vertices } : null;
   }, [vertices]);
+  // THE RING IS THE REQUEST KEY. Everything the measurement panel and the
+  // extract button read is derived from comparing it with the ring the server
+  // actually measured, DURING RENDER -- which closes a window that was wide
+  // enough to click through: between an edit and its measurement (the 350 ms
+  // debounce plus the round trip) `measurement` still held the PREVIOUS ring's
+  // verdict, so `readyToFetch` below could report 한계 안 for a ring nobody had
+  // measured yet, and the button it enables is the one that starts a fetch.
+  const measureKey = parsed ? JSON.stringify(vertices) : "";
+  const { data: measurement, error: measureFailure } = resolve(measureLoaded, measureKey, {
+    idle: !parsed,
+  });
+  // Fewer than three corners is not a FAILURE, it is what an unfinished shape
+  // means -- so the sentence for it is computed here rather than stored as an
+  // error the effect had to write before it could call anything. (The box that
+  // renders it already tells the two apart by `parsed`; see its own comment.)
+  const measureError = parsed
+    ? measureFailure
+    : t(
+        "지도를 눌러 점을 3개 이상 찍고, 두 번 눌러 영역을 닫습니다.",
+        "Click at least three points on the map, then double-click to close the shape.",
+        "地図をクリックして3点以上を打ち、ダブルクリックで領域を閉じます。",
+      );
   const overVertexCap = maxVertices !== null && vertices.length > maxVertices;
   const readyToFetch = Boolean(
     parsed && measurement?.within_region_cap && !overVertexCap && !submitting,
@@ -524,7 +559,7 @@ export default function GenesisRegionPage() {
 
   const addVertex = useCallback((lat: number, lon: number) => {
     setVertices((current) => [...current, [lat, lon]]);
-    setRingClosed(false);
+    setRingClosedIntent(false);
   }, []);
 
   // The table's two-way half of the binding: a row calls this ONLY after its
@@ -542,20 +577,21 @@ export default function GenesisRegionPage() {
 
   const resetRing = useCallback(() => {
     setVertices([]);
-    setRingClosed(false);
+    setRingClosedIntent(false);
   }, []);
 
   // ADVERSARIAL GUARD (unit #20): a delete (or, in principle, any future path)
-  // that drops the ring below three corners while `ringClosed` is still true
-  // would corrupt the map two ways at once -- `RegionLassoMap` draws a filled
-  // `L.polygon` for two points instead of the open polyline it should, AND its
-  // own click handler refuses every further click while `closed` is true, so
-  // the ring could never be re-opened by drawing. This effect is the single
-  // place that keeps "closed" meaning "a real ring", regardless of which path
-  // shrank `vertices` under three.
-  useEffect(() => {
-    if (vertices.length < 3 && ringClosed) setRingClosed(false);
-  }, [vertices.length, ringClosed]);
+  // that drops the ring below three corners while the user's closed-intent is
+  // still set would corrupt the map two ways at once -- `RegionLassoMap` draws
+  // a filled `L.polygon` for two points instead of the open polyline it
+  // should, AND its own click handler refuses every further click while
+  // `closed` is true, so the ring could never be re-opened by drawing. This
+  // line is the single place that keeps "closed" meaning "a real ring",
+  // regardless of which path shrank `vertices` under three. It is a
+  // DERIVATION, not an effect: as an effect the map was handed `closed` for a
+  // two-point ring for one frame -- long enough to draw the filled polygon
+  // this guard exists to prevent -- and only corrected on the render after.
+  const ringClosed = ringClosedIntent && vertices.length >= 3;
 
   // UNIT #40 -- the pre-fill, consumed exactly once. `takeRegionPrefill` reads
   // AND removes, and the effect runs on mount only, so the proposed shape can
@@ -569,28 +605,52 @@ export default function GenesisRegionPage() {
   // every request from this page is scoped to, and pre-filling this project's
   // extract with a polygon derived in a different one is exactly the confusion
   // the stamp exists to prevent (see lib/region-prefill.ts).
+  //
+  // THE ONE EFFECT ON THIS PAGE THAT STILL SETS STATE (see lib/asyncResource.ts
+  // for why every other one no longer does): `takeRegionPrefill` reads AND
+  // REMOVES a sessionStorage entry, and sessionStorage does not exist while the
+  // server renders this route. Reading it during render would make the server's
+  // HTML and the client's first render disagree, so this read has to happen
+  // after hydration -- which is what the disable below names.
   useEffect(() => {
     const handed = takeRegionPrefill(getWorkspaceId());
     if (!handed) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot sessionStorage hand-off; must run after hydration
     setPrefill(handed);
     setVertices(handed.polygon);
-    setRingClosed(true);
+    setRingClosedIntent(true);
   }, []);
 
-  const loadFetches = useCallback(async () => {
-    try {
-      const entries = await fetchRegionFetches();
-      setFetches(entries);
-      setListError(null);
-      setSelectedId((current) => current || entries[0]?.id || "");
-    } catch (caught) {
-      setListError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }, []);
+  // "Read the list again" is a change to the listing's request KEY, not an
+  // imperative call that writes state from wherever it is invoked
+  // (lib/asyncResource.ts). Every existing caller of `loadFetches()` -- the
+  // poll's terminal branch and `submit` below -- keeps working unchanged; the
+  // call is no longer async, so its `void` prefix goes with it. `keepPrevious`
+  // because a re-read is the SAME question asked again, never a new one.
+  const [fetchesNonce, setFetchesNonce] = useState(0);
+  const [fetchesLoaded, setFetchesLoaded] = useState<Loaded<RegionFetch[]> | null>(null);
+  const { data: fetchesData } = resolve(fetchesLoaded, String(fetchesNonce), { keepPrevious: true });
+  const fetches = fetchesData ?? EMPTY_FETCHES;
+  const loadFetches = useCallback(() => setFetchesNonce((nonce) => nonce + 1), []);
 
   useEffect(() => {
-    void loadFetches();
-  }, [loadFetches]);
+    let cancelled = false;
+    fetchRegionFetches()
+      .then((entries) => {
+        if (cancelled) return;
+        setFetchesLoaded(ok(String(fetchesNonce), entries));
+        setListError(null);
+        setSelectedId((current) => current || entries[0]?.id || "");
+      })
+      .catch((caught) => {
+        // The list keeps whatever it last held (`keepPrevious`): a dropped
+        // listing must not empty a list the poll below is still reading from.
+        if (!cancelled) setListError(caught instanceof Error ? caught.message : String(caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchesNonce]);
 
   // The corner cap comes from the server's own limits call. A failure here is not
   // an error the user has to see: the cap is enforced by the fetch either way, so
@@ -619,36 +679,25 @@ export default function GenesisRegionPage() {
   // radius and it is latitude-dependent, so a second implementation here could
   // disagree with the one that actually refuses.
   useEffect(() => {
-    if (!parsed) {
-      setMeasurement(null);
-      setMeasureError(
-        t(
-          "지도를 눌러 점을 3개 이상 찍고, 두 번 눌러 영역을 닫습니다.",
-          "Click at least three points on the map, then double-click to close the shape.",
-          "地図をクリックして3点以上を打ち、ダブルクリックで領域を閉じます。",
-        ),
-      );
-      return;
-    }
+    // Nothing to measure and nothing to say that the derivation above has not
+    // already said -- so no timer is set and no request is fired, exactly as
+    // the initial-state note promises.
+    if (!parsed) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       previewRegion(parsed)
         .then((payload) => {
-          if (cancelled) return;
-          setMeasurement(payload);
-          setMeasureError(null);
+          if (!cancelled) setMeasureLoaded(ok(measureKey, payload));
         })
         .catch((caught) => {
-          if (cancelled) return;
-          setMeasurement(null);
-          setMeasureError(caught instanceof Error ? caught.message : String(caught));
+          if (!cancelled) setMeasureLoaded(failed(measureKey, caught));
         });
     }, PREVIEW_DEBOUNCE_MS);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [parsed, t]);
+  }, [parsed, measureKey]);
 
   // Poll the selected fetch while it is still running.
   useEffect(() => {
@@ -664,7 +713,7 @@ export default function GenesisRegionPage() {
         if (!isTerminal(record.status)) {
           timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
         } else {
-          void loadFetches();
+          loadFetches();
         }
       } catch (caught) {
         if (!cancelled) setListError(caught instanceof Error ? caught.message : String(caught));
@@ -688,7 +737,7 @@ export default function GenesisRegionPage() {
       const started = await startRegionFetch({ ...parsed, name: name.trim() || undefined });
       setSelectedId(started.id);
       setSelectedEntry({ id: started.id, record: started });
-      void loadFetches();
+      loadFetches();
     } catch (caught) {
       setSubmitError(caught instanceof Error ? caught : new Error(String(caught)));
     } finally {
@@ -877,7 +926,7 @@ export default function GenesisRegionPage() {
             bbox={measurement?.region ?? null}
             maxVertices={maxVertices}
             onAddVertex={addVertex}
-            onClose={() => setRingClosed(true)}
+            onClose={() => setRingClosedIntent(true)}
             onDiscardLastVertex={() => setVertices((current) => current.slice(0, -1))}
             // UNIT #48 -- the map's drag handles land in the SAME callback the
             // table's typed edit does. That is the whole binding: `vertices`

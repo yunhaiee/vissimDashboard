@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 
 import type { Incident, LinkFeature, NodeConnection, NodeFeature } from "./MapViewer";
@@ -34,7 +34,11 @@ export default function IncidentPanel({
 }: Props) {
   const { t } = useLanguage();
   const [type, setType] = useState<Incident["type"]>("lane_closure");
-  const [closedLanes, setClosedLanes] = useState(1);
+  // What the user asked for, clamped during render to what the link can take.
+  // As an effect this corrected itself one render late, so selecting a 2-lane
+  // link while "4 lanes closed" was set showed an impossible 4 for a frame.
+  const [closedLanesIntent, setClosedLanes] = useState(1);
+  const closedLanes = link ? Math.min(closedLanesIntent, link.lanes) : closedLanesIntent;
   const [speedLimit, setSpeedLimit] = useState(30);
   const [duration, setDuration] = useState(300);
 
@@ -82,13 +86,6 @@ export default function IncidentPanel({
     ],
     [t],
   );
-
-  useEffect(() => {
-    if (!link) {
-      return;
-    }
-    setClosedLanes(Math.min(closedLanes, link.lanes));
-  }, [closedLanes, link]);
 
   const handleQueue = () => {
     if (!link) {

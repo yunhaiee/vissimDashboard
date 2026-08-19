@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { buildNetworkFocusHref, withFocusNonce } from "@/lib/networkFocus";
 import { buildVehicleInputStacks } from "@/lib/vehicleInputStack";
+import { failedWith, ok, resolve, type Loaded } from "@/lib/asyncResource";
 
 // The route the focus handoff lands on. Re-triggering the focus while ALREADY
 // here is a view change, not a journey, so it replaces the history entry
@@ -256,26 +257,36 @@ export default function ApprovalFocusMap({
   const { t } = useLanguage();
   const router = useRouter();
   const pathname = usePathname();
-  const [network, setNetwork] = useState<NetworkData | null>(null);
-  const [failed, setFailed] = useState(false);
+  // Keyed by the bbox+session this map is drawing, so a card that swaps to a
+  // different focus drops the previous network in the same render instead of
+  // briefly drawing the old approval's geometry under the new one's label.
+  const [loaded, setLoaded] = useState<Loaded<NetworkData> | null>(null);
   const bbox = focus?.bbox ?? null;
+  const focusKey = `${bbox ? `${bbox.x_min},${bbox.y_min},${bbox.x_max},${bbox.y_max}` : ""}|${sessionId}`;
+  // `failed` is now "this request answered with an error", which is exactly
+  // what the error side of the keyed answer means -- one comparison, and the
+  // clearing that used to open the effect happens for free.
+  const { data: network, error } = resolve(loaded, focusKey, { idle: !bbox });
+  const failed = error !== null;
 
   useEffect(() => {
     if (!bbox) return;
     let cancelled = false;
-    setFailed(false);
     cachedFetchNetwork(sessionId || undefined)
       .then((data) => {
-        if (!cancelled) setNetwork(data);
+        if (!cancelled) setLoaded(ok(focusKey, data));
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        // The sentence never reaches a reader -- the whole mini-map is hidden
+        // on failure (see the `failed` guard below) -- so the code IS the
+        // message here, and it stays a code rather than borrowing prose the
+        // card would not show.
+        if (!cancelled) setLoaded(failedWith(focusKey, "NETWORK_UNAVAILABLE"));
       });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bbox ? `${bbox.x_min},${bbox.y_min},${bbox.x_max},${bbox.y_max}` : null, sessionId]);
+  }, [bbox, focusKey, sessionId]);
 
   const highlightSets = useMemo(() => {
     const linkIds = new Set<string>();

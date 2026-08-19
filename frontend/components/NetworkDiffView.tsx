@@ -38,7 +38,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import {
@@ -51,6 +51,7 @@ import {
   type NetworkDiffRewire,
   type NetworkDiffToken,
 } from "@/lib/api";
+import { ok, resolve, type Loaded } from "@/lib/asyncResource";
 import { loginHref } from "@/lib/authRedirect";
 
 type Translate = (ko: string, en: string, ja: string) => string;
@@ -200,6 +201,21 @@ function severityClasses(severity: NetworkDiffFinding["severity"]): string {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
+/** What one comparison came back as. A FAILURE here is not a raw message: the
+ * screen says something different for 404, 401 and 422, so the status has to
+ * travel with it -- and `Loaded.error` is a bare string (lib/asyncResource.ts).
+ * So both outcomes are recorded as the resource's DATA, keyed by the
+ * comparison that produced them, and the render below reads whichever one this
+ * key actually answered with. */
+type DiffOutcome =
+  | { kind: "diff"; response: NetworkDiffResponse }
+  | { kind: "error"; status: number | null; message: string };
+
+/** The two facts the snapshot pickers need about a session, read from ONE
+ * listing call and therefore held as one answer rather than two states that
+ * could describe different sessions. */
+type SessionVersions = { versions: number[]; hasWorking: boolean };
+
 function rewireLabel(rewire: NetworkDiffRewire): string {
   const before = `${rewire.base_from_link ?? "?"}→${rewire.base_to_link ?? "?"}`;
   const after = `${rewire.target_from_link ?? "?"}→${rewire.target_to_link ?? "?"}`;
@@ -272,16 +288,30 @@ export default function NetworkDiffView() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
 
-  const [versions, setVersions] = useState<number[]>([]);
-  const [hasWorking, setHasWorking] = useState(true);
-  const [versionsLoading, setVersionsLoading] = useState(false);
+  // Both remote reads below are ONE keyed answer each (lib/asyncResource.ts):
+  // the request key decides during render whether what we hold describes what
+  // is selected now, so neither effect writes anything before its own call.
+  // Neither takes `keepPrevious`: a different session, or a different pair of
+  // snapshots, is a DIFFERENT question -- and holding the previous session's
+  // edit numbers in the two snapshot dropdowns while the new session's listing
+  // was still in flight is exactly the frame this shape removes.
+  const [versionsLoaded, setVersionsLoaded] = useState<Loaded<SessionVersions> | null>(null);
+  const { data: sessionVersions, loading: versionsLoading } = resolve(versionsLoaded, sessionId, {
+    idle: !sessionId,
+  });
+  const versions = useMemo(() => sessionVersions?.versions ?? [], [sessionVersions]);
+  const hasWorking = sessionVersions?.hasWorking ?? true;
 
   const [baseToken, setBaseToken] = useState<NetworkDiffToken>(TOKEN_PRISTINE);
   const [targetToken, setTargetToken] = useState<NetworkDiffToken>(TOKEN_WORKING);
 
-  const [result, setResult] = useState<NetworkDiffResponse | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [diffError, setDiffError] = useState<{ status: number | null; message: string } | null>(null);
+  // One comparison is one question: which session, from which snapshot, to
+  // which one.
+  const diffKey = `${sessionId}|${baseToken}|${targetToken}`;
+  const [diffLoaded, setDiffLoaded] = useState<Loaded<DiffOutcome> | null>(null);
+  const { data: diffOutcome, loading: diffLoading } = resolve(diffLoaded, diffKey, { idle: !sessionId });
+  const result = diffOutcome?.kind === "diff" ? diffOutcome.response : null;
+  const diffError = diffOutcome?.kind === "error" ? diffOutcome : null;
 
   // Session list: the unscoped download listing already enumerates every
   // session that has saved a write, newest first, workspace-scoped.
@@ -306,12 +336,8 @@ export default function NetworkDiffView() {
   // `version: null` is its "cloned but never saved a write" row, which means
   // there is a working copy and no numbered snapshot.
   useEffect(() => {
-    if (!sessionId) {
-      setVersions([]);
-      return;
-    }
+    if (!sessionId) return;
     let cancelled = false;
-    setVersionsLoading(true);
     fetchAgentDownloads({ sessionId })
       .then((entries) => {
         if (cancelled) return;
@@ -319,47 +345,45 @@ export default function NetworkDiffView() {
           .map((entry) => entry.version)
           .filter((version): version is number => typeof version === "number")
           .sort((a, b) => a - b);
-        setVersions(numbered);
-        setHasWorking(numbered.length === 0 ? entries.length > 0 : true);
+        setVersionsLoaded(
+          ok(sessionId, { versions: numbered, hasWorking: numbered.length === 0 ? entries.length > 0 : true }),
+        );
       })
       .catch(() => {
-        if (!cancelled) setVersions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setVersionsLoading(false);
+        // Best-effort, exactly as before: a listing that failed still leaves
+        // the three non-numbered snapshots (original / working copy / active
+        // dataset) comparable, so the failure is recorded as an EMPTY version
+        // list rather than left unanswered -- an unanswered key would read as
+        // a dropdown loading forever.
+        if (!cancelled) setVersionsLoaded(ok(sessionId, { versions: [], hasWorking: true }));
       });
     return () => {
       cancelled = true;
     };
   }, [sessionId]);
 
-  const loadDiff = useCallback(() => {
-    if (!sessionId) return () => undefined;
+  useEffect(() => {
+    if (!sessionId) return;
     let cancelled = false;
-    setDiffLoading(true);
     fetchNetworkDiff(sessionId, baseToken, targetToken)
       .then((payload) => {
-        if (cancelled) return;
-        setResult(payload);
-        setDiffError(null);
+        if (!cancelled) setDiffLoaded(ok(diffKey, { kind: "diff", response: payload }));
       })
       .catch((caught) => {
-        if (cancelled) return;
-        setResult(null);
-        setDiffError({
-          status: caught instanceof NetworkDiffError ? caught.status : null,
-          message: caught instanceof Error ? caught.message : String(caught),
-        });
-      })
-      .finally(() => {
-        if (!cancelled) setDiffLoading(false);
+        if (!cancelled) {
+          setDiffLoaded(
+            ok(diffKey, {
+              kind: "error",
+              status: caught instanceof NetworkDiffError ? caught.status : null,
+              message: caught instanceof Error ? caught.message : String(caught),
+            }),
+          );
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, baseToken, targetToken]);
-
-  useEffect(() => loadDiff(), [loadDiff]);
+  }, [diffKey, sessionId, baseToken, targetToken]);
 
   const options = useMemo(
     () => tokenOptions(versions, hasWorking, t),
@@ -515,6 +539,12 @@ export default function NetworkDiffView() {
         </div>
       )}
 
+      {/* A comparison in flight has no result to show. It used to keep the
+          PREVIOUS pair's tables on screen while the new pair was being
+          compared -- totals and change lists that belonged to two snapshots
+          the pickers above no longer named. Keying the answer to the pair
+          makes "not this pair's answer" and "no answer yet" the same state,
+          which is what this line already said. */}
       {diffLoading && !result && (
         <p className="mb-5 text-[14px] text-slate-500">{t("비교하는 중…", "Comparing…", "比較中…")}</p>
       )}

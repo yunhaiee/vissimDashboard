@@ -174,8 +174,16 @@ const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = {
   "/genesis/phases": "data",
   "/observations": "data",
   "/dashboard": "sim",
+  "/calibration": "sim",
+  // Unit #50: the route redirects to /calibration (next.config.ts), and the
+  // stepper renders off the URL the browser is actually on -- so this line is
+  // what keeps the stepper honest during the redirect's own frame, exactly
+  // like /network-diff above.
   "/base-model": "sim",
-  "/health": "sim",
+  // Unit #50: 모델 검진 answers step ① (is this network coded correctly), so
+  // it moved to the ① 네트워크 group -- and the stepper must agree with the
+  // sidebar, or the two disagree about where the user is.
+  "/health": "network",
   // Hidden from the sidebar since the assistant went floating, but the
   // dashboard itself cross-links it as "고급: 시뮬레이션 실행기" -- a screen the
   // app presents as an extension of ③ belongs to ③, menu entry or not.
@@ -237,6 +245,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       links: [
         { href: "/genesis", label: t("생성", "Build", "生成"), icon: "genesis" },
         { href: "/network", label: t("네트워크 뷰", "Network View", "ネットワークビュー"), icon: "network" },
+        // Unit #50 (the user's 2026-08-19 page-cleanup decision): 모델 검진
+        // moved here from ③. It answers "is this network coded correctly",
+        // which is MRWA §2.12.1's step ① and the FIRST thing the calibration
+        // flow rail reads -- it belongs beside the screens that build the
+        // network, not beside the ones that score runs against real counts.
+        { href: "/health", label: t("모델 검진", "Model Health Check", "モデル検診"), icon: "health" },
       ],
     },
     {
@@ -265,13 +279,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       stage: "sim",
       ordinal: "③",
       title: t("시뮬·보정", "Simulate & Calibrate", "シミュ・補正"),
+      // Unit #50 (the user's 2026-08-19 page-cleanup decision): ③ is two rows
+      // now. 베이스모델 검증 stopped being its own destination -- it IS the
+      // scoring station of 보정, so the screen moved inside /calibration and
+      // /base-model 308s there (next.config.ts) rather than 404ing a bookmark.
+      // 모델 검진 moved up to ① for the reason stated on its new row.
       links: [
         { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
-        // Not placed by the mockup, which drew only 대시보드 and 모델 검진 here.
-        // Filed under ③ because validating the base model against real counts
-        // is what "보정" names -- it reads the same runs the dashboard does.
-        { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
-        { href: "/health", label: t("모델 검진", "Model Health Check", "モデル検診"), icon: "health" },
+        { href: "/calibration", label: t("보정", "Calibration", "補正"), icon: "validation" },
       ],
     },
     {

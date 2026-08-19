@@ -15,6 +15,7 @@ import {
   type WorkbookMappingPreviewBlock,
   type WorkbookMappingSpec,
 } from "@/lib/api";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 
 type FieldDef = { key: string; ko: string; en: string; ja: string; required: boolean };
 
@@ -55,27 +56,76 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
   const bestCounts = inspectResult.proposed_mapping.counts;
   const bestTravel = inspectResult.proposed_mapping.travel_times;
 
-  const [countsSheetName, setCountsSheetName] = useState(bestCounts?.sheet ?? inspectResult.sheets[0]?.name ?? "");
-  const [countsSnapshot, setCountsSnapshot] = useState<WorkbookInspectSheet | null>(
-    inspectResult.sheets.find((s) => s.name === countsSheetName) ?? inspectResult.sheets[0] ?? null,
+  // What the modal OPENS on, computed from the props once and used only as
+  // initial values below. The inspect response already carries a snapshot of
+  // every sheet, so the first paint shows real columns instead of a spinner --
+  // the sheet resolve below then replaces it with the server's own answer for
+  // the same sheet+header row, which is why it is seeded AT that request's key.
+  const initialCountsSheet = bestCounts?.sheet ?? inspectResult.sheets[0]?.name ?? "";
+  const initialCountsSnapshot =
+    inspectResult.sheets.find((s) => s.name === initialCountsSheet) ?? inspectResult.sheets[0] ?? null;
+  const initialCountsHeaderRow = bestCounts?.header_row ?? initialCountsSnapshot?.header_row ?? 1;
+  const initialTravelSheet = bestTravel?.sheet ?? inspectResult.sheets[0]?.name ?? "";
+  const initialTravelSnapshot =
+    inspectResult.sheets.find((s) => s.name === initialTravelSheet) ?? inspectResult.sheets[0] ?? null;
+  const initialTravelHeaderRow = bestTravel?.header_row ?? initialTravelSnapshot?.header_row ?? 1;
+
+  const [countsSheetName, setCountsSheetName] = useState(initialCountsSheet);
+  const [countsHeaderRow, setCountsHeaderRow] = useState(initialCountsHeaderRow);
+  // Each sheet resolve is ONE answer carrying the (token, sheet, header row) it
+  // describes -- lib/asyncResource.ts. `resolving` is that comparison made
+  // during render, so the effect below sets nothing before its own call, and a
+  // snapshot can never be read under a sheet it does not belong to (the guard
+  // the re-seed effect used to make by hand, `snapshot.name === sheetName`, is
+  // now the key itself).
+  const countsKey = `${token}|${countsSheetName}|${countsHeaderRow}`;
+  const [countsLoaded, setCountsLoaded] = useState<Loaded<WorkbookInspectSheet> | null>(() =>
+    initialCountsSnapshot
+      ? ok(`${token}|${initialCountsSheet}|${initialCountsHeaderRow}`, initialCountsSnapshot)
+      : null,
   );
-  const [countsHeaderRow, setCountsHeaderRow] = useState(bestCounts?.header_row ?? countsSnapshot?.header_row ?? 1);
-  const [countsFields, setCountsFields] = useState<Record<string, number | undefined>>(
-    () => fieldsFromGuess(bestCounts?.fields ?? countsSnapshot?.proposed_counts_mapping ?? {}),
-  );
+  const { data: countsSnapshot, loading: resolvingCounts } = resolve(countsLoaded, countsKey, {
+    idle: !countsSheetName,
+  });
 
   const [includeTravelTimes, setIncludeTravelTimes] = useState(Boolean(bestTravel));
-  const [travelSheetName, setTravelSheetName] = useState(bestTravel?.sheet ?? inspectResult.sheets[0]?.name ?? "");
-  const [travelSnapshot, setTravelSnapshot] = useState<WorkbookInspectSheet | null>(
-    inspectResult.sheets.find((s) => s.name === travelSheetName) ?? inspectResult.sheets[0] ?? null,
+  const [travelSheetName, setTravelSheetName] = useState(initialTravelSheet);
+  const [travelHeaderRow, setTravelHeaderRow] = useState(initialTravelHeaderRow);
+  const travelKey = `${token}|${travelSheetName}|${travelHeaderRow}`;
+  const [travelLoaded, setTravelLoaded] = useState<Loaded<WorkbookInspectSheet> | null>(() =>
+    initialTravelSnapshot
+      ? ok(`${token}|${initialTravelSheet}|${initialTravelHeaderRow}`, initialTravelSnapshot)
+      : null,
   );
-  const [travelHeaderRow, setTravelHeaderRow] = useState(bestTravel?.header_row ?? travelSnapshot?.header_row ?? 1);
-  const [travelFields, setTravelFields] = useState<Record<string, number | undefined>>(
-    () => fieldsFromGuess(bestTravel?.fields ?? travelSnapshot?.proposed_travel_times_mapping ?? {}),
+  const { data: travelSnapshot, loading: resolvingTravel } = resolve(travelLoaded, travelKey, {
+    idle: !includeTravelTimes || !travelSheetName,
+  });
+
+  // THE FIELD MAPPING IS AN INTENT, and `null` means "this user has not chosen
+  // anything for this sheet yet" -- the state the old re-seed effect tested for
+  // with `Object.keys(fields).length === 0`. While it is null the selects show
+  // whatever THIS sheet's snapshot proposes; the first edit materialises those
+  // proposals into the intent, so clearing a field back to (매핑 안 함)
+  // afterwards leaves it cleared and the guess does not come back.
+  const initialCountsFields = fieldsFromGuess(bestCounts?.fields ?? initialCountsSnapshot?.proposed_counts_mapping ?? {});
+  const [countsFieldsIntent, setCountsFieldsIntent] = useState<Record<string, number | undefined> | null>(() =>
+    Object.keys(initialCountsFields).length > 0 ? initialCountsFields : null,
+  );
+  const countsFields = useMemo(
+    () => countsFieldsIntent ?? fieldsFromGuess(countsSnapshot?.proposed_counts_mapping ?? {}),
+    [countsFieldsIntent, countsSnapshot],
+  );
+  const initialTravelFields = fieldsFromGuess(
+    bestTravel?.fields ?? initialTravelSnapshot?.proposed_travel_times_mapping ?? {},
+  );
+  const [travelFieldsIntent, setTravelFieldsIntent] = useState<Record<string, number | undefined> | null>(() =>
+    Object.keys(initialTravelFields).length > 0 ? initialTravelFields : null,
+  );
+  const travelFields = useMemo(
+    () => travelFieldsIntent ?? fieldsFromGuess(travelSnapshot?.proposed_travel_times_mapping ?? {}),
+    [travelFieldsIntent, travelSnapshot],
   );
 
-  const [resolvingCounts, setResolvingCounts] = useState(false);
-  const [resolvingTravel, setResolvingTravel] = useState(false);
   const [preview, setPreview] = useState<{ counts: WorkbookMappingPreviewBlock<Record<string, unknown>> | null; travel: WorkbookMappingPreviewBlock<Record<string, unknown>> | null } | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -85,50 +135,51 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
   useEffect(() => {
     if (!countsSheetName) return;
     let cancelled = false;
-    setResolvingCounts(true);
     resolveBaseWorkbookMappingSheet(token, countsSheetName, countsHeaderRow)
       .then((snapshot) => {
-        if (cancelled) return;
-        setCountsSnapshot(snapshot);
+        if (!cancelled) setCountsLoaded(ok(countsKey, snapshot));
       })
       .catch((error) => {
-        if (!cancelled) setActionError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (!cancelled) setResolvingCounts(false);
+        if (cancelled) return;
+        // The failure is recorded against this request as well as shown in the
+        // action box: an unanswered key would read as a sheet loading forever,
+        // and the columns it failed to read must not be replaced by the
+        // PREVIOUS sheet's columns under the new sheet's name.
+        setActionError(error instanceof Error ? error.message : String(error));
+        setCountsLoaded(failed(countsKey, error));
       });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, countsSheetName, countsHeaderRow]);
+  }, [token, countsSheetName, countsHeaderRow, countsKey]);
 
   useEffect(() => {
     if (!includeTravelTimes || !travelSheetName) return;
     let cancelled = false;
-    setResolvingTravel(true);
     resolveBaseWorkbookMappingSheet(token, travelSheetName, travelHeaderRow)
       .then((snapshot) => {
-        if (cancelled) return;
-        setTravelSnapshot(snapshot);
+        if (!cancelled) setTravelLoaded(ok(travelKey, snapshot));
       })
       .catch((error) => {
-        if (!cancelled) setActionError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (!cancelled) setResolvingTravel(false);
+        if (cancelled) return;
+        setActionError(error instanceof Error ? error.message : String(error));
+        setTravelLoaded(failed(travelKey, error));
       });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, includeTravelTimes, travelSheetName, travelHeaderRow]);
+  }, [token, includeTravelTimes, travelSheetName, travelHeaderRow, travelKey]);
 
+  // Switching sheet retires the user's field choices -- they were column
+  // numbers in a different sheet. `null`, not `{}`: it hands the selects back
+  // to the new sheet's own auto-guess (see the intent's declaration above),
+  // which is what the two re-seed effects here used to do one render after the
+  // snapshot arrived, briefly showing the new sheet with no mapping at all.
   function handleCountsSheetChange(name: string) {
     setCountsSheetName(name);
     const fallback = inspectResult.sheets.find((s) => s.name === name);
     if (fallback) setCountsHeaderRow(fallback.header_row);
-    setCountsFields({});
+    setCountsFieldsIntent(null);
     setPreview(null);
     setRefusalIssues(null);
   }
@@ -137,33 +188,10 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
     setTravelSheetName(name);
     const fallback = inspectResult.sheets.find((s) => s.name === name);
     if (fallback) setTravelHeaderRow(fallback.header_row);
-    setTravelFields({});
+    setTravelFieldsIntent(null);
     setPreview(null);
     setRefusalIssues(null);
   }
-
-  // Re-seed the field mapping from this sheet/header row's own auto-guess
-  // once the snapshot for it has loaded (covers the case where the user
-  // switches sheet -- we don't have that sheet's guess until resolve() returns).
-  useEffect(() => {
-    if (countsSnapshot && countsSnapshot.name === countsSheetName && countsSnapshot.header_row === countsHeaderRow && Object.keys(countsFields).length === 0) {
-      setCountsFields(fieldsFromGuess(countsSnapshot.proposed_counts_mapping));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countsSnapshot]);
-
-  useEffect(() => {
-    if (
-      includeTravelTimes &&
-      travelSnapshot &&
-      travelSnapshot.name === travelSheetName &&
-      travelSnapshot.header_row === travelHeaderRow &&
-      Object.keys(travelFields).length === 0
-    ) {
-      setTravelFields(fieldsFromGuess(travelSnapshot.proposed_travel_times_mapping));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [travelSnapshot, includeTravelTimes]);
 
   const countsSpec = useMemo<WorkbookMappingSpec | undefined>(() => {
     if (!countsSheetName) return undefined;
@@ -267,7 +295,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
             headerRow={countsHeaderRow}
             onHeaderRowChange={(value) => {
               setCountsHeaderRow(value);
-              setCountsFields({});
+              setCountsFieldsIntent(null);
               setPreview(null);
               setRefusalIssues(null);
             }}
@@ -276,7 +304,11 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
             fields={COUNT_FIELDS}
             values={countsFields}
             onFieldChange={(key, value) => {
-              setCountsFields((current) => ({ ...current, [key]: value }));
+              // `current ?? countsFields` is what turns the auto-guess the user
+              // is looking at into their own choice on the first edit -- from
+              // then on the intent is theirs, so clearing a field back to
+              // (매핑 안 함) sticks instead of being re-guessed.
+              setCountsFieldsIntent((current) => ({ ...(current ?? countsFields), [key]: value }));
               setPreview(null);
               setRefusalIssues(null);
             }}
@@ -306,7 +338,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
                   headerRow={travelHeaderRow}
                   onHeaderRowChange={(value) => {
                     setTravelHeaderRow(value);
-                    setTravelFields({});
+                    setTravelFieldsIntent(null);
                     setPreview(null);
                     setRefusalIssues(null);
                   }}
@@ -315,7 +347,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
                   fields={TRAVEL_FIELDS}
                   values={travelFields}
                   onFieldChange={(key, value) => {
-                    setTravelFields((current) => ({ ...current, [key]: value }));
+                    setTravelFieldsIntent((current) => ({ ...(current ?? travelFields), [key]: value }));
                     setPreview(null);
                     setRefusalIssues(null);
                   }}

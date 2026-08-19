@@ -44,6 +44,7 @@ import {
 // calculateNodeAverageDelay is no longer imported here: per-direction delay is
 // measured now (unit 1.5 D5) instead of being derived from the node average.
 // It is still exported from lib/los and used by components/NetworkViewer.tsx.
+import { failedWith, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import { buildFocusFlash, nextFocusNonce, useFocusPulse, type FocusBbox, type FocusElementRef } from "@/lib/networkFocus";
@@ -234,10 +235,14 @@ export default function DashboardPage() {
   // Deliberately NOT part of the curation spec: clicking it must not change
   // what question was asked, only what's visible for the current answer --
   // mirrors CurationBar's own "Show everything" vs. re-asking distinction.
-  const [kpiMetricsExpanded, setKpiMetricsExpanded] = useState(false);
-  useEffect(() => {
-    setKpiMetricsExpanded(false);
-  }, [curationSpec]);
+  // Scoped to the ANSWER it was clicked on: a new curation spec is a new
+  // answer, so the override lapses by itself. Derived during render rather than
+  // cleared by an effect -- the effect version left one painted frame in which
+  // the new answer was already on screen with the old answer's override still
+  // applied. Wrapped in an object so a null spec (no curation at all) is still
+  // a spec this can be expanded FOR.
+  const [expandedForSpec, setExpandedForSpec] = useState<{ spec: DashboardCurationSpec | null } | null>(null);
+  const kpiMetricsExpanded = expandedForSpec !== null && expandedForSpec.spec === curationSpec;
   // Map section 지도/도식 toggle. Leaflet ("map") stays the default; "diagram"
   // mounts NetworkViewer over the raw .inpx coordinates. The network is fetched
   // lazily — only once the diagram has been requested at least once — and then
@@ -306,9 +311,10 @@ export default function DashboardPage() {
   useEffect(() => {
     selectedElementsRef.current = selectedElements;
   }, [selectedElements]);
-  const [network, setNetwork] = useState<NetworkData | null>(null);
-  const [networkLoading, setNetworkLoading] = useState(false);
-  const [networkError, setNetworkError] = useState<string | null>(null);
+  // One keyed answer instead of three loose flags -- lib/asyncResource.ts.
+  // `idle` is what makes "the diagram has never been asked for" read as not
+  // loading rather than as loading forever.
+  const [networkLoaded, setNetworkLoaded] = useState<Loaded<NetworkData> | null>(null);
   const [networkReloadNonce, setNetworkReloadNonce] = useState(0);
   // Network search selection (v2 UX unit, 2026-07-28): NetworkSearchBox is
   // only mounted while the diagram (not the Leaflet map) is showing -- see
@@ -326,6 +332,15 @@ export default function DashboardPage() {
   // session's in-progress edited working copy on demand (refresh) -- see
   // docs/phase2/DECISIONS.md's P2 entry.
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+
+  // What the diagram fetch is currently answering. Every input that should
+  // re-fetch is in the key, so "is what I hold current?" is one comparison.
+  const networkKey = `${datasetRevision}|${networkReloadNonce}|${agentSessionId ?? ""}`;
+  const {
+    data: network,
+    error: networkError,
+    loading: networkLoading,
+  } = resolve(networkLoaded, networkKey, { idle: !hasRequestedDiagram });
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
   // Auto-seed a default intersection once per dataset so the performance and
@@ -352,6 +367,32 @@ export default function DashboardPage() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+  // Seed the busiest intersection into the selection once results arrive, so
+  // the intersection-performance and flow panels render real content on first
+  // load instead of an empty "click a node" prompt. Runs at most once per
+  // dataset (autoSeededNodesRef), and never overrides a user's own selection.
+  //
+  // Called from the summary fetch's own callback rather than from an effect
+  // watching `summary`: this seeds state FROM data that arrived, which is work
+  // for the place the data arrives. As an effect it also re-ran on every change
+  // to the selection length, re-asking a question the ref had already answered.
+  const seedBusiestNode = useCallback((nextSummary: CompareSummaryResponse | null) => {
+    if (autoSeededNodesRef.current) return;
+    const top = nextSummary?.top_congested_nodes?.[0];
+    if (!top?.node_id) return;
+    const nodeId = String(top.node_id);
+    const nodeName = top.node_name ?? `Node ${nodeId}`;
+    // Functional update, so "never override a user's own selection" is decided
+    // against the selection as it is AT THIS MOMENT rather than as it was when
+    // this callback was created.
+    setSelectedNodeIds((prev) => {
+      if (prev.length > 0) return prev;
+      autoSeededNodesRef.current = true;
+      setNodeNamesById((names) => ({ ...names, [nodeId]: nodeName }));
+      return [nodeId];
+    });
+  }, []);
+
   const clearDashboardData = useCallback(() => {
     requestSerial.current += 1;
     loadSerial.current += 1;
@@ -541,28 +582,15 @@ export default function DashboardPage() {
           return;
         }
 
+        const nextSummary = summaryOut.status === "fulfilled" ? summaryOut.value : null;
         setResults(compareOut.value);
-        setSummary(summaryOut.status === "fulfilled" ? summaryOut.value : null);
+        setSummary(nextSummary);
+        seedBusiestNode(nextSummary);
         setLoading(false);
       },
     );
-  }, [hasUploadedDataset, selected, t]);
+  }, [hasUploadedDataset, seedBusiestNode, selected, t]);
 
-  // Seed the busiest intersection into the selection once results arrive, so
-  // the intersection-performance and flow panels render real content on first
-  // load instead of an empty "click a node" prompt. Runs at most once per
-  // dataset (autoSeededNodesRef), and never overrides a user's own selection.
-  useEffect(() => {
-    if (autoSeededNodesRef.current) return;
-    if (selectedNodeIds.length > 0) return;
-    const top = summary?.top_congested_nodes?.[0];
-    if (!top?.node_id) return;
-    autoSeededNodesRef.current = true;
-    const nodeId = String(top.node_id);
-    const nodeName = top.node_name ?? `Node ${nodeId}`;
-    setNodeNamesById((prev) => ({ ...prev, [nodeId]: nodeName }));
-    setSelectedNodeIds([nodeId]);
-  }, [summary, selectedNodeIds.length]);
 
   useEffect(() => {
     function handleAssistantSimulationComplete(event: Event) {
@@ -860,23 +888,21 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!hasRequestedDiagram) return;
     let cancelled = false;
-    setNetwork(null);
-    setNetworkError(null);
-    setNetworkLoading(true);
     fetchNetwork(agentSessionId ?? undefined)
       .then((data) => {
-        if (!cancelled) setNetwork(data);
+        if (!cancelled) setNetworkLoaded(ok(networkKey, data));
       })
       .catch(() => {
-        if (!cancelled) setNetworkError(t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram."));
-      })
-      .finally(() => {
-        if (!cancelled) setNetworkLoading(false);
+        if (!cancelled) {
+          setNetworkLoaded(
+            failedWith(networkKey, t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram.")),
+          );
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [datasetRevision, hasRequestedDiagram, networkReloadNonce, agentSessionId, t]);
+  }, [hasRequestedDiagram, networkKey, agentSessionId, t]);
 
   // Unit #21: which completed runs are even eligible to replay -- independent
   // of `hasRequestedDiagram` above (the diagram may not have been opened yet,
@@ -1293,7 +1319,7 @@ export default function DashboardPage() {
               <span aria-hidden>·</span>
               <button
                 type="button"
-                onClick={() => setKpiMetricsExpanded(true)}
+                onClick={() => setExpandedForSpec({ spec: curationSpec })}
                 className="font-semibold text-slate-600 underline decoration-dotted underline-offset-2 hover:text-slate-900"
               >
                 {t("전체 지표 보기", "Show all metrics", "全指標を表示")}

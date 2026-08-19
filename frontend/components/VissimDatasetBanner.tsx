@@ -10,6 +10,7 @@ import {
   uploadInpxDataset,
   type ActiveDataset,
 } from "@/lib/api";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import { publishDatasetChange, setDatasetBusy, subscribeToDatasetChange } from "@/lib/datasetEvents";
 
 interface Props {
@@ -21,13 +22,10 @@ interface Props {
 export default function VissimDatasetBanner({ onDatasetChange, className = "", fullWidth = false }: Props) {
   const { t } = useLanguage();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [checking, setChecking] = useState(true);
-  const [checkFailed, setCheckFailed] = useState(false);
   // fetch() has no upload-progress event, so a byte-accurate bar would need
   // rewriting the upload path onto XMLHttpRequest. This elapsed-time readout
   // is the honest middle ground: it proves the upload is still alive on a
@@ -36,31 +34,49 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   const hasCustomBackground = /\bbg-/.test(className);
   const hasCustomShadow = /\bshadow/.test(className);
 
-  const loadActiveDataset = useCallback(() => {
-    let mounted = true;
-    setChecking(true);
-    setCheckFailed(false);
+  // WHICH DATASET IS ACTIVE has two sources, and they are not the same claim.
+  // This component's own GET answers "what was it when I asked?", and is keyed
+  // by a REFRESH nonce (lib/asyncResource.ts) so re-asking is a change to the
+  // request key rather than a setState in an effect body. The window broadcast
+  // below is the stronger claim -- it says the dataset CHANGED, and it is the
+  // one path by which an upload, a reset or a project switch reaches this
+  // banner -- so an announced dataset outranks a fetched one. The only ask
+  // after mount is the 다시 시도 button, which exists only when the ask failed,
+  // so the two can never disagree about a dataset that was successfully read.
+  const [datasetNonce, setDatasetNonce] = useState(0);
+  const [datasetLoaded, setDatasetLoaded] = useState<Loaded<ActiveDataset> | null>(null);
+  const [announcedDataset, setAnnouncedDataset] = useState<ActiveDataset | null>(null);
+  const {
+    data: fetchedDataset,
+    error: datasetError,
+    loading: checking,
+  } = resolve(datasetLoaded, String(datasetNonce));
+  const activeDataset = announcedDataset ?? fetchedDataset;
+  // Only the PRESENCE of the error is read: the sentence the reader sees is the
+  // translated "서버에 연결할 수 없습니다" below, not the raw message. Previously a
+  // failed check silently left the dataset unset, so the label read "현재 데이터
+  // 확인 중" forever with no way to retell the user the backend is unreachable
+  // or try again.
+  const checkFailed = datasetError !== null;
+
+  /** Ask again. Every call site (the 다시 시도 button) only bumps the request
+   * key; the effect below is the only thing that touches the wire, and
+   * `checking` goes true again by construction because the key moved. */
+  const loadActiveDataset = useCallback(() => setDatasetNonce((nonce) => nonce + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
     fetchActiveDataset()
       .then((dataset) => {
-        if (!mounted) return;
-        setActiveDataset(dataset);
-        setChecking(false);
+        if (!cancelled) setDatasetLoaded(ok(String(datasetNonce), dataset));
       })
-      .catch(() => {
-        if (!mounted) return;
-        // Previously this silently left the dataset unset, so the label
-        // below read "checking current dataset" forever with no way to
-        // retell the user the backend is unreachable or try again.
-        setActiveDataset(null);
-        setChecking(false);
-        setCheckFailed(true);
+      .catch((caught) => {
+        if (!cancelled) setDatasetLoaded(failed(String(datasetNonce), caught));
       });
     return () => {
-      mounted = false;
+      cancelled = true;
     };
-  }, []);
-
-  useEffect(() => loadActiveDataset(), [loadActiveDataset]);
+  }, [datasetNonce]);
 
   // The 프로젝트 picker used to sit in this component, so a project switch could
   // update this banner and call `onDatasetChange` by simply being in the same
@@ -77,7 +93,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   useEffect(
     () =>
       subscribeToDatasetChange((dataset) => {
-        setActiveDataset(dataset);
+        setAnnouncedDataset(dataset);
         onDatasetChange?.(dataset);
       }),
     [onDatasetChange],

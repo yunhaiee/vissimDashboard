@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection as StarletteConnection
-from routers import assistant, datasets, genesis, network, network_diff, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
+from routers import assistant, calibration, datasets, genesis, network, network_diff, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
 from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import workspaces as workspaces_router
@@ -396,6 +396,13 @@ app.include_router(observations.router)
 # exactly the kind of route the workspace membership gate exists for.
 app.include_router(genesis.router)
 app.include_router(health.router)
+# Unit #50: /api/calibration — the calibration workspace's READ side. Every
+# route is a GET over services that already exist (reality_check,
+# verify_applied_row, the generation gate, the phase-diagram store); it adds no
+# write path and no second approval machine, and approval still goes through
+# POST /api/assistant/agent/approve. A prefix nothing else claims, and no
+# existing route changes.
+app.include_router(calibration.router)
 
 
 @app.get("/")

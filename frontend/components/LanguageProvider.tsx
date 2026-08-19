@@ -15,9 +15,16 @@ const LanguageContext = createContext<LanguageContextValue | null>(null);
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Language>("ko");
 
+  // THE HYDRATION EXCEPTION (lib/asyncResource.ts): the reader's chosen language
+  // lives in localStorage, which the server cannot read. Picking it up during
+  // render would make the server's HTML (always the "ko" default) disagree with
+  // the client's first render, so it has to land AFTER hydration -- one repaint
+  // in the stored language is the price, and the only alternative is a
+  // server/client mismatch React would discard the whole tree over.
   useEffect(() => {
     const stored = readStoredLanguage();
     if (isLanguage(stored)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage; must run after hydration
       setLangState(stored);
     }
   }, []);

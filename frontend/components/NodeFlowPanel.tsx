@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+
+import { resolveSelection } from "@/lib/asyncResource";
 import { fetchSignals, type ScenarioMeta, type ScenarioResults, type SignalNodeInfo } from "@/lib/api";
 import { useLanguage } from "@/components/LanguageProvider";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
@@ -43,18 +45,13 @@ const DIR_SHORT: Record<CardinalDirection, string> = {
 
 export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, results }: Props) {
   const { t } = useLanguage();
-  const [activeId, setActiveId] = useState<string>(selected[0] ?? "");
+  // The user's INTENT, resolved against the current selection during render.
+  // This was an effect that corrected `activeId` one render late, so a node
+  // that had left the selection stayed on screen for a frame before the panel
+  // switched away from it. Deriving removes both the effect and the frame.
+  const [activeIdIntent, setActiveId] = useState<string | null>(null);
+  const activeId = resolveSelection(activeIdIntent, selected, (id) => id) ?? "";
   const [signalNodes, setSignalNodes] = useState<SignalNodeInfo[]>([]);
-
-  useEffect(() => {
-    if (selected.length === 0) {
-      setActiveId("");
-      return;
-    }
-    if (!selected.includes(activeId)) {
-      setActiveId(selected[0]);
-    }
-  }, [activeId, selected]);
 
   useEffect(() => {
     let mounted = true;
@@ -182,18 +179,13 @@ export function NodeSignalPhasePanel({
   selected,
   results,
 }: Props) {
-  const [activeId, setActiveId] = useState<string>(selected[0] ?? "");
+  // The user's INTENT, resolved against the current selection during render.
+  // This was an effect that corrected `activeId` one render late, so a node
+  // that had left the selection stayed on screen for a frame before the panel
+  // switched away from it. Deriving removes both the effect and the frame.
+  const [activeIdIntent, setActiveId] = useState<string | null>(null);
+  const activeId = resolveSelection(activeIdIntent, selected, (id) => id) ?? "";
   const [signalNodes, setSignalNodes] = useState<SignalNodeInfo[]>([]);
-
-  useEffect(() => {
-    if (selected.length === 0) {
-      setActiveId("");
-      return;
-    }
-    if (!selected.includes(activeId)) {
-      setActiveId(selected[0]);
-    }
-  }, [activeId, selected]);
 
   useEffect(() => {
     let mounted = true;
