@@ -6651,3 +6651,57 @@ grant) 익스플로잇을 실증해 deepcopy 경계로 봉쇄했고, node_contro
 **Consequence:** 착지하면 #51 라이브 러너 배선(별도 유닛) 후 탐색 승자를 승인 카드로 실제
 적용 가능. 근거의 격이 Table 5-6(공표 표 조회)보다 한 단계 낮다는 사실은 근거문이 스스로
 말한다 — 탐색 원장과 홀드아웃 증명이 그 자리를 채우는 것이 이 결정의 본질.
+
+## 2026-08-20 — #50-d: the screen keeps the action, and the doctrine learns an address
+
+**User decision (2026-08-20, roadmap row #50-d — verbatim six-item spec).** The calibration
+screen owes the user an action, not an education. ① a "지금 할 일" banner derived from server
+state only; ② at most one 자세히 fold per card; ③ every doctrine/guard/education sentence
+evicted from the surface into ONE knowledge file (`docs/product/calibration-doctrine.md`,
+ko/en/ja, D1–D17) + the in-app `/docs` page + assistant RAG retrieval, with the
+"prose-bound-to-code" pins re-aimed at the file; ④ the ⑫ #51 guardrail section UI removed
+("unnecessary developer side information") with backend enforcement byte-unchanged and the
+#51-c display pins removed under this recorded authority (~26 pins, each removal commented);
+⑤ empty-state folds removed; ⑥ rail 펼치기 → chevron, header status tally chips removed
+("this stat does not help").
+
+**Orchestrator decisions inside the spec's freedom (open to user override):**
+- The evidence-rank sentence stays on the approval-card surface — approval-decision-material
+  honesty, not developer info; the spec named forecast/chips/mono bars, not it.
+- The manual station's one-line headline stays — it is the station's verdict, not background.
+- The manual-row statusTally chips stay — #50-b's rule that a collapsed group must surface
+  its urgent states outranks a blanket chip purge; the header tally described rows already
+  visible, which is why IT went.
+- "전부" in item ④ includes the drawer-shared SearchedParameterPanel's forecast display —
+  the same developer-grade information is the same wherever it renders. The refuter named
+  the residue honestly (minor): the per-write refusal verdict is now inferable from
+  `consent_radius_phrase` + `/docs`' D16 account rather than stated per search.
+- The banner follows the server's NEXT signal even past an IN_PROGRESS step (refuter minor,
+  named): NEXT is the server's own "actionable now"; the banner invents no client judgment.
+- Doctrine drift protection is DERIVED, not transcribed: the contract suite parses both
+  copies (knowledge file ↔ help-content) and requires set equality over all 81 sentences,
+  both directions — no third arbitration copy. An identical edit to both files is a change
+  to what the product promises and routes through user approval per the file's own header.
+
+**Refuter (protocol 17/17 units with real defects):** MAJOR — 23 of 27 items were pinned by
+a short ko fragment while the ledger comment promised full-drift protection; a
+meaning-changed ENGLISH reword of D5 in help-content survived the suite (proven by
+mutation). Fixed by the parsed set-equality mechanism above; the exact mutation now kills.
+
+**Operational fact (outside this unit, recorded).** At 13:56 KST a genesis draft
+(`region_n36_3480_e127_3886.inpx`, source: genesis_draft) was uploaded into the default
+workspace "기본 프로젝트" during the user's own demo recording, replacing the client model
+as the active dataset AND destroying the workspace's `Scenarios/**.results/1.db` (the real
+customer result database — a live-run artifact with no donor copy anywhere: not in other
+workspaces, not in client-data/, not in the client zips). `uploads/current` keeps no
+history; an overwrite is unrecoverable except by re-upload/regeneration. Effects and
+resolution:
+- 14 real-dataset tests failed environmentally (file-exists gate passed, content empty).
+  User approved restoration; the 08-11 lineage copy (sha256 A712D640…) was re-uploaded via
+  the app's own `POST /api/datasets/upload-inpx` (hash-verified) — all 14 healed.
+- `test_agent_geh_ladder.py::test_the_availability_holds_on_a_real_customer_result_database`
+  and `test_agent_tools_run.py::test_delay_measurement_truncated_by_queue_reproduces_against_a_real_result_db`
+  now skip-with-reason (suite 12→14 skips). Regenerating the result DB needs a live Vissim
+  run on the restored model — **user COM lane** (handoff-2026-08-18 §6.2 commands).
+- The `real_counts_*` metadata pointer was also dropped by the overwrite; whether the
+  default workspace needs its observed-counts workbook re-attached is a user call.
