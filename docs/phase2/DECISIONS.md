@@ -6705,3 +6705,23 @@ resolution:
   run on the restored model — **user COM lane** (handoff-2026-08-18 §6.2 commands).
 - The `real_counts_*` metadata pointer was also dropped by the overwrite; whether the
   default workspace needs its observed-counts workbook re-attached is a user call.
+
+**RESOLVED same day (supersedes the two residues above):** the ORIGINAL client package was
+found on this machine — `Downloads/Murdoch Drive_Scenario Model_0624.zip` (27.9 MB,
+downloaded 2026-07-28). Two measurements and one action:
+- `SouthStreet_Base.inpx` inside it is **byte-identical to A712D640…** — the restored model
+  IS the client original, exactly (the 08-07 BE35 copy was the outlier, not the lineage).
+- The package carries the customer's own result databases (Scenarios S000001–S000014,
+  5 runs each) plus `SouthStreet_Base.vissimpdb` and 19 `Modifications/*.trax`.
+- User-approved restore ("디비 재생성은 진행해"): repackaged zip (current A712 model FIRST
+  + client Scenarios/vissimpdb/Modifications byte-verbatim from the original archive) through
+  the app's own zip-upload path (`_save_zip_dataset`). Verified on disk: model hash unchanged,
+  `S000001/1.db` byte-identical to the client copy, 14 scenario dirs, project db present.
+  The two real-DB tests PASS again; full suite **5321 passed / 0 failed / 12 skipped** —
+  the handoff's 12-skip shape, +3 doctrine tests. No live COM was needed after all.
+- Still open (user lane): whether to re-attach an observed-counts workbook to the default
+  workspace (the client package contains none — `real_counts.xlsx` was never part of it).
+- **Discovery for the client-ask ledger:** the same Downloads folder holds
+  `LMA_MurdochLink.png` (357 KB) — an LMA site drawing. The D1 ask ("LMA/LMB drawings,
+  detector→movement, upgrades SCATS calibration site→movement") may be partially answerable
+  from disk. User to confirm coverage.
