@@ -167,17 +167,66 @@ export interface GenesisConnectivityMetadata {
   [key: string]: unknown;
 }
 
+/** UNIT #48-b -- `metadata.boundary`, the census's own record of WHAT AREA WAS
+ * ASKED FOR. Written by the converter beside the trim ledger it already carried
+ * (`services/genesis_jobs.py` reads `metadata['boundary']['requested_polygon_
+ * wgs84']` and `['way_trims']` for every boundary attribution), and typed here
+ * for the one thing this app now needs from it: the ring the extract that
+ * produced this generation was actually made with.
+ *
+ * Optional on purpose. A hand-uploaded `.osm` has no requested region at all,
+ * and a bbox fetch has no polygon -- both are "there is no ring to hand back",
+ * not an error. */
+export interface GenesisBoundaryMetadata {
+  /** The requested lasso as the converter recorded it: `{lat, lon}` objects,
+   * NOT the `[lat, lon]` pairs the region page uses. Converted (and range
+   * checked) by `requestedPolygonOf` below rather than at each reader. */
+  requested_polygon_wgs84?: Array<{ lat: number; lon: number }>;
+  requested_bbox_wgs84?: { south: number; west: number; north: number; east: number };
+  metres_cut_total?: number;
+  [key: string]: unknown;
+}
+
 export interface GenesisDraftNetwork {
   name: string;
   source_osm: string;
   traffic_regulation?: string;
   refused: boolean;
   refusals: string[];
-  metadata: { connectivity?: GenesisConnectivityMetadata; [key: string]: unknown };
+  metadata: {
+    connectivity?: GenesisConnectivityMetadata;
+    boundary?: GenesisBoundaryMetadata;
+    [key: string]: unknown;
+  };
   links: GenesisDraftLink[];
   connectors: GenesisDraftConnector[];
   nodes: GenesisDraftNode[];
   skipped_ways?: Array<Record<string, unknown>>;
+}
+
+/** UNIT #48-b -- the ring THIS generation was extracted with, in the region
+ * page's own `[lat, lon]` convention, or `null` when the census records none.
+ *
+ * `null` is a real answer and the caller must render it as one: an uploaded
+ * `.osm` and a bbox-only fetch both legitimately reach here with no polygon, and
+ * there is nothing to edit for them. A malformed entry lands on `null` too --
+ * these coordinates end up in Leaflet, where a NaN throws inside the tile layer,
+ * so the same range check `lib/region-prefill.ts` applies to a stored vertex is
+ * applied here to a recorded one. */
+export function requestedPolygonOf(
+  network: GenesisDraftNetwork | null,
+): Array<[number, number]> | null {
+  const recorded = network?.metadata.boundary?.requested_polygon_wgs84;
+  if (!Array.isArray(recorded) || recorded.length < 3) return null;
+  const ring: Array<[number, number]> = [];
+  for (const vertex of recorded) {
+    if (typeof vertex !== "object" || vertex === null) return null;
+    const { lat, lon } = vertex as { lat: unknown; lon: unknown };
+    if (typeof lat !== "number" || !Number.isFinite(lat) || lat < -90 || lat > 90) return null;
+    if (typeof lon !== "number" || !Number.isFinite(lon) || lon < -180 || lon > 180) return null;
+    ring.push([lat, lon]);
+  }
+  return ring;
 }
 
 // ---------------------------------------------------------------------------

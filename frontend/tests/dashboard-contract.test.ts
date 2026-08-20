@@ -7,6 +7,9 @@ import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.
 import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline } from "../lib/roadWidth.ts";
 import { messageWithoutSubject } from "../lib/findingMessage.ts";
 import {
+  BASIS_BOUNDARY_CUT,
+  BASIS_RUNWAY_DEFICIT,
+  PREFILL_KIND_MANUAL_REGION_EDIT,
   REGION_PREFILL_STORAGE_KEY,
   stashRegionPrefill,
   takeRegionPrefill,
@@ -5413,11 +5416,14 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
     // renders when EITHER is on offer. Same rule, same slice.
     "{worldGapAsked && (",
     "{disposition.regenerate && (",
-    // Unit #40 put a THIRD in -- the widened-region proposal, whose action
-    // leaves this screen entirely for the region page's own ask-first button.
-    // Same rule, same slice: the refusal a reader meets FIRST still has no
-    // control of any kind on it.
-    "{disposition.boundary_extension && (",
+    // Unit #40 put a THIRD in -- the widened-region proposal, whose action left
+    // this screen for the region page's own ask-first button. UNIT #48-b (user
+    // decision, 2026-08-20) REMOVED it, so `{disposition.boundary_extension && (`
+    // is struck from this list rather than re-aimed: there is no third treatment
+    // block on a finding card any more. The RULE this test exists for is
+    // untouched and now covers strictly MORE of the branch -- everything that
+    // block used to occupy is refusal text again, and the no-<button pin below
+    // runs over it.
     // Unit #42's own NAMED refusal is deliberately NOT a treatment marker: it
     // renders prose and no control, so it belongs to the refusal half of the
     // slice and the no-<button pin below covers it.
@@ -5521,38 +5527,29 @@ contractTest("unit #38: a finding the census cannot correct is treated by regene
   );
 });
 
-contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED lasso", (pin) => {
+contractTest("unit #40: the region hand-off carries ONE shape, through ONE module", (pin) => {
   const page = read("app/genesis/jobs/[id]/page.tsx");
   const region = read("app/genesis/region/page.tsx");
   const handoff = read("lib/region-prefill.ts");
 
-  // 1. THE GATE. The action renders only when the BACKEND derived a region for
-  //    this finding -- key-absent on an interior shortage, on a splice it
-  //    refused by name, and on every non-V4 card. Never on a status string,
-  //    and never on a client-side guess about what the boundary did.
-  pin.match(
-    page,
-    /\{disposition\.boundary_extension && \(/,
-    "expected the widen-the-boundary action to be gated on the backend's own derived extension",
-  );
-  const treatmentBlock = sliceBetween(
-    page,
-    "{disposition.boundary_extension && (",
-    "{/* Unit #35 -- the ask-first QUESTION",
-  );
-  pin.match(treatmentBlock, /<button/, "expected to find the treatment block (markers moved?)");
-  pin.doesNotMatch(
-    withoutComments(treatmentBlock),
-    /boundary_attribution/,
-    "expected the action to key off the derived EXTENSION, never off unit #39's attribution -- an attributed shortage whose splice refused by name has no region to propose and must show no button",
-  );
-  pin.match(
-    page,
-    /경계를 넓혀 다시 생성/,
-    "expected the treatment's ko-primary label",
-  );
+  // 0. PINS REMOVED HERE, WITH THE AUTHORITY THAT ORDERED IT (user decision,
+  //    2026-08-20 -- unit #48-b). This test used to open on the per-finding
+  //    treatment block: the `{disposition.boundary_extension && (` gate, the
+  //    button inside it, and its ko label "경계를 넓혀 다시 생성". The automatic
+  //    boundary-extension proposal UI was REMOVED after live use measured the
+  //    geometry out -- every widened ring cuts new roads at the new edge, so the
+  //    proposals were whack-a-mole -- and pins for a feature that no longer
+  //    exists cannot be re-aimed, only struck. The convention is unchanged by
+  //    this: a pin is re-aimed and never weakened, and a REMOVAL carries the
+  //    decision that ordered it, in writing, at the site. What stands in its
+  //    place is pinned by the two "unit #48-b" tests further down.
+  //
+  //    Everything below is untouched: this test was always about the HAND-OFF,
+  //    which survives -- it now carries the job's OWN requested ring instead of
+  //    a derived one, and every property pinned here is a property of the
+  //    carrying, not of what is carried.
 
-  // 2. THE HAND-OFF SPELLING. One module owns the key and the shape, and both
+  // 1. THE HAND-OFF SPELLING. One module owns the key and the shape, and both
   //    sides import it -- a second copy of the string is how a writer and a
   //    reader drift into never meeting.
   pin.match(
@@ -5560,22 +5557,18 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
     /export const REGION_PREFILL_STORAGE_KEY = "prism-region-prefill";/,
     "expected the sessionStorage key to be declared exactly once, in the hand-off module",
   );
-  // The `, type RegionPrefill` half arrived with unit #48, whose multi-corridor
-  // proposal builds the payload in a named helper rather than inline. The pin
-  // still says what it always said -- the WRITE goes through the shared module,
-  // never through a second copy of the key.
+  // Both sides, in whatever order and across however many lines Prettier wants
+  // -- the load-bearing fact is WHERE each page gets its writer/reader, not the
+  // shape of the import statement.
   pin.match(
     page,
-    /import \{ stashRegionPrefill(?:, [^}]+)? \} from "@\/lib\/region-prefill";/,
-    "expected the job page to write the proposal through the shared hand-off module",
+    /import \{(?=[^}]*\bstashRegionPrefill\b)[^}]*\} from "@\/lib\/region-prefill";/,
+    "expected the job page to write the hand-off through the shared module",
   );
   pin.match(
     region,
-    // Both names, from that module, in whatever order and across however many
-    // lines Prettier wants -- the load-bearing fact is WHERE the region page
-    // gets its reader, not the shape of the import statement.
     /import \{(?=[^}]*\btakeRegionPrefill\b)(?=[^}]*\btype RegionPrefill\b)[^}]*\} from "@\/lib\/region-prefill";/,
-    "expected the region page to read the proposal through the same shared module",
+    "expected the region page to read the hand-off through the same shared module",
   );
   for (const source of [page, region]) {
     pin.doesNotMatch(
@@ -5599,7 +5592,7 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
     "expected a stored ring to be re-validated (three corners, every vertex in range) before it is handed back",
   );
 
-  // 3. THE PRE-FILL LANDS IN THE PAGE'S OWN STATE, so the map, the editable
+  // 2. THE HAND-OFF LANDS IN THE PAGE'S OWN STATE, so the map, the editable
   //    table and the server-side measurement all keep reading one array -- and
   //    the page's own extract button stays the only thing that fetches.
   // (The one line between the guard and the write is the hydration
@@ -5610,7 +5603,7 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
   pin.match(
     region,
     /const handed = takeRegionPrefill\(getWorkspaceId\(\)\);\s*\n\s*if \(!handed\) return;\s*\n(?:\s*\/\/[^\n]*\n)?\s*setPrefill\(handed\);\s*\n\s*setVertices\(handed\.polygon\);/,
-    "expected the pre-fill to become this page's own vertices rather than a second shape beside them",
+    "expected the hand-off to become this page's own vertices rather than a second shape beside them",
   );
   const arrival = sliceBetween(region, "const handed = takeRegionPrefill(", "const loadFetches");
   pin.match(arrival, /\S/, "expected to find the arrival effect (markers moved?)");
@@ -5620,52 +5613,44 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
     "expected the hand-off to fetch NOTHING on arrival -- the extract button is the ask-first gate",
   );
 
-  // 3b. THE PROPOSAL IS STAMPED WITH ITS 프로젝트, and the reader checks it.
-  //     sessionStorage is per-tab and survives the reload ProjectSelector
-  //     switches projects with, so a write that lost its navigation would
-  //     otherwise pre-fill ANOTHER project's extract with this one's polygon
-  //     under a banner naming a job that does not exist there. (Behaviour --
-  //     not just spelling -- is exercised by the imported-module test below.)
+  // 3. IT IS STAMPED WITH ITS 프로젝트, and the reader checks the stamp.
+  //    sessionStorage is per-tab and survives the reload ProjectSelector
+  //    switches projects with, so a write that lost its navigation would
+  //    otherwise pre-fill ANOTHER project's extract with this one's polygon
+  //    under a banner naming a job that does not exist there. (Behaviour --
+  //    not just spelling -- is exercised by the imported-module test below.)
   pin.match(
     page,
     /workspace_id: getWorkspaceId\(\),/,
-    "expected the job page to stamp the proposal with the project it was derived in",
+    "expected the job page to stamp the hand-off with the project it was taken in",
   );
   pin.match(
     handoff,
     /if \(\(workspaceId \?\? null\) !== \(currentWorkspaceId \?\? null\)\) return null;/,
-    "expected takeRegionPrefill to refuse a proposal stamped with another project",
+    "expected takeRegionPrefill to refuse a payload stamped with another project",
   );
 
-  // 4. THE BANNER says what the shape is treating, in the backend's own
-  //    numbers, so a reader can compare it against the map instead of trusting
-  //    a polygon that appeared out of nowhere.
+  // 4. THE BANNER says WHAT the ring is, so a reader can compare it against the
+  //    map instead of trusting a polygon that appeared out of nowhere. Re-aimed
+  //    by unit #48-b: the ring is no longer a derived widening with a deficit
+  //    and an added area to quote, it is the parent job's own requested region,
+  //    and the banner says exactly that.
   pin.match(
     region,
     /\{prefill && \(/,
     "expected the region page to explain itself when it opens on a shape nobody drew here",
   );
-  pin.match(
-    region,
-    /작업 \$\{prefill\.parent_job\}의 \$\{prefill\.finding_code\} 부족분 \$\{prefill\.deficit_m\} m/,
-    "expected the banner to name the parent job, the finding and the measured deficit it treats",
-  );
-  // ...AND it names the part of the finger the source never declared. This is
-  // the screen that owns the extract button: a reader who presses it here must
-  // not be able to read an extrapolated tail as measured road. The pin is
-  // scoped to the banner block (not the file) because `extrapolated_m` said
-  // anywhere else on the page would not be said to that reader.
   const banner = sliceBetween(region, "{prefill && (", "<div className=\"mb-4 flex flex-col gap-3\">");
   pin.match(banner, /\S/, "expected to find the arrival banner (markers moved?)");
   pin.match(
     banner,
-    /\{prefill\.extrapolated_m > 0 && \(/,
-    "expected the banner to state the extrapolation split whenever there is one",
+    /작업 \$\{prefill\.parent_job\}이 추출에 사용한 영역 그대로입니다/,
+    "expected the banner to name the parent job and to say the ring is ITS OWN, not a widened one",
   );
-  pin.match(
-    banner,
-    /\$\{prefill\.measured_source_m\} m뿐이고, 나머지 \$\{prefill\.extrapolated_m\} m/,
-    "expected the ko banner to quote BOTH numbers -- how much of the finger the source declared, and how much was drawn on the last measured bearing",
+  pin.doesNotMatch(
+    withoutComments(banner),
+    /넓힌 영역|was widened|広げた領域/,
+    "the banner must not claim the ring was widened -- nothing widens it any more except the reader's own drag",
   );
   pin.match(
     banner,
@@ -5681,16 +5666,20 @@ contractTest("unit #40: a boundary-caused shortage is treated by a PRE-FILLED la
 
 contractTest("unit #40: the region hand-off is one-shot AND project-scoped", () => {
   // BEHAVIOUR, not spelling: `lib/region-prefill.ts` imports nothing, so it runs
-  // here against a fake store. Three properties, each of which was reachable as
+  // here against a fake store. Four properties, each of which was reachable as
   // a real defect before it was pinned:
-  //   * one-shot -- a second read returns null, so a proposal cannot reappear
+  //   * one-shot -- a second read returns null, so a hand-off cannot reappear
   //     over a ring the user has since edited;
-  //   * project-scoped -- a proposal stamped in project A is REFUSED (and still
+  //   * project-scoped -- a payload stamped in project A is REFUSED (and still
   //     removed) when read in project B. sessionStorage is per-tab and survives
   //     the reload a project switch does, so "written once" is not the same as
   //     "read in the project it came from";
   //   * re-validated -- a store a devtools user edited into nonsense yields
-  //     null rather than a NaN vertex that throws inside Leaflet's tile layer.
+  //     null rather than a NaN vertex that throws inside Leaflet's tile layer;
+  //   * kind-checked (unit #48-b) -- a payload written by the PREVIOUS build
+  //     carried a ring this app had already widened, under this very key. An
+  //     unconsumed one must not be read back as "the region this job was
+  //     extracted with", and the sessionStorage entry outlives a deploy.
   const store = new Map<string, string>();
   const previousWindow = (globalThis as { window?: unknown }).window;
   (globalThis as { window?: unknown }).window = {
@@ -5701,7 +5690,7 @@ contractTest("unit #40: the region hand-off is one-shot AND project-scoped", () 
     },
   };
   try {
-    const proposal = {
+    const handOff = {
       polygon: [
         [36.35, 127.38],
         [36.35, 127.39],
@@ -5709,49 +5698,60 @@ contractTest("unit #40: the region hand-off is one-shot AND project-scoped", () 
       ] as Array<[number, number]>,
       workspace_id: "bfc69251bd04",
       parent_job: "5e550c739aed",
-      finding_code: "v4_lane_drop_without_runway",
-      subject: "90 (둔산로)",
-      deficit_m: 147.85,
-      added_area_km2: 0.012976,
-      measured_source_m: 127.06,
-      extrapolated_m: 50.36,
+      kind: PREFILL_KIND_MANUAL_REGION_EDIT,
+      covers: [],
     };
 
-    assert.equal(stashRegionPrefill(proposal), true);
+    assert.equal(stashRegionPrefill(handOff), true);
     const same = takeRegionPrefill("bfc69251bd04");
     assert.equal(same?.parent_job, "5e550c739aed");
-    assert.equal(same?.extrapolated_m, 50.36);
+    assert.equal(same?.polygon.length, 3);
     assert.equal(
       takeRegionPrefill("bfc69251bd04"),
       null,
       "one-shot: the second read must find nothing",
     );
 
-    // Project A's proposal, read in project B: refused, and gone afterwards.
-    assert.equal(stashRegionPrefill(proposal), true);
+    // Project A's hand-off, read in project B: refused, and gone afterwards.
+    assert.equal(stashRegionPrefill(handOff), true);
     assert.equal(
       takeRegionPrefill("a9cbf243c5f4"),
       null,
-      "a proposal derived in another 프로젝트 must never pre-fill this one's extract",
+      "a region taken in another 프로젝트 must never pre-fill this one's extract",
     );
-    assert.equal(store.size, 0, "the refused proposal must still be removed from the store");
+    assert.equal(store.size, 0, "the refused payload must still be removed from the store");
 
     // The default project is `null` on both sides, and it is not a wildcard.
-    assert.equal(stashRegionPrefill({ ...proposal, workspace_id: null }), true);
+    assert.equal(stashRegionPrefill({ ...handOff, workspace_id: null }), true);
     assert.equal(takeRegionPrefill("bfc69251bd04"), null);
-    assert.equal(stashRegionPrefill({ ...proposal, workspace_id: null }), true);
+    assert.equal(stashRegionPrefill({ ...handOff, workspace_id: null }), true);
     assert.equal(takeRegionPrefill(null)?.workspace_id, null);
 
-    // A store edited by hand: every one of these is dropped, never repaired.
+    // A store edited by hand -- or written by the build before 2026-08-20:
+    // every one of these is dropped, never repaired.
     for (const broken of [
       "{not json",
-      JSON.stringify({ ...proposal, polygon: [[36.35, 127.38]] }),
-      JSON.stringify({ ...proposal, polygon: [[36.35, 127.38], [36.35, 127.39], ["x", 1]] }),
-      JSON.stringify({ ...proposal, polygon: [[36.35, 127.38], [36.35, 127.39], [999, 1]] }),
-      JSON.stringify({ ...proposal, parent_job: "" }),
-      JSON.stringify({ ...proposal, measured_source_m: "127" }),
-      JSON.stringify({ ...proposal, extrapolated_m: Number.NaN }),
-      JSON.stringify({ ...proposal, workspace_id: 7 }),
+      JSON.stringify({ ...handOff, polygon: [[36.35, 127.38]] }),
+      JSON.stringify({ ...handOff, polygon: [[36.35, 127.38], [36.35, 127.39], ["x", 1]] }),
+      JSON.stringify({ ...handOff, polygon: [[36.35, 127.38], [36.35, 127.39], [999, 1]] }),
+      JSON.stringify({ ...handOff, parent_job: "" }),
+      JSON.stringify({ ...handOff, workspace_id: 7 }),
+      // The retired shape: no `kind`, and the derived scalars unit #40 used to
+      // carry. Its `polygon` was a WIDENED ring, which is exactly why reading it
+      // back under the new banner would be a lie about what the extract covers.
+      JSON.stringify({
+        polygon: handOff.polygon,
+        workspace_id: "bfc69251bd04",
+        parent_job: "5e550c739aed",
+        finding_code: "v4_lane_drop_without_runway",
+        subject: "90 (둔산로)",
+        deficit_m: 147.85,
+        added_area_km2: 0.012976,
+        measured_source_m: 127.06,
+        extrapolated_m: 50.36,
+      }),
+      JSON.stringify({ ...handOff, kind: "derived_extension" }),
+      JSON.stringify({ ...handOff, covers: undefined }),
     ]) {
       store.set(REGION_PREFILL_STORAGE_KEY, broken);
       assert.equal(takeRegionPrefill("bfc69251bd04"), null, `expected to drop: ${broken}`);
@@ -6880,11 +6880,16 @@ contractTest("unit #41: the doctrine moved behind a disclosure, and nothing was 
     /<div className="mt-2 flex flex-col divide-y divide-slate-200 border-t border-slate-200">/,
     "expected the unpaired dispositions to stay separated by rules rather than stacked as cards",
   );
+  // RE-AIMED by unit #48-b (user decision, 2026-08-20): there are TWO treatment
+  // blocks on a finding card now, not three. The widen-boundary one was removed
+  // with the rest of the automatic proposal UI; the shape rule it was counted
+  // under is unchanged and still binds every block that remains, which is why
+  // the count moved rather than the pin being dropped.
   const treatmentBoxes = (page.match(/mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3/g) ?? []).length;
   pin.match(
     `count=${treatmentBoxes}`,
-    /^count=3$/,
-    "expected all three treatment blocks (regenerate, widen-boundary, attest) to read as a left rule, not a nested box",
+    /^count=2$/,
+    "expected both treatment blocks (regenerate, attest) to read as a left rule, not a nested box",
   );
 });
 
@@ -7855,102 +7860,26 @@ contractTest("unit #47: the capacity premise is not obtainable by leaving a fiel
 //      handing a human a proposed shape at all.
 // ---------------------------------------------------------------------------
 
-contractTest("unit #48: the orphan's region and the all-at-once region are the backend's, never a client guess", (pin) => {
-  const page = read("app/genesis/jobs/[id]/page.tsx");
-
-  // 1. BOTH ARE GATED ON A DERIVED SHAPE, never on an attribution and never on
-  //    a status string. An orphan the SOURCE itself leaves unconnected has an
-  //    attribution key of neither kind and must show no button at all.
-  pin.match(
-    page,
-    /\{disposition\.boundary_extension_patches && \(/,
-    "expected the orphan's widen-the-boundary action to be gated on the backend's own derived region",
-  );
-  const orphanBlock = sliceBetween(
-    page,
-    "{disposition.boundary_extension_patches && (",
-    "{/* Unit #42 -- a NAMED refusal",
-  );
-  pin.match(orphanBlock, /<BoundaryPatchesProposal/, "expected to find the orphan treatment block (markers moved?)");
-  pin.doesNotMatch(
-    withoutComments(orphanBlock),
-    /orphan_boundary_attribution/,
-    "expected the action to key off the derived REGION, never off the attribution -- an attributed orphan whose fingers refused by name has nothing to propose and must show no button",
-  );
-  pin.match(
-    page,
-    /\{fixes\?\.boundary_extension_all && \(/,
-    "expected the all-at-once region to render only when the backend derived one",
-  );
-
-  // 2. THE COMPOSITE'S LABEL IS CHECKABLE. A shape that claims to cover every
-  //    boundary finding must NAME them, or the reader has to trust that theirs
-  //    is in there.
-  const proposalComponent = sliceBetween(
-    page,
-    "function BoundaryPatchesProposal(",
-    "\n/**\n * ONE finding's disposition",
-  );
-  pin.match(proposalComponent, /\S/, "expected to find the shared proposal component (markers moved?)");
-  pin.match(
-    proposalComponent,
-    /proposal\.covers\.map\(\(cover\) => \(/,
-    "expected every covered finding to be named, not just counted",
-  );
-  // ...and the extrapolated tail is stated in the PROSE, never folded into the
-  // measured figure. This component renders above a button that navigates to
-  // the screen owning the extract; a reader must not be able to read a drawn
-  // bearing as measured road.
-  pin.match(
-    proposalComponent,
-    /totalExtrapolated > 0 && \(/,
-    "expected the extrapolation split to be stated whenever there is one",
-  );
-  pin.match(
-    proposalComponent,
-    /마지막으로 측정된 방향으로 그은 것입니다/,
-    "expected the ko copy to say the remainder was DRAWN on the last measured bearing",
-  );
-  // The hand-off goes through the shared module and NOTHING is fetched here.
-  pin.match(
-    proposalComponent,
-    /stashRegionPrefill\(boundaryPatchesPrefill\(proposal, jobId\)\)/,
-    "expected the proposal to be carried through the shared one-shot hand-off",
-  );
-  pin.doesNotMatch(
-    proposalComponent,
-    /startRegionFetch|startGenesisJob|applyGenesisFix/,
-    "expected the button to hand a shape to the region page and fetch nothing -- that page's extract button is the ask-first gate",
-  );
-
-  // 3. THE COMPOSITE'S REFUSAL IS A SENTENCE, NEVER A CONTROL -- and it says
-  //    the per-finding proposals survived, because that is what makes refusing
-  //    the all-at-once option safe rather than a dead end.
-  const refusalBlock = sliceBetween(
-    page,
-    "{fixes?.boundary_extension_all_refusal && (",
-    "{report ? (",
-  );
-  pin.match(refusalBlock, /\S/, "expected to find the composite's refusal block (markers moved?)");
-  pin.doesNotMatch(refusalBlock, /<button/, "a refusal is a diagnosis, never a button");
-  pin.match(
-    refusalBlock,
-    /boundary_extension_all_refusal\.reason_code/,
-    "expected the backend's own named reason to be printed rather than re-worded",
-  );
-  pin.match(
-    refusalBlock,
-    /소견별 제안은 각 카드에 그대로 있으니/,
-    "expected the refusal to say the per-finding proposals are unaffected",
-  );
-
-  // 4. THE PROJECT STAMP travels with a multi-corridor proposal exactly as it
-  //    does with a single-finding one: sessionStorage is per-tab and outlives
-  //    the reload a project switch does.
-  const prefillBuilder = sliceBetween(page, "function boundaryPatchesPrefill(", "\nfunction BoundaryPatchesProposal(");
-  pin.match(prefillBuilder, /workspace_id: getWorkspaceId\(\),/, "expected the multi proposal to be stamped with the project it was derived in");
-  pin.match(prefillBuilder, /covers: proposal\.covers\.map\(/, "expected every covered finding to travel with the shape");
-});
+// PIN TEST REMOVED HERE, WITH THE AUTHORITY THAT ORDERED IT (user decision,
+// 2026-08-20 -- unit #48-b). What stood here was
+// `contractTest("unit #48: the orphan's region and the all-at-once region are
+// the backend's, never a client guess")`: it pinned the orphan card's
+// `{disposition.boundary_extension_patches && (` gate, the job-level
+// `{fixes?.boundary_extension_all && (` proposal, the shared
+// `BoundaryPatchesProposal` component, and the composite's named refusal block.
+//
+// Every one of those was REMOVED from the product, so the pins could not be
+// re-aimed -- there is nothing left for them to point at. The measured reason is
+// on the record: the composite widened ring still cut new roads at its own new
+// edge, the user pressed it repeatedly on their own network and watched the
+// boundary findings move rather than close (jobs 7f263915d770 and e2f654400d21),
+// and the refusal prose went with the offer it explained ("이건 지워").
+//
+// The convention is intact and this note is what keeps it so: pins are RE-AIMED,
+// never weakened, and a pin that is struck instead carries, at the site, the
+// decision that struck it. Nothing here was softened -- the properties that
+// still have a subject are pinned harder, by the "unit #48-b" tests below, which
+// also pin that none of this can creep back.
 
 contractTest("unit #48: a region page corner is dragged and typed through ONE setter", (pin) => {
   const page = read("app/genesis/region/page.tsx");
@@ -8067,80 +7996,81 @@ contractTest("unit #48: a region page corner is dragged and typed through ONE se
   pin.match(page, /handleLabel=\{t\("점", "Point", "点"\)\}/, "expected the page to own the ko/en/ja wording");
 });
 
-contractTest("unit #48: a multi-finding hand-off names every finding it covers", (pin) => {
+contractTest("unit #48: the hand-off names every finding it covers, and never renames a cut", (pin) => {
   const region = read("app/genesis/region/page.tsx");
   const handoff = read("lib/region-prefill.ts");
+  const job = read("app/genesis/jobs/[id]/page.tsx");
 
-  // The banner BRANCHES: a proposal covering several findings must not print
-  // the single-finding sentence, whose scalar fields describe only the FIRST
-  // covered one. This is the screen that owns the extract button.
-  pin.match(
-    region,
-    /\{prefill\.covers && prefill\.covers\.length > 1 \? \(/,
-    "expected the arrival banner to branch on how many findings the shape covers",
-  );
-  const banner = sliceBetween(region, "{prefill && (", '<div className="mb-4 flex flex-col gap-3">');
+  // The banner NAMES every finding the hand-off carries, rather than counting
+  // them. This is the screen that owns the extract button, and a reader who is
+  // about to widen a region has to be able to see that THEIR finding is one of
+  // the ones the boundary caused. (Re-aimed by unit #48-b: the list is now a set
+  // of HINTS beside the job's own ring, not a manifest of what a derived shape
+  // covers -- the property it pins is the same one.)
+  const banner = sliceBetween(region, "{prefill && (", "<div className=\"mb-4 flex flex-col gap-3\">");
   pin.match(banner, /\S/, "expected to find the arrival banner (markers moved?)");
   pin.match(
     banner,
-    /prefill\.covers\.map\(\(cover\) => \(/,
-    "expected every covered finding to be named in the banner, not just counted",
+    /prefill\.covers\.map\(\(cover, index\) => \(/,
+    "expected every carried finding to be named in the banner, not just counted",
   );
   pin.match(
     banner,
-    /prefill\.covers\.some\(\(cover\) => cover\.extrapolated_m > 0\) && \(/,
-    "expected the multi-finding banner to state what an extrapolated tail IS, not only its metres",
+    /boundaryHintLine\(cover, t\)/,
+    "expected each line to be worded by the one helper that knows a cut from a shortage",
   );
 
-  // ONE covered finding is not the same as one KIND of measurement. An orphan's
-  // hand-off is always a single covered finding, so it lands in the singular
-  // branch -- where `deficit_m` is `basis_m`, and for an orphan that number is
-  // metres the boundary CUT, not a runway shortage. The backend's own basis
-  // note refuses to "call every finger's own number a deficit, because half of
-  // them are not one"; the banner over the extract button is the last place
-  // that could undo the refusal, and it did. (Refuter, unit #48.)
-  const job = read("app/genesis/jobs/[id]/page.tsx");
+  // ONE carried finding is not the same as one KIND of measurement. An orphan's
+  // metres are metres the boundary CUT; a V4's are a runway SHORTAGE. The
+  // backend's own basis note refuses to "call every finger's own number a
+  // deficit, because half of them are not one"; the banner over the extract
+  // button is the last place that could undo the refusal, and it did once.
+  // (Refuter, unit #48.)
+  const hint = sliceBetween(region, "function boundaryHintLine(", "\nfunction VertexRow(");
+  pin.match(hint, /\S/, "expected to find the hint-line helper (markers moved?)");
+  pin.match(
+    hint,
+    /cover\.basis_kind === BASIS_BOUNDARY_CUT/,
+    "expected the wording to branch on WHAT was measured, not on how many findings",
+  );
+  pin.doesNotMatch(
+    // Comment-stripped and scoped to the CUT branch: this helper's own comment
+    // says the word "shortage" in order to explain why the branch exists, and a
+    // pin that cannot tell prose from rendered text is a pin on the prose.
+    sliceBetween(withoutComments(region), "cover.basis_kind === BASIS_BOUNDARY_CUT", ": t("),
+    /부족분|shortage|不足分/,
+    "a boundary CUT must not be renamed a shortage on the screen that owns the extract button",
+  );
+  // ...and the distinction has to SURVIVE the hand-off to be worth branching on.
   pin.match(
     job,
-    /basis_kind: cover\.basis_kind,/,
-    "expected basis_kind to travel with the hand-off -- without it the region page cannot tell a cut from a shortage",
+    /basis_kind: BASIS_BOUNDARY_CUT,/,
+    "expected a severed orphan's hint to be stamped as a CUT where it is built",
+  );
+  pin.match(
+    job,
+    /basis_kind: BASIS_RUNWAY_DEFICIT,/,
+    "expected a runway shortage's hint to be stamped as a SHORTAGE where it is built",
   );
   pin.match(
     handoff,
     /if \(typeof row\.basis_kind !== "string"\) return null;/,
-    "expected a cover with no basis_kind to drop the proposal rather than be read as a deficit",
-  );
-  pin.match(
-    region,
-    /prefill\.covers\?\.\[0\]\?\.basis_kind === BASIS_BOUNDARY_CUT \? \(/,
-    "expected the singular banner to branch on WHAT was measured, not only on how many findings",
-  );
-  pin.doesNotMatch(
-    // Comment-stripped: this branch's own comment says the word "shortage" in
-    // order to explain why the branch exists, and a pin that cannot tell prose
-    // from rendered text is a pin on the prose.
-    sliceBetween(
-      withoutComments(region),
-      "prefill.covers?.[0]?.basis_kind === BASIS_BOUNDARY_CUT ? (",
-      ") : (",
-    ),
-    /부족분|shortage|不足分/,
-    "a boundary CUT must not be renamed a shortage on the screen that owns the extract button",
+    "expected a hint with no basis_kind to drop the hand-off rather than be read as a deficit",
   );
 
-  // The store is re-validated, and an INVALID `covers` drops the WHOLE
-  // proposal. Returning the shape without it would put a banner naming one
-  // finding over a button that fetches a region derived for three.
+  // The store is re-validated, and a BROKEN covers list drops the WHOLE
+  // hand-off. Returning the ring without its hints would open the region editor
+  // naming none of the findings the reader came here for.
   pin.match(
     handoff,
-    /if \(!Array\.isArray\(candidate\.covers\) \|\| candidate\.covers\.length === 0\) return null;/,
-    "expected a present-but-broken covers list to drop the proposal rather than be ignored",
+    /if \(!Array\.isArray\(candidate\.covers\)\) return null;/,
+    "expected a missing or non-array covers list to drop the hand-off rather than be ignored",
   );
 });
 
-contractTest("unit #48: the multi-finding hand-off round-trips, and a broken covers list is dropped", () => {
+contractTest("unit #48: the hint list round-trips, and a broken one is dropped whole", () => {
   // BEHAVIOUR, not spelling -- the same fake-store harness unit #40's own
-  // hand-off test uses, extended to the field this unit added.
+  // hand-off test uses, over the field this unit added and unit #48-b re-aimed.
   const store = new Map<string, string>();
   const previousWindow = (globalThis as { window?: unknown }).window;
   (globalThis as { window?: unknown }).window = {
@@ -8151,7 +8081,7 @@ contractTest("unit #48: the multi-finding hand-off round-trips, and a broken cov
     },
   };
   try {
-    const multi = {
+    const handOff = {
       polygon: [
         [36.35, 127.38],
         [36.35, 127.39],
@@ -8159,78 +8089,332 @@ contractTest("unit #48: the multi-finding hand-off round-trips, and a broken cov
       ] as Array<[number, number]>,
       workspace_id: "bfc69251bd04",
       parent_job: "e84e57316ccb",
-      finding_code: "v3_orphan_link",
-      subject: "10 (tertiary_link [FWD] w37972527s0)",
-      deficit_m: 9.32,
-      added_area_km2: 0.00032,
-      measured_source_m: 9.31,
-      extrapolated_m: 1.87,
+      kind: PREFILL_KIND_MANUAL_REGION_EDIT,
       covers: [
         {
           finding_code: "v3_orphan_link",
           subject: "10 (tertiary_link [FWD] w37972527s0)",
-          basis_kind: "boundary_cut_metres",
-          length_m: 11.18,
-          measured_source_m: 9.31,
-          extrapolated_m: 1.87,
+          basis_kind: BASIS_BOUNDARY_CUT,
+          basis_m: 9.32,
+          way_id: 37972527,
+          boundary_points: [
+            { end: "start", boundary_node: -9000001, metres_cut: 9.32 },
+          ],
         },
         {
           finding_code: "v4_lane_drop_without_runway",
           subject: "108 (둔산로 [FWD] w1416532929s1)",
-          basis_kind: "lane_change_runway_deficit",
-          length_m: 13.94,
-          measured_source_m: 13.94,
-          extrapolated_m: 0,
+          basis_kind: BASIS_RUNWAY_DEFICIT,
+          basis_m: 13.94,
+          way_id: 1416532929,
+          boundary_points: [{ end: null, boundary_node: 4718924755, metres_cut: null }],
         },
       ],
     };
 
-    assert.equal(stashRegionPrefill(multi), true);
+    assert.equal(stashRegionPrefill(handOff), true);
     const read1 = takeRegionPrefill("bfc69251bd04");
-    assert.equal(read1?.covers?.length, 2);
-    assert.equal(read1?.covers?.[1].finding_code, "v4_lane_drop_without_runway");
-    assert.equal(read1?.covers?.[1].extrapolated_m, 0);
+    assert.equal(read1?.covers.length, 2);
+    assert.equal(read1?.covers[1].finding_code, "v4_lane_drop_without_runway");
+    assert.equal(read1?.covers[1].way_id, 1416532929);
     // REGRESSION (refuter, unit #48): `basis_kind` must survive the hand-off.
     // It is the ONLY thing that tells the region page an orphan's metres are
     // metres the boundary CUT and not a runway shortage, and the banner it
     // renders sits over the extract button. Dropping it printed
     // "v3_orphan_link shortage of 9.32 m" -- the exact rename the backend's own
     // basis note refuses to make.
-    assert.equal(read1?.covers?.[0].basis_kind, "boundary_cut_metres");
-    assert.equal(read1?.covers?.[1].basis_kind, "lane_change_runway_deficit");
-    assert.equal(takeRegionPrefill("bfc69251bd04"), null, "one-shot still holds for a multi proposal");
+    assert.equal(read1?.covers[0].basis_kind, BASIS_BOUNDARY_CUT);
+    assert.equal(read1?.covers[1].basis_kind, BASIS_RUNWAY_DEFICIT);
+    // A boundary node with NO cut length keeps its null. A zero there would be a
+    // measurement nobody took -- a runway shortage cuts nothing.
+    assert.equal(read1?.covers[1].boundary_points[0].metres_cut, null);
+    assert.equal(read1?.covers[1].boundary_points[0].end, null);
+    assert.equal(read1?.covers[0].boundary_points[0].metres_cut, 9.32);
+    assert.equal(takeRegionPrefill("bfc69251bd04"), null, "one-shot still holds with hints");
 
-    // A #40 single-finding proposal still reads back with no `covers` at all --
-    // the field is ADDITIVE, and the old shape did not change under it.
-    const { covers: _covers, ...single } = multi;
-    assert.equal(stashRegionPrefill(single), true);
-    assert.equal(takeRegionPrefill("bfc69251bd04")?.covers, undefined);
+    // NO hints is a real state: a reader may open the region editor on a job
+    // with no boundary story at all, and that must hand over the ring, not
+    // nothing.
+    assert.equal(stashRegionPrefill({ ...handOff, covers: [] }), true);
+    assert.equal(takeRegionPrefill("bfc69251bd04")?.covers.length, 0);
 
-    // Present but broken: the WHOLE proposal is dropped, never half-read.
+    // Present but broken: the WHOLE hand-off is dropped, never half-read.
     for (const broken of [
-      JSON.stringify({ ...multi, covers: [] }),
-      JSON.stringify({ ...multi, covers: "two" }),
-      JSON.stringify({ ...multi, covers: [{ finding_code: "x", subject: "y" }] }),
-      JSON.stringify({
-        ...multi,
-        covers: [{ ...multi.covers[0], extrapolated_m: "1.87" }],
-      }),
-      JSON.stringify({ ...multi, covers: [{ ...multi.covers[0], subject: 7 }] }),
+      JSON.stringify({ ...handOff, covers: "two" }),
+      JSON.stringify({ ...handOff, covers: [{ finding_code: "x", subject: "y" }] }),
+      JSON.stringify({ ...handOff, covers: [{ ...handOff.covers[0], basis_m: "9.32" }] }),
+      JSON.stringify({ ...handOff, covers: [{ ...handOff.covers[0], subject: 7 }] }),
+      JSON.stringify({ ...handOff, covers: [{ ...handOff.covers[0], way_id: "37972527" }] }),
       // A cover with no `basis_kind` cannot be told apart from a runway
       // shortage, so it is dropped with the rest rather than guessed at.
+      JSON.stringify({ ...handOff, covers: [{ ...handOff.covers[0], basis_kind: undefined }] }),
+      // A boundary point is a measurement or it is not carried: no node id, or a
+      // cut length that is not a number, drops the lot.
       JSON.stringify({
-        ...multi,
-        covers: [{ ...multi.covers[0], basis_kind: undefined }],
+        ...handOff,
+        covers: [{ ...handOff.covers[0], boundary_points: [{ end: "start", metres_cut: 9.32 }] }],
       }),
+      JSON.stringify({
+        ...handOff,
+        covers: [
+          {
+            ...handOff.covers[0],
+            boundary_points: [{ end: "start", boundary_node: -9000001, metres_cut: "9.32" }],
+          },
+        ],
+      }),
+      JSON.stringify({ ...handOff, covers: [{ ...handOff.covers[0], boundary_points: {} }] }),
     ]) {
       store.set(REGION_PREFILL_STORAGE_KEY, broken);
       assert.equal(takeRegionPrefill("bfc69251bd04"), null, `expected to drop: ${broken}`);
-      assert.equal(store.size, 0, "a dropped proposal must still leave the store empty");
+      assert.equal(store.size, 0, "a dropped hand-off must still leave the store empty");
     }
   } finally {
     if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
     else (globalThis as { window?: unknown }).window = previousWindow;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Unit #48-b -- the automatic boundary-extension proposals are removed, and one
+// manual "영역 편집" button stands in their place (user decision, 2026-08-20).
+//
+// The measurement that ended the feature: a widened lasso boundary cuts NEW
+// roads wherever it lands, so healing one boundary finding opens another. The
+// user pressed "전부 한 번에 넓혀 다시 생성" repeatedly on their own network and
+// the findings moved instead of closing (jobs 7f263915d770 and e2f654400d21).
+//
+// What stays is the RULER, not the proposal: every boundary attribution the
+// backend measured still renders as prose on the finding it belongs to, and the
+// backend's derivation machinery is retained un-exposed. What the reader gets
+// is their own region, on a map, with the measurements listed beside it.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #48-b: the automatic boundary-extension proposals cannot come back", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const live = withoutComments(page);
+
+  // 1. THE OFFER IS GONE, in both of its homes -- the per-finding cards and the
+  //    job-level composite. Comment-stripped: this file explains at length WHY
+  //    they went, and a pin that cannot tell prose from markup is a pin on the
+  //    prose.
+  for (const gone of [
+    /BoundaryPatchesProposal/,
+    /boundary_extension_patches/,
+    /boundary_extension_all/,
+    /extended_polygon_wgs84/,
+    /corridor_patch/,
+    /added_area_km2/,
+  ]) {
+    pin.doesNotMatch(live, gone, `expected no live use of ${gone} -- the derived-region UI was removed`);
+  }
+  // The wording itself, so a re-introduction under the old copy fails here
+  // rather than shipping.
+  //
+  // STRENGTHENED (refuter, unit #48-b): this banned the button label with its
+  // arrow (`경계를 넓혀 다시 생성 →`), which the removed BUTTONS carried -- and
+  // so it passed while the card's own one-line answer still read "자동 수정 없음
+  // — 경계를 넓혀 다시 생성해야 합니다.", an imperative for the exact flow the
+  // unit deleted, aimed at no control that exists. The arrow is dropped from the
+  // pattern: no live string on this screen may tell a reader to widen the
+  // boundary and generate again, in a label or in prose.
+  pin.doesNotMatch(
+    live,
+    /경계를 넓혀 다시 생성|전부 한 번에 넓혀 다시 생성/,
+    "the widen-and-regenerate flow was removed -- no label and no answer line may command it",
+  );
+
+  // 2. THE REFUSAL PROSE IS GONE TOO ("이건 지워"). A named reason for
+  //    withholding an option nobody is offered any more is noise, not honesty.
+  // Comment-stripped like the rest: the page NAMES the struck sentence where it
+  // records why it went, and a pin that cannot tell prose from rendered text
+  // would fire on that explanation forever (and would pass today only because
+  // the comment happens to wrap mid-sentence, which is luck, not a pin).
+  pin.doesNotMatch(
+    live,
+    /경계 소견을 한 번에 덮는 영역은 제안하지 않습니다/,
+    "the composite's refusal prose was struck by the user and must not creep back",
+  );
+  pin.doesNotMatch(
+    live,
+    /boundary_extension_all_refusal|corridor_patch_undrawable/,
+    "no code may render the composite refusal any more",
+  );
+
+  // 3. THE MEASUREMENT SURVIVES, AND THE ANSWER LINE POINTS SOMEWHERE REAL.
+  //    This is the half that must NOT be deleted with the proposal: a
+  //    boundary-attributed finding still says so, in the backend's own words, on
+  //    its own card.
+  //
+  //    REGRESSION (refuter, unit #48-b). The pin that stood here matched the
+  //    literal sentence "자동 수정 없음 — 경계를 넓혀 다시 생성해야 합니다." and
+  //    called it "the boundary is the cause". It is not a cause statement, it is
+  //    an IMPERATIVE -- and until 2026-08-20 the card carried a
+  //    "경계를 넓혀 다시 생성 →" button directly beneath it, which is what the
+  //    imperative meant. That button was removed with the rest of the proposal
+  //    UI and the sentence was left behind, so the reader was told to perform the
+  //    one flow this unit deleted, by a line naming no control on the screen.
+  //    Unit #41-d already ruled on this exact shape of copy ("Telling that reader
+  //    the fix '가 적용된다' describes a button they do not have"): an answer line
+  //    describes a treatment the reader can REACH.
+  //
+  //    So the pin is re-aimed at the two properties, not the spelling: the line
+  //    still names the boundary as the cause, AND it names the one control that
+  //    can act on it -- by the label that control actually carries, which is
+  //    pinned verbatim in the next test.
+  const boundaryAnswer = sliceBetween(
+    page,
+    ": disposition.boundary_extension",
+    '"자동 수정 없음 — 사람이 판단해야 합니다."',
+  );
+  pin.match(boundaryAnswer, /\S/, "expected to find the boundary card's one-line answer (markers moved?)");
+  pin.match(
+    boundaryAnswer,
+    /경계가 원인입니다/,
+    "expected a boundary-attributed refusal to still SAY the boundary is the cause",
+  );
+  for (const label of [/'영역 편집'/, /'Edit region'/, /「領域を編集」/]) {
+    pin.match(
+      boundaryAnswer,
+      label,
+      `expected the answer line to name the ONE control that can act on it (${label}) -- the widen-and-regenerate button it used to point at no longer exists`,
+    );
+  }
+  // ...and it stays gated on the DERIVED extension's key, which is what makes
+  // naming that control safe rather than a second dead-end instruction. The key
+  // is absent unless the census recorded a requested POLYGON
+  // (`derive_v4_boundary_extension` refuses `requested_region_not_a_polygon`
+  // otherwise) -- the same field `requestedPolygonOf` needs before
+  // `RegionEditInvitation` renders at all. Keying this line off unit #39's
+  // attribution instead would print "영역 편집" on a bbox job that has no such
+  // button. Only the key's PRESENCE is read; none of the derived metres are.
+  pin.match(
+    page,
+    /disposition\.boundary_extension$/m,
+    "expected that sentence to still key off the backend's own boundary derivation, not a client guess",
+  );
+  pin.doesNotMatch(
+    boundaryAnswer,
+    /added_area_km2|corridor_patch|provenance\.deficit_m|extended_polygon_wgs84/,
+    "the answer line may read that the key is THERE and nothing else -- the derived shape is un-exposed",
+  );
+  pin.match(
+    page,
+    /<p className="font-mono leading-relaxed text-slate-700">\{rationale\}<\/p>/,
+    "expected the backend's own rationale -- which carries the way ids and the cut distances -- to still render verbatim",
+  );
+});
+
+contractTest("unit #48-b: 영역 편집 hands over THIS job's own region, and derives nothing", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const map = read("components/genesis/GenesisTileMap.tsx");
+  const artifacts = read("lib/genesisArtifacts.ts");
+
+  // 1. ONE BUTTON, ko-primary, with its en/ja beside it.
+  pin.match(
+    page,
+    /\{t\("영역 편집 →", "Edit region →", "領域を編集 →"\)\}/,
+    "expected the one manual action to carry all three languages",
+  );
+
+  // 2. THE RING IT CARRIES IS THE JOB'S OWN REQUEST, read off the census the map
+  //    already fetched -- never derived here, and never re-fetched.
+  pin.match(
+    artifacts,
+    /export function requestedPolygonOf\(/,
+    "expected the recorded request ring to be read in one named place",
+  );
+  pin.match(
+    artifacts,
+    /metadata\.boundary\?\.requested_polygon_wgs84/,
+    "expected that reader to take the ring off the census's own boundary record",
+  );
+  pin.match(
+    artifacts,
+    /if \(typeof lat !== "number" \|\| !Number\.isFinite\(lat\) \|\| lat < -90 \|\| lat > 90\) return null;/,
+    "expected a recorded vertex to be range-checked -- these coordinates end up in Leaflet, where a NaN throws inside the tile layer",
+  );
+  pin.match(
+    map,
+    /const requestedPolygon = useMemo\(\(\) => requestedPolygonOf\(network\), \[network\]\);/,
+    "expected the ring to be derived once per census, so publishing it upward cannot loop",
+  );
+  pin.match(
+    map,
+    /onRequestedPolygonChange\?\.\(requestedPolygon\);/,
+    "expected the map to publish the ring rather than the page fetching the census a second time",
+  );
+  pin.match(
+    page,
+    /onRequestedPolygonChange=\{handleRequestedPolygonChange\}/,
+    "expected the page to be wired to that publication",
+  );
+  pin.match(
+    page,
+    /polygon=\{requestedPolygon\}/,
+    "expected the button to hand over the published ring, not a shape composed here",
+  );
+  // Tagged with its job, exactly as the placeable set is: a different job is a
+  // different region, and the previous one surviving one render into the next
+  // would offer to edit an area this generation never asked for.
+  pin.match(
+    page,
+    /requestedPolygonState && requestedPolygonState\.jobId === jobId/,
+    "expected the published ring to be read back only while it still belongs to the job on screen",
+  );
+  // ...and there is no button at all when the census recorded no ring (an
+  // uploaded .osm, a bbox fetch). Nothing to edit, so nothing is offered.
+  pin.match(
+    page,
+    /\{requestedPolygon && \(\s*\n\s*<RegionEditInvitation/,
+    "expected the invitation to render only once a real recorded ring is in hand",
+  );
+
+  // 3. IT DERIVES NOTHING AND FETCHES NOTHING. The region page's own extract
+  //    button stays the ask-first gate, exactly as it was under unit #40.
+  const invitation = sliceBetween(page, "function RegionEditInvitation(", "\n/**\n * ONE finding's disposition");
+  pin.match(invitation, /\S/, "expected to find the invitation component (markers moved?)");
+  pin.doesNotMatch(
+    invitation,
+    /startRegionFetch|startGenesisJob|applyGenesisFix|regenerateGenesisJob/,
+    "expected the button to hand a region across and start nothing -- that page's extract button is the ask-first gate",
+  );
+  pin.match(
+    invitation,
+    /kind: PREFILL_KIND_MANUAL_REGION_EDIT,/,
+    "expected the hand-off to name itself, so a stale widened payload cannot be read back as this job's own ring",
+  );
+  pin.match(
+    invitation,
+    /workspace_id: getWorkspaceId\(\),/,
+    "expected the 프로젝트 stamp to travel with the region",
+  );
+
+  // 4. THE HINTS ARE THE BACKEND'S MEASUREMENT, gated on its own status word --
+  //    this page is structurally unable to decide whose fault a boundary finding
+  //    is, and a hint that guessed would send a reader to drag the wrong edge.
+  const hints = sliceBetween(page, "function boundaryHintsOf(", "\n/** UNIT #48-b -- the ONE action");
+  pin.match(hints, /\S/, "expected to find the hint builder (markers moved?)");
+  pin.match(
+    hints,
+    /orphan\.status === "boundary_attributed"/,
+    "expected an orphan hint to be gated on the backend's own attribution status",
+  );
+  pin.match(
+    hints,
+    /attributed\.status === "boundary_attributed"/,
+    "expected a runway-shortage hint to be gated on the backend's own attribution status",
+  );
+  pin.match(
+    hints,
+    /typeof attributed\.deficit_m === "number"/,
+    "expected a finding whose measurement is missing to be SKIPPED -- a printed 0 m is a measurement nobody took",
+  );
+  pin.doesNotMatch(
+    withoutComments(hints),
+    /\?\? 0/,
+    "no hint may fall back to a fabricated zero",
+  );
 });
 
 // ---------------------------------------------------------------------------

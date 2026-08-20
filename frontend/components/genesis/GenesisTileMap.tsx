@@ -58,6 +58,7 @@ import {
   fetchGenesisDraftNetwork,
   genesisElementLaneOffsetsM,
   genesisElementWidthMeters,
+  requestedPolygonOf,
   type GenesisDraftConnector,
   type GenesisDraftLink,
   type GenesisDraftNetwork,
@@ -119,6 +120,7 @@ export default function GenesisTileMap({
   hasArtifact,
   selectionRequest = null,
   onPlaceableChange,
+  onRequestedPolygonChange,
 }: {
   jobId: string;
   report: GenesisGateReport | null;
@@ -133,6 +135,15 @@ export default function GenesisTileMap({
    * fetched here and nowhere else, which is why it travels out rather than the
    * rail deriving its own answer. */
   onPlaceableChange?: (placeable: ReadonlySet<string>) => void;
+  /** UNIT #48-b: the ring THIS generation was extracted with
+   * (`metadata.boundary.requested_polygon_wgs84`), published upward for the
+   * 영역 편집 button beside the verdict. Same reason `onPlaceableChange` travels
+   * out rather than being re-derived: the census it lives in is fetched HERE and
+   * nowhere else, and a second fetch of a multi-megabyte artifact to read one
+   * ring off it is not a trade this page makes. `null` when the census records
+   * none — an uploaded .osm or a bbox fetch has no ring, and the caller says so
+   * rather than offering an edit of nothing. */
+  onRequestedPolygonChange?: (polygon: Array<[number, number]> | null) => void;
 }) {
   const { t } = useLanguage();
 
@@ -231,6 +242,15 @@ export default function GenesisTileMap({
   useEffect(() => {
     onPlaceableChange?.(highlights.placeable);
   }, [highlights, onPlaceableChange]);
+
+  // Unit #48-b -- publish the REQUESTED ring the same way, and off the same
+  // census. Memoized so the identity only changes when the census does: this
+  // value is published from an effect into the page's own state, and a fresh
+  // array on every render would loop.
+  const requestedPolygon = useMemo(() => requestedPolygonOf(network), [network]);
+  useEffect(() => {
+    onRequestedPolygonChange?.(requestedPolygon);
+  }, [requestedPolygon, onRequestedPolygonChange]);
 
   const excludedZones = network?.metadata.connectivity?.excluded_zones ?? [];
 

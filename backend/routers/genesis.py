@@ -1558,6 +1558,26 @@ def _render_fix_disposition(
     # widening the region is a NEW GENERATION a human starts on the region
     # screen -- never an edit to this artifact, and never unit #38's
     # same-source regeneration, whose bytes are clipped at this very boundary.
+    #
+    # UNIT #48-b (user decision, 2026-08-20): NO CLIENT RENDERS THIS KEY'S
+    # DERIVED SHAPE ANY MORE. The widen-and-regenerate buttons it fed were
+    # removed once live use showed that every widened ring cuts new roads at its
+    # own new edge. The key is still sent, and the derivation behind it is
+    # retained as the basis for a future PRE-FLIGHT boundary check on the region
+    # screen (see ``genesis_jobs.derive_v4_boundary_extension``'s own note). What
+    # the screen offers instead is a manual ``영역 편집`` button carrying the
+    # job's own requested polygon.
+    #
+    # ITS PRESENCE IS READ, THOUGH -- corrected by the refuter, because this
+    # comment first said "no client renders this key" while one branch of
+    # ``app/genesis/jobs/[id]/page.tsx`` was testing it, which is how a stale
+    # imperative ("경계를 넓혀 다시 생성해야 합니다") survived the removal
+    # unnoticed. That branch asks only whether the key is THERE, to decide
+    # whether a NOT_AUTOMATABLE card names the boundary as the cause and points
+    # at 영역 편집. It is the right question: this key is absent unless the census
+    # recorded a requested POLYGON, which is the same field that button needs
+    # before it renders, so the sentence can only name a control that exists.
+    # None of the measurements inside are read.
     extension = (proposal.evidence or {}).get("boundary_extension")
     if isinstance(extension, dict):
         disposition["boundary_extension"] = extension
@@ -1578,6 +1598,12 @@ def _render_fix_disposition(
     orphan_attribution = (proposal.evidence or {}).get("orphan_boundary_attribution")
     if isinstance(orphan_attribution, dict):
         disposition["orphan_boundary_attribution"] = orphan_attribution
+    # ``orphan_boundary_attribution`` is READ by the client again since unit
+    # #48-b: it is what the 영역 편집 hand-off quotes to tell a reader WHICH way
+    # the ring cut and at WHICH node. ``boundary_extension_patches`` is the
+    # derived-region half and is un-exposed with the rest of it -- same decision,
+    # same reason, same retention (see ``_render_fix_disposition``'s note on
+    # ``boundary_extension`` above).
     orphan_extension = (proposal.evidence or {}).get("boundary_extension_patches")
     if isinstance(orphan_extension, dict):
         disposition["boundary_extension_patches"] = orphan_extension

@@ -112,6 +112,7 @@ import {
   BASIS_BOUNDARY_CUT,
   takeRegionPrefill,
   type RegionPrefill,
+  type RegionPrefillCoverage,
 } from "@/lib/region-prefill";
 
 /** Leaflet reads `window` at module scope, so the drawing surface is mounted
@@ -296,6 +297,56 @@ function isValidLatitude(value: number): boolean {
 }
 function isValidLongitude(value: number): boolean {
   return Number.isFinite(value) && value >= -180 && value <= 180;
+}
+
+/** UNIT #48-b -- ONE boundary-attributed finding of the parent job, as a line a
+ * reader can aim a drag with.
+ *
+ * Every number is the backend's own measurement, carried verbatim by the
+ * hand-off; this function only words them. Two things it is careful about:
+ *
+ *   * A CUT IS NOT A SHORTAGE. `basis_kind` says which the metres are -- the
+ *     metres a boundary cut off a severed way, or a runway that is short --
+ *     and this is the screen that owns the extract button, so it is the last
+ *     place that distinction could be dropped. The payload's own basis note
+ *     refuses to "call every finger's own number a deficit, because half of
+ *     them are not one"; neither does this line.
+ *   * A NODE WITH NO CUT LENGTH PRINTS NONE. A runway shortage names one
+ *     boundary node and no severed end, and a "0 m" there would be a
+ *     measurement nobody took. */
+function boundaryHintLine(cover: RegionPrefillCoverage, t: Translate): string {
+  const head = `${cover.finding_code} / ${cover.subject}`;
+  // Not run through `t()`: `way 123456` is an OSM identifier, and the three
+  // languages would be three copies of the same string.
+  const way = cover.way_id === null ? "" : ` — way ${cover.way_id}`;
+  const basis =
+    cover.basis_kind === BASIS_BOUNDARY_CUT
+      ? t(
+          `, 경계가 잘라낸 ${cover.basis_m} m`,
+          `, ${cover.basis_m} m cut off by the boundary`,
+          `, 境界が切り落とした ${cover.basis_m} m`,
+        )
+      : t(
+          `, 진입로 부족분 ${cover.basis_m} m`,
+          `, ${cover.basis_m} m of runway short`,
+          `, 進入路の不足分 ${cover.basis_m} m`,
+        );
+  if (cover.boundary_points.length === 0) return `${head}${way}${basis}`;
+  const points = cover.boundary_points
+    .map((point) => {
+      const end = point.end === null ? "" : t(`${point.end} 끝 `, `${point.end} end, `, `${point.end} 側 `);
+      const cut =
+        point.metres_cut === null
+          ? ""
+          : t(` (${point.metres_cut} m)`, ` (${point.metres_cut} m)`, `（${point.metres_cut} m）`);
+      return t(
+        `${end}노드 ${point.boundary_node}${cut}`,
+        `${end}node ${point.boundary_node}${cut}`,
+        `${end}ノード ${point.boundary_node}${cut}`,
+      );
+    })
+    .join(t(", ", ", ", "、"));
+  return `${head}${way}${basis} · ${t("경계 지점", "boundary point(s)", "境界地点")}: ${points}`;
 }
 
 /**
@@ -817,103 +868,55 @@ export default function GenesisRegionPage() {
         * itself when it fires. */}
       <Panel density="console" title={t("① 영역 지정", "1. Name the region", "① 領域の指定")}>
         {prefill && (
-          /* UNIT #40 -- why this page opened on a shape nobody drew here. One
-            * line, sky (info) tint with ink from the neutral ramp per the
-            * tinted-box rule above, and every number is the backend's own
-            * measurement quoted verbatim. It does NOT claim the shape is
-            * right: the map below and the table beside it are how a reader
-            * disagrees with it. */
+          /* UNIT #40 -- why this page opened on a shape nobody drew here. Sky
+            * (info) tint with ink from the neutral ramp per the tinted-box rule
+            * above.
+            *
+            * UNIT #48-b (user decision, 2026-08-20) -- WHAT THAT SHAPE IS
+            * CHANGED, so this banner did too. It used to explain a ring the
+            * backend had already WIDENED, in the metres of the finger it spliced
+            * in. Nothing is widened any more: the polygon below is the parent
+            * job's OWN requested region, carried across unchanged, and the
+            * widening is the reader's to do by dragging. So the banner says that
+            * plainly and then hands over the MEASUREMENTS -- which way the
+            * boundary cut, at which node, by how many metres -- as hints for
+            * where to drag. It does NOT claim any particular edit is the right
+            * one: the map below and the table beside it are how a reader
+            * decides, and this screen's own extract button is still the only
+            * thing that fetches. */
           <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-[15px] leading-relaxed text-slate-800">
-            {prefill.covers && prefill.covers.length > 1 ? (
-              /* UNIT #48 -- a proposal that covers SEVERAL findings names every
-                * one of them. The scalar fields below describe only the FIRST
-                * covered finding (see lib/region-prefill.ts), so printing the
-                * single-finding sentence here would tell a reader their extract
-                * treats one shortage when it treats three. The extract button on
-                * this very screen is what makes that difference matter. */
+            <p>
+              {t(
+                `작업 ${prefill.parent_job}이 추출에 사용한 영역 그대로입니다 — 점 ${prefill.polygon.length}개. 지도에서 꼭짓점을 끌어 옮기거나 넓히신 뒤 아래 추출 버튼을 누르세요.`,
+                `This is job ${prefill.parent_job}'s own requested region, exactly as it was extracted — ${prefill.polygon.length} corners. Drag any corner to move or widen it, then press the extract button below.`,
+                `ジョブ ${prefill.parent_job} が抽出に使った領域そのものです — 点 ${prefill.polygon.length} 個。地図で頂点をドラッグして動かす・広げたうえで、下の抽出ボタンを押してください。`,
+              )}
+            </p>
+            {prefill.covers.length > 0 && (
+              /* THE HINTS. Named findings with their measured ids and metres --
+                * not a recommendation, and deliberately not a shape. A reader who
+                * knows WHICH way the ring clipped and at WHICH node can aim one
+                * drag; a reader handed a pre-widened ring could only accept or
+                * reject somebody else's guess, which is the loop this replaced. */
               <>
-                <p>
+                <p className="mt-1.5 text-[14px] text-slate-600">
                   {t(
-                    `작업 ${prefill.parent_job}의 경계 소견 ${prefill.covers.length}건을 한 번에 덮으려고 넓힌 영역입니다 — 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
-                    `This region was widened to cover all ${prefill.covers.length} of job ${prefill.parent_job}'s boundary findings at once — +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
-                    `ジョブ ${prefill.parent_job} の境界に起因する検出 ${prefill.covers.length} 件をまとめて覆うために広げた領域です — 面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
+                    `이 경계가 원인으로 기록된 소견 ${prefill.covers.length}건입니다 — 어느 쪽을 넓힐지 정하실 때 참고하세요.`,
+                    `${prefill.covers.length} finding(s) were attributed to this boundary — use them to decide which side to widen.`,
+                    `この境界が原因と記録された検出は ${prefill.covers.length} 件です — どちらを広げるかの参考にしてください。`,
                   )}
                 </p>
-                <ul className="mt-1.5 flex flex-col gap-0.5">
-                  {prefill.covers.map((cover) => (
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {prefill.covers.map((cover, index) => (
                     <li
-                      key={`${cover.finding_code}::${cover.subject}`}
+                      key={`${cover.finding_code}::${cover.subject}::${index}`}
                       className="font-mono text-[14px] leading-relaxed text-slate-600"
                     >
-                      {t(
-                        `${cover.finding_code} / ${cover.subject} — ${cover.length_m} m${cover.extrapolated_m > 0 ? ` (원본 선언 ${cover.measured_source_m} m + 외삽 ${cover.extrapolated_m} m)` : ""}`,
-                        `${cover.finding_code} / ${cover.subject} — ${cover.length_m} m${cover.extrapolated_m > 0 ? ` (${cover.measured_source_m} m source-declared + ${cover.extrapolated_m} m extrapolated)` : ""}`,
-                        `${cover.finding_code} / ${cover.subject} — ${cover.length_m} m${cover.extrapolated_m > 0 ? `（ソース宣言 ${cover.measured_source_m} m + 外挿 ${cover.extrapolated_m} m）` : ""}`,
-                      )}
+                      {boundaryHintLine(cover, t)}
                     </li>
                   ))}
                 </ul>
-                {prefill.covers.some((cover) => cover.extrapolated_m > 0) && (
-                  /* THE SPLIT'S MEANING, not only its numbers. The per-finding
-                    * lines above already print how many metres of each finger
-                    * the source declared; this sentence is what tells a reader
-                    * WHAT an extrapolated tail is -- a wider extract REQUEST,
-                    * never a claim that the road is there. Without it the
-                    * numbers read as two kinds of measurement. */
-                  <p className="mt-1.5 text-[14px] text-slate-600">
-                    {t(
-                      "위에서 '외삽'으로 표시된 길이는 원본이 도로라고 선언한 구간이 아니라 마지막으로 측정된 방위로 그은 것입니다 — 도로를 지어낸 것이 아니라 그만큼 더 넓게 추출을 요청하는 것이므로, 각 손가락의 끝부분을 지도에서 꼭 확인해 주세요.",
-                      "The metres marked 'extrapolated' above are not road the source declared: they are drawn on the last MEASURED bearing. They widen the EXTRACT REQUEST by that much and claim nothing about the road being there — so check the far end of each finger on the map.",
-                      "上で「外挿」と表示された長さはソースが道路と宣言した区間ではなく、最後に測定された方位へ引いたものです — 道路を作り出したのではなく、その分だけ広く抽出を要求するものですので、各指の先端を地図で必ずご確認ください。",
-                    )}
-                  </p>
-                )}
               </>
-            ) : prefill.covers?.[0]?.basis_kind === BASIS_BOUNDARY_CUT ? (
-              /* UNIT #48 -- ONE finding, but its metres are NOT a shortage.
-                * An orphan's hand-off is always a single covered finding, so it
-                * lands in this branch, and `deficit_m` here is `basis_m`: the
-                * metres the lasso CUT off a severed way. The payload's own basis
-                * note refuses to call that a deficit ("half of them are not
-                * one"), so this banner does not either — and it says what the
-                * widening DOES (reach far enough to contain the road that was
-                * cut) rather than that it closes anything. Whether the re-extract
-                * leaves the link connected is the new draft's answer, and it
-                * faces the gate on its own. */
-              <p>
-                {t(
-                  `작업 ${prefill.parent_job}의 ${prefill.finding_code}에서 경계가 잘라낸 ${prefill.deficit_m} m를 다시 담을 만큼 넓힌 영역입니다 — 링크 ${prefill.subject}, 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
-                  `This region was widened far enough to take back the ${prefill.deficit_m} m the boundary cut off in job ${prefill.parent_job}'s ${prefill.finding_code} — link ${prefill.subject}, +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
-                  `ジョブ ${prefill.parent_job} の ${prefill.finding_code} で境界が切り落とした ${prefill.deficit_m} m を再び含められるだけ広げた領域です — リンク ${prefill.subject}、面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
-                )}
-              </p>
-            ) : (
-              <p>
-                {t(
-                  `작업 ${prefill.parent_job}의 ${prefill.finding_code} 부족분 ${prefill.deficit_m} m를 메우려고 넓힌 영역입니다 — 링크 ${prefill.subject}, 넓이 +${prefill.added_area_km2} km². 지도에서 확인·수정하신 뒤 아래 추출 버튼을 누르세요.`,
-                  `This region was widened to close job ${prefill.parent_job}'s ${prefill.finding_code} shortage of ${prefill.deficit_m} m — link ${prefill.subject}, +${prefill.added_area_km2} km². Check it on the map, edit any corner, then press the extract button below.`,
-                  `ジョブ ${prefill.parent_job} の ${prefill.finding_code} 不足分 ${prefill.deficit_m} m を埋めるために広げた領域です — リンク ${prefill.subject}、面積 +${prefill.added_area_km2} km²。地図で確認・修正のうえ、下の抽出ボタンを押してください。`,
-                )}
-              </p>
-            )}
-            {prefill.extrapolated_m > 0 && (!prefill.covers || prefill.covers.length <= 1) && (
-              /* THE SPLIT, on the screen that owns the extract button. The
-                * finger is long enough to close the deficit, but the source could
-                * only DECLARE part of it -- this job's own .osm was fetched
-                * with the very boundary being widened, so it is clipped at the
-                * same edge. Stating it only in the payload, or only on the job
-                * page the reader has already left, would let the shape under
-                * this banner read as measured road all the way out. Widening
-                * the lasso widens the EXTRACT REQUEST; it claims nothing about
-                * the road being there, and that is precisely why a human is
-                * looking at a map instead of a fetch that already ran. */
-              <p className="mt-1.5 text-[14px] text-slate-600">
-                {t(
-                  `이 중 원본이 도로라고 선언한 길이는 ${prefill.measured_source_m} m뿐이고, 나머지 ${prefill.extrapolated_m} m는 마지막으로 측정된 방위로 그은 것입니다 — 도로를 지어낸 것이 아니라 그만큼 더 넓게 추출을 요청하는 것이므로, 그 끝부분을 지도에서 꼭 확인해 주세요.`,
-                  `Only ${prefill.measured_source_m} m of that finger is road the source itself declared; the remaining ${prefill.extrapolated_m} m is drawn on the last MEASURED bearing. It widens the EXTRACT REQUEST by that much and claims nothing about the road being there — so check its far end on the map.`,
-                  `そのうちソースが道路と宣言しているのは ${prefill.measured_source_m} m のみで、残り ${prefill.extrapolated_m} m は最後に測定された方位へ引いたものです — 道路を作り出したのではなく、その分だけ広く抽出を要求するものですので、その先端を地図で必ずご確認ください。`,
-                )}
-              </p>
             )}
           </div>
         )}

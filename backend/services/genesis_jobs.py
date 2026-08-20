@@ -5089,6 +5089,23 @@ def derive_v4_boundary_extension(
     """Unit #40: the WIDER LASSO that would close a boundary-attributed runway
     shortage — the user's own polygon with a finger spliced into it.
 
+    **RETAINED, CURRENTLY UN-EXPOSED (user decision, 2026-08-20 — unit #48-b).**
+    No screen renders this derivation any more. The proposal UI it fed was
+    removed after live use measured the geometry out: every widened boundary cuts
+    NEW roads wherever it lands, so healing one boundary finding opens another,
+    and the user pressed the widen-and-regenerate buttons repeatedly on their own
+    network while the findings moved rather than closed (jobs ``7f263915d770``
+    and ``e2f654400d21``). What replaced it is a manual ``영역 편집`` button that
+    hands the job's OWN requested polygon to the region screen, unchanged.
+
+    This function is kept because the MEASUREMENT is sound and only the proposal
+    was wrong: the obvious next home for it is a PRE-FLIGHT boundary check on the
+    region screen — telling a human what a ring they are about to draw would cut,
+    before an extract is ever run — rather than a post-hoc repair of one that
+    already did. Its caller (``routers/genesis._render_fix_disposition``) still
+    sends the payload, and ``lib/api.ts`` still types it. Do not delete either
+    without that decision being made.
+
     Takes unit #39's measured :func:`derive_v4_boundary_attribution` output and
     the job's own recorded requested region, and returns either a proposed
     region or a NAMED reason there is none. It starts nothing, writes nothing
@@ -5793,6 +5810,16 @@ def derive_boundary_extension_for_findings(
     """Unit #48: ONE widened lasso covering EVERY boundary-attributed finding
     it is handed -- the user's own polygon with one finger per severed corridor
     spliced into the edges those corridors cross.
+
+    **RETAINED, CURRENTLY UN-EXPOSED (user decision, 2026-08-20 -- unit #48-b).**
+    This was the answer to "two proposals derived from one polygon overwrite each
+    other", and it was the right answer to that question -- but the question
+    underneath it turned out to be unanswerable by widening at all: the composite
+    ring still cut new roads at its own new edge, so the user watched the boundary
+    findings move instead of close and chose to edit the region by hand. The
+    ``전부 한 번에 넓혀 다시 생성`` card and its named refusal are both gone from
+    the UI; see :func:`derive_v4_boundary_extension` for why the machinery stays
+    and what it is a candidate to become.
 
     ``entries`` are ``(finding, targets)`` pairs, ``targets`` being exactly
     what :func:`derive_fix_targets` produced for that finding, so this function

@@ -45,7 +45,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
@@ -70,8 +70,6 @@ import {
   regenerateGenesisJob,
   startGenesisLiveCheck,
   type GenesisArtifactKind,
-  type GenesisBoundaryExtensionPatches,
-  type GenesisFixBoundaryExtension,
   type GenesisFixDisposition,
   type GenesisFixFinding,
   type GenesisGateCheck,
@@ -81,7 +79,13 @@ import {
   type GenesisJobFixes,
 } from "@/lib/api";
 import { messageWithoutSubject } from "@/lib/findingMessage";
-import { stashRegionPrefill, type RegionPrefill } from "@/lib/region-prefill";
+import {
+  BASIS_BOUNDARY_CUT,
+  BASIS_RUNWAY_DEFICIT,
+  PREFILL_KIND_MANUAL_REGION_EDIT,
+  stashRegionPrefill,
+  type RegionPrefillCoverage,
+} from "@/lib/region-prefill";
 import {
   POLL_INTERVAL_MS,
   TERMINAL_RECHECK_MS,
@@ -386,155 +390,178 @@ function genesisRefusalText(
 const DEAD_END_ANSWER = "__real_world_dead_end__";
 
 // ---------------------------------------------------------------------------
-// Unit #48 -- the MULTI-CORRIDOR widened region, rendered in the two places it
-// can arrive: on a `v3_orphan_link` card (whose way the lasso may have cut at
-// BOTH ends -- two fingers for one finding) and at job level, covering every
-// boundary-caused finding in the verdict at once.
+// UNIT #48-b (user decision, 2026-08-20) -- THE AUTOMATIC BOUNDARY-EXTENSION
+// PROPOSALS ARE GONE FROM THIS SCREEN.
 //
-// ONE component for both, deliberately. The two differ only in their heading
-// and in how many findings they name; giving them separate renderers is how the
-// extrapolation split ends up stated on one screen and not the other.
+// What stood here: `boundaryPatchesPrefill` + `BoundaryPatchesProposal`, the one
+// component that rendered unit #48's multi-corridor widened region in its two
+// homes (an orphan's own card, and the job-level "cover every boundary finding
+// at once" card), each with a button that carried the derived ring to the region
+// page.
+//
+// WHY IT IS GONE, measured rather than argued: the geometry is whack-a-mole.
+// Every widened boundary cuts NEW roads somewhere else, so the composite
+// button was pressed repeatedly on a real network and the boundary findings
+// moved instead of closing (jobs 7f263915d770 and e2f654400d21 in
+// runtime/workspaces/bfc69251bd04/genesis/jobs/). The user chose to edit the
+// region by hand instead, and the ONE button this screen now offers is
+// `RegionEditInvitation` immediately below -- it carries THIS job's own
+// requested polygon, unchanged, and nothing this app derived.
+//
+// The BACKEND derivation is retained and un-exposed (see the note on
+// `GenesisFixBoundaryExtension` in lib/api.ts): the measurement is sound, and
+// its obvious next home is a pre-flight boundary check on the region screen,
+// before an extract is ever run. What died is the proposal, not the ruler.
 // ---------------------------------------------------------------------------
 
-/** The hand-off payload for a multi-corridor proposal.
+/** UNIT #48-b -- the boundary-attributed findings of this verdict, as HINTS.
  *
- * The scalar fields (`finding_code`, `subject`, `deficit_m`, ...) are filled
- * from the FIRST covered finding and `covers` carries all of them. That is a
- * true statement about a real covered finding rather than an aggregate wearing
- * a singular's clothes -- and the region page's banner renders `covers` once
- * there is more than one, so the scalars are never what a reader is shown for a
- * multi proposal. Keeping them filled is what lets unit #40's single-finding
- * hand-off stay byte-for-byte what it was. */
-function boundaryPatchesPrefill(
-  proposal: GenesisBoundaryExtensionPatches,
-  jobId: string,
-): RegionPrefill {
-  const first = proposal.covers[0];
-  return {
-    polygon: proposal.extended_polygon_wgs84,
-    // The 프로젝트 this proposal was derived in travels WITH it, exactly as it
-    // does for a single-finding one: the store outlives a project switch.
-    workspace_id: getWorkspaceId(),
-    parent_job: jobId,
-    finding_code: first.code,
-    subject: first.subject,
-    deficit_m: first.basis_m,
-    added_area_km2: proposal.added_area_km2,
-    measured_source_m: first.measured_source_m,
-    extrapolated_m: first.extrapolated_m,
-    covers: proposal.covers.map((cover) => ({
-      finding_code: cover.code,
-      subject: cover.subject,
-      // Carried, not dropped: `deficit_m` above is `basis_m`, and for an orphan
-      // that number is metres the boundary CUT, not a runway shortage. Without
-      // this the region page has no way to tell the two apart and prints every
-      // one of them as a "shortage" it was "widened to close".
-      basis_kind: cover.basis_kind,
-      length_m: cover.length_m,
-      measured_source_m: cover.measured_source_m,
-      extrapolated_m: cover.extrapolated_m,
-    })),
-  };
+ * Every value is the BACKEND's own measurement, read off the two attribution
+ * payloads it already sends (unit #39's `boundary_attribution` for a V4 runway
+ * shortage, unit #48's `orphan_boundary_attribution` for a `v3_orphan_link`),
+ * and every entry is gated on that payload's OWN `status === "boundary_
+ * attributed"`. Nothing here decides whether the boundary was the cause -- this
+ * page is structurally unable to, and a hint that guessed would send a reader to
+ * drag the wrong edge.
+ *
+ * A finding whose attribution is missing the number the hint would print is
+ * SKIPPED rather than printed with a zero: "0 m" is a measurement, and this one
+ * was never taken. */
+function boundaryHintsOf(fixes: GenesisJobFixes | null): RegionPrefillCoverage[] {
+  const hints: RegionPrefillCoverage[] = [];
+  for (const finding of fixes?.findings ?? []) {
+    // The orphan is asked FIRST: it is the payload that names severed ENDS, and
+    // a finding never carries both.
+    const orphan = finding.disposition.orphan_boundary_attribution;
+    if (orphan && orphan.status === "boundary_attributed") {
+      hints.push({
+        finding_code: finding.code,
+        subject: finding.subject,
+        basis_kind: BASIS_BOUNDARY_CUT,
+        basis_m: orphan.metres_cut_total,
+        way_id: orphan.way_id,
+        boundary_points: orphan.severed_ends.map((end) => ({
+          end: end.end,
+          boundary_node: end.boundary_node,
+          metres_cut: end.metres_cut,
+        })),
+      });
+      continue;
+    }
+    const attributed = finding.disposition.boundary_attribution;
+    if (
+      attributed &&
+      attributed.status === "boundary_attributed" &&
+      typeof attributed.deficit_m === "number"
+    ) {
+      hints.push({
+        finding_code: finding.code,
+        subject: finding.subject,
+        // A SHORTAGE, not a cut. The two numbers mean different things and the
+        // region page's banner branches on this very field to word them apart.
+        basis_kind: BASIS_RUNWAY_DEFICIT,
+        basis_m: attributed.deficit_m,
+        way_id: attributed.way_id ?? null,
+        boundary_points:
+          typeof attributed.boundary_node === "number"
+            ? [{ end: null, boundary_node: attributed.boundary_node, metres_cut: null }]
+            : [],
+      });
+    }
+  }
+  return hints;
 }
 
-function BoundaryPatchesProposal({
-  proposal,
+/** UNIT #48-b -- the ONE action on this screen that leaves it, and the whole of
+ * what replaced the automatic proposals.
+ *
+ * It proposes NOTHING. `polygon` is the ring this generation was extracted with,
+ * read off the census's own `metadata.boundary.requested_polygon_wgs84` and
+ * handed over unchanged; the region page draws it, every corner is draggable,
+ * and THAT page's extract button is the ask-first gate this one never crosses.
+ * The hints ride along so the reader arrives knowing which edges the boundary
+ * cut -- information, not a shape.
+ *
+ * A store that refuses the write is SAID, not navigated past: landing on an
+ * empty region page with no explanation is how a user concludes the feature is
+ * broken. */
+function RegionEditInvitation({
   jobId,
-  heading,
-  buttonLabel,
+  polygon,
+  hints,
   t,
 }: {
-  proposal: GenesisBoundaryExtensionPatches;
   jobId: string;
-  heading: string;
-  buttonLabel: string;
+  polygon: Array<[number, number]>;
+  hints: RegionPrefillCoverage[];
   t: Translate;
 }) {
   const router = useRouter();
-  const [prefillError, setPrefillError] = useState<string | null>(null);
-  const totalLength = proposal.corridor_patches.reduce(
-    (sum, patch) => sum + patch.length_m,
-    0,
-  );
-  const totalExtrapolated = proposal.corridor_patches.reduce(
-    (sum, patch) => sum + patch.extrapolated_m,
-    0,
-  );
-  const totalMeasured = totalLength - totalExtrapolated;
-  const round2 = (value: number) => Math.round(value * 100) / 100;
+  const [handOffError, setHandOffError] = useState<string | null>(null);
 
-  // Nothing is fetched and no job is started here: the derived shape is stashed
-  // for exactly one navigation and the region page's own extract button remains
-  // the ask-first gate. A store that refuses the write is SAID, not navigated
-  // past -- landing on an empty region page with no explanation is how a user
-  // concludes the feature is broken.
-  const propose = () => {
-    if (!stashRegionPrefill(boundaryPatchesPrefill(proposal, jobId))) {
-      setPrefillError(
+  const openRegionEditor = () => {
+    const stashed = stashRegionPrefill({
+      polygon,
+      // The 프로젝트 this region was taken from travels WITH it: the store
+      // outlives a project switch (which reloads the tab), and a payload read
+      // back under another project would pre-fill B's extract with A's ring.
+      workspace_id: getWorkspaceId(),
+      parent_job: jobId,
+      kind: PREFILL_KIND_MANUAL_REGION_EDIT,
+      covers: hints,
+    });
+    if (!stashed) {
+      setHandOffError(
         t(
-          "이 브라우저에서 제안된 영역을 넘길 수 없습니다 (세션 저장소 사용 불가). 영역 화면에서 직접 그려 주세요.",
-          "This browser cannot carry the proposed region across (session storage is unavailable). Draw it on the region screen instead.",
-          "このブラウザでは提案された領域を引き渡せません（セッションストレージが利用不可）。領域画面で直接描いてください。",
+          "이 브라우저에서 영역을 넘길 수 없습니다 (세션 저장소 사용 불가). 영역 화면에서 직접 그려 주세요.",
+          "This browser cannot carry the region across (session storage is unavailable). Draw it on the region screen instead.",
+          "このブラウザでは領域を引き渡せません（セッションストレージが利用不可）。領域画面で直接描いてください。",
         ),
       );
       return;
     }
-    setPrefillError(null);
+    setHandOffError(null);
     router.push("/genesis/region");
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      <p className="text-[15px] font-semibold text-slate-800">{heading}</p>
-      <p className="font-mono text-[14px] leading-relaxed text-slate-600">
-        {t(
-          `손가락 ${proposal.provenance.patch_count}개 · 합계 ${round2(totalLength)} m · 넓이 +${proposal.added_area_km2} km² · 점 ${proposal.extended_polygon_wgs84.length}개`,
-          `${proposal.provenance.patch_count} finger(s) · ${round2(totalLength)} m in total · +${proposal.added_area_km2} km² · ${proposal.extended_polygon_wgs84.length} corners`,
-          `指 ${proposal.provenance.patch_count} 本 · 合計 ${round2(totalLength)} m · 面積 +${proposal.added_area_km2} km² · 点 ${proposal.extended_polygon_wgs84.length} 個`,
-        )}
+    <div className="mb-3 flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-slate-800">
+      <p className="text-[15px] font-semibold">
+        {t("이 생성이 요청한 영역", "The region this generation asked for", "この生成が要求した領域")}
       </p>
-      {/* WHICH findings this ONE shape answers for, each by name. A composite
-        * that only printed a total would leave the reader to trust that their
-        * orphan is in there; naming every covered finding is what makes the
-        * button's own label checkable. */}
-      <ul className="flex flex-col gap-0.5">
-        {proposal.covers.map((cover) => (
-          <li
-            key={`${cover.code}::${cover.subject}`}
-            className="font-mono text-[14px] leading-relaxed text-slate-600"
-          >
-            {t(
-              `${cover.code} / ${cover.subject} — 손가락 ${cover.patch_count}개, ${cover.length_m} m`,
-              `${cover.code} / ${cover.subject} — ${cover.patch_count} finger(s), ${cover.length_m} m`,
-              `${cover.code} / ${cover.subject} — 指 ${cover.patch_count} 本、${cover.length_m} m`,
+      <p className="text-[14px] leading-relaxed text-slate-600">
+        {hints.length > 0
+          ? t(
+              `경계가 원인인 소견이 ${hints.length}건 있습니다. 영역을 직접 옮기거나 넓힌 뒤 다시 추출하실 수 있습니다.`,
+              `${hints.length} finding(s) here are caused by this boundary. You can move or widen the region yourself and extract again.`,
+              `境界が原因の検出が ${hints.length} 件あります。領域をご自身で動かす・広げたうえで、もう一度抽出できます。`,
+            )
+          : t(
+              "이 생성이 요청한 영역을 지도에서 직접 편집하실 수 있습니다.",
+              "You can edit the region this generation asked for directly on the map.",
+              "この生成が要求した領域を地図で直接編集できます。",
             )}
-          </li>
-        ))}
-      </ul>
-      {totalExtrapolated > 0 && (
-        /* NAMED, never folded into the measured figure -- the same disclosure
-         * unit #40's single-finger block carries, for the same reason: the
-         * extract is clipped at this very boundary, so part of each finger is
-         * drawn on the last measured bearing. That is a request for data, not a
-         * claim about the road, which is exactly why a human looks at it. */
-        <p className="font-mono text-[14px] leading-relaxed text-slate-500">
-          {t(
-            `이 중 ${round2(totalMeasured)} m만 원본이 선언한 도로이고, 나머지 ${round2(totalExtrapolated)} m는 마지막으로 측정된 방향으로 그은 것입니다 — 지도에서 확인해 주세요.`,
-            `Only ${round2(totalMeasured)} m of that is road the source declared; the remaining ${round2(totalExtrapolated)} m is drawn on the last MEASURED bearing — check it on the map.`,
-            `そのうち ${round2(totalMeasured)} m のみがソースの宣言した道路で、残り ${round2(totalExtrapolated)} m は最後に測定された方向へ引いたものです — 地図でご確認ください。`,
-          )}
-        </p>
-      )}
+      </p>
+      <p className="font-mono text-[14px] leading-relaxed text-slate-500">
+        {t(`점 ${polygon.length}개`, `${polygon.length} corners`, `点 ${polygon.length} 個`)}
+      </p>
       <div>
         <button
           type="button"
-          onClick={propose}
+          onClick={openRegionEditor}
           className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px]"
         >
-          {buttonLabel}
+          {t("영역 편집 →", "Edit region →", "領域を編集 →")}
         </button>
       </div>
-      {prefillError && <p className="text-[14px] leading-relaxed text-rose-700">{prefillError}</p>}
+      <p className="text-[14px] leading-relaxed text-slate-500">
+        {t(
+          "누르면 영역 화면이 이 영역으로 열립니다 — 추출은 그 화면의 버튼이 시작합니다.",
+          "This opens the region screen on that same region — the extract is started by that screen's own button.",
+          "押すと領域画面がこの領域で開きます — 抽出はその画面のボタンが開始します。",
+        )}
+      </p>
+      {handOffError && <p className="text-[14px] leading-relaxed text-rose-700">{handOffError}</p>}
     </div>
   );
 }
@@ -615,10 +642,6 @@ function FixFindingRow({
   // one, and a failure of either must not report as the other.
   const [confirmingDeadEnd, setConfirmingDeadEnd] = useState(false);
   const [deadEndError, setDeadEndError] = useState<GenesisError | Error | null>(null);
-  // Unit #40 -- the only failure the region hand-off can have that is this
-  // page's to report: a browser that refuses the session store.
-  const [prefillError, setPrefillError] = useState<string | null>(null);
-  const router = useRouter();
 
   const missingRequired = disposition.requires.some((field) => !requiredValues[field]?.trim());
   // A connector's to-link is DERIVED, and a reader confirming it is the point
@@ -688,45 +711,6 @@ function FixFindingRow({
       }
     },
     [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t],
-  );
-
-  // Unit #40 -- the ONE action on this page that leaves it. Nothing is fetched
-  // and no job is started here: the derived shape is stashed for exactly one
-  // navigation (lib/region-prefill.ts states why sessionStorage and not a URL)
-  // and the region page's own extract button remains the ask-first gate. A
-  // store that refuses the write is SAID, not navigated past -- landing on an
-  // empty region page with no explanation is how a user concludes the feature
-  // is broken.
-  const proposeWiderRegion = useCallback(
-    (extension: GenesisFixBoundaryExtension) => {
-      const stashed = stashRegionPrefill({
-        polygon: extension.extended_polygon_wgs84,
-        // The 프로젝트 this proposal was derived in travels WITH it: the store
-        // outlives a project switch (which reloads the tab) and a proposal read
-        // back under another project would pre-fill B's extract with A's shape.
-        workspace_id: getWorkspaceId(),
-        parent_job: jobId,
-        finding_code: finding.code,
-        subject: finding.subject,
-        deficit_m: extension.provenance.deficit_m,
-        added_area_km2: extension.added_area_km2,
-        measured_source_m: extension.corridor_patch.measured_source_m,
-        extrapolated_m: extension.corridor_patch.extrapolated_m,
-      });
-      if (!stashed) {
-        setPrefillError(
-          t(
-            "이 브라우저에서 제안된 영역을 넘길 수 없습니다 (세션 저장소 사용 불가). 영역 화면에서 직접 그려 주세요.",
-            "This browser cannot carry the proposed region across (session storage is unavailable). Draw it on the region screen instead.",
-            "このブラウザでは提案された領域を引き渡せません（セッションストレージが利用不可）。領域画面で直接描いてください。",
-          ),
-        );
-        return;
-      }
-      setPrefillError(null);
-      router.push("/genesis/region");
-    },
-    [jobId, finding.code, finding.subject, router, t],
   );
 
   // Unit #42 -- the OTHER treatment a world gap can have. Not an apply: no verb,
@@ -877,6 +861,28 @@ function FixFindingRow({
             * the consent line further down, which appears once that answer is
             * actually picked; this line stays the card's opening summary and
             * does not restate it. */}
+          {/* REFUTER, unit #48-b -- THE BOUNDARY BRANCH NAMES A CONTROL THAT
+            * EXISTS. It read "자동 수정 없음 — 경계를 넓혀 다시 생성해야
+            * 합니다." until 2026-08-20, when it was the one-line summary of the
+            * "경계를 넓혀 다시 생성 →" button sitting directly beneath it on this
+            * card. That button went with the rest of the automatic proposal UI
+            * and the imperative was left behind: a reader was told to perform
+            * the one flow this unit deleted, by a line naming nothing they could
+            * press. Unit #41-d above already ruled on this shape of copy -- an
+            * answer line describes the treatment THIS reader can reach.
+            *
+            * WHY IT MAY NAME 영역 편집 rather than trailing off into "사람이
+            * 판단해야 합니다": the gate below is still `boundary_extension`, and
+            * that key is key-ABSENT unless the census recorded a requested
+            * POLYGON (`genesis_jobs.derive_v4_boundary_extension` refuses with
+            * `requested_region_not_a_polygon` otherwise) -- the SAME field
+            * `requestedPolygonOf` needs before `RegionEditInvitation` renders at
+            * all. So wherever this sentence appears, the button it names is on
+            * the rail with it. Keying it off unit #39's attribution instead
+            * would read better and be a lie: an orphan or a bbox job can be
+            * boundary-attributed with no requested polygon and therefore no
+            * button. Only the key's PRESENCE is read here -- none of the derived
+            * metres, no added area, no finger. */}
           <p className="text-[15px] leading-relaxed text-slate-700">
             {connectorOffered
               ? t(
@@ -898,9 +904,9 @@ function FixFindingRow({
                     )
                   : disposition.boundary_extension
                     ? t(
-                        "자동 수정 없음 — 경계를 넓혀 다시 생성해야 합니다.",
-                        "No automated fix — the boundary must be widened and generated again.",
-                        "自動修正なし — 境界を広げて再生成する必要があります。",
+                        "자동 수정 없음 — 이 부족은 요청하신 영역의 경계가 원인입니다. '영역 편집'에서 경계를 옮기신 뒤 다시 추출해 주세요.",
+                        "No automated fix — the requested region's boundary is the cause. Move it yourself with 'Edit region', then extract again.",
+                        "自動修正なし — この不足は要求した領域の境界が原因です。「領域を編集」で境界を動かしたうえで、もう一度抽出してください。",
                       )
                     : t(
                         "자동 수정 없음 — 사람이 판단해야 합니다.",
@@ -1023,92 +1029,16 @@ function FixFindingRow({
             </div>
           )}
 
-          {/* Unit #40 -- the fourth thing that can sit under a refusal, and
-            * the only one whose action leaves this screen. The backend
-            * measured that this runway shortage is the requested BOUNDARY's
-            * (unit #39) and derived the lasso that would close it: the user's
-            * own polygon with a finger spliced into the one edge the corridor
-            * crosses. Nothing is fetched here and no job is started -- the
-            * button hands the shape to the region page, where it is drawn over
-            * the basemap, every vertex is editable, and THAT page's extract
-            * button is the ask-first gate. */}
-          {disposition.boundary_extension && (
-            <div className="mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3">
-              <p className="text-[15px] font-semibold text-slate-800">
-                {t(
-                  "이 부족은 편집이 아니라 경계를 넓혀 다시 생성해야 합니다",
-                  "This shortage is treated by widening the boundary and generating again",
-                  "この不足は編集ではなく、境界を広げて再生成する必要があります",
-                )}
-              </p>
-              <p className="font-mono text-[14px] leading-relaxed text-slate-600">
-                {t(
-                  `부족 ${disposition.boundary_extension.provenance.deficit_m} m + 여유 ${disposition.boundary_extension.provenance.margin_m} m = 손가락 ${disposition.boundary_extension.corridor_patch.length_m} m · 넓이 +${disposition.boundary_extension.added_area_km2} km² · 점 ${disposition.boundary_extension.extended_polygon_wgs84.length}개`,
-                  `${disposition.boundary_extension.provenance.deficit_m} m deficit + ${disposition.boundary_extension.provenance.margin_m} m margin = a ${disposition.boundary_extension.corridor_patch.length_m} m finger · +${disposition.boundary_extension.added_area_km2} km² · ${disposition.boundary_extension.extended_polygon_wgs84.length} corners`,
-                  `不足 ${disposition.boundary_extension.provenance.deficit_m} m + 余裕 ${disposition.boundary_extension.provenance.margin_m} m = ${disposition.boundary_extension.corridor_patch.length_m} m の指 · 面積 +${disposition.boundary_extension.added_area_km2} km² · 点 ${disposition.boundary_extension.extended_polygon_wgs84.length} 個`,
-                )}
-              </p>
-              {disposition.boundary_extension.corridor_patch.extrapolated_m > 0 && (
-                /* NAMED, never folded into the measured figure: the extract is
-                 * clipped at this very boundary, so the source could only
-                 * declare part of the finger and the rest is drawn on the last
-                 * measured bearing. That is a request for data, not a claim
-                 * about the road -- which is exactly why a human looks at it. */
-                <p className="font-mono text-[14px] leading-relaxed text-slate-500">
-                  {t(
-                    `이 중 ${disposition.boundary_extension.corridor_patch.measured_source_m} m만 원본이 선언한 도로이고, 나머지 ${disposition.boundary_extension.corridor_patch.extrapolated_m} m는 마지막으로 측정된 방향으로 그은 것입니다 — 지도에서 확인해 주세요.`,
-                    `Only ${disposition.boundary_extension.corridor_patch.measured_source_m} m of that is road the source declared; the remaining ${disposition.boundary_extension.corridor_patch.extrapolated_m} m is drawn on the last MEASURED bearing — check it on the map.`,
-                    `そのうち ${disposition.boundary_extension.corridor_patch.measured_source_m} m のみがソースの宣言した道路で、残り ${disposition.boundary_extension.corridor_patch.extrapolated_m} m は最後に測定された方向へ引いたものです — 地図でご確認ください。`,
-                  )}
-                </p>
-              )}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => proposeWiderRegion(disposition.boundary_extension!)}
-                  className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px]"
-                >
-                  {t(
-                    "경계를 넓혀 다시 생성 →",
-                    "Widen the boundary and generate again →",
-                    "境界を広げて再生成 →",
-                  )}
-                </button>
-              </div>
-              {prefillError && (
-                <p className="text-[14px] leading-relaxed text-rose-700">{prefillError}</p>
-              )}
-            </div>
-          )}
-
-          {/* Unit #48 -- the SAME treatment for the other finding the requested
-            * boundary can cause: a `v3_orphan_link` whose way the lasso cut at
-            * one or both ends. Its own key rather than #40's, because a link
-            * severed at BOTH ends needs two fingers and #40's payload carries
-            * one. Same rules as #40's block: nothing is fetched here, no job is
-            * started, and the region page's extract button is the ask-first
-            * gate. An orphan the SOURCE itself leaves unconnected has no key
-            * here at all and gets no button -- the measured reason why is in
-            * the rationale above, where the reader already is. */}
-          {disposition.boundary_extension_patches && (
-            <div className="mt-3 border-l-2 border-slate-300 pl-3">
-              <BoundaryPatchesProposal
-                proposal={disposition.boundary_extension_patches}
-                jobId={jobId}
-                heading={t(
-                  "이 고립은 편집이 아니라 잘린 끝만큼 경계를 넓혀 다시 생성해야 합니다",
-                  "This isolation is treated by widening the boundary at the severed end(s) and generating again",
-                  "この孤立は編集ではなく、切断された端の分だけ境界を広げて再生成する必要があります",
-                )}
-                buttonLabel={t(
-                  "경계를 넓혀 다시 생성 →",
-                  "Widen the boundary and generate again →",
-                  "境界を広げて再生成 →",
-                )}
-                t={t}
-              />
-            </div>
-          )}
+          {/* UNIT #48-b -- the per-finding "경계를 넓혀 다시 생성" buttons that
+            * unit #40 and unit #48 rendered here (a V4 shortage's widened ring,
+            * and an orphan's one-finger-per-severed-end ring) were removed by
+            * user decision on 2026-08-20; see the note at the top of this file.
+            * The MEASUREMENT stays exactly where it was -- the boundary
+            * attribution's own sentences are in the rationale above, with the
+            * way ids and the cut distances the backend measured -- and the ONE
+            * remaining way to act on it is the 영역 편집 button beside the
+            * verdict, which hands over this job's own region and derives
+            * nothing. */}
 
           {/* Unit #42 -- a NAMED refusal, and deliberately not a control: the
             * dead-end disposition is unavailable here and the reader is told
@@ -2667,6 +2597,32 @@ export default function GenesisJobDetailPage() {
     },
     [jobId],
   );
+  // Unit #48-b -- the ring THIS generation was extracted with, published up out
+  // of the map (the one place the census it lives in is fetched). Tagged with
+  // its job for exactly the reason the placeable set is: a different job is a
+  // different region, and the PREVIOUS one surviving into the first render of
+  // the next would offer to edit an area this generation never asked for.
+  const [requestedPolygonState, setRequestedPolygonState] = useState<
+    { jobId: string; polygon: Array<[number, number]> | null } | null
+  >(null);
+  const requestedPolygon =
+    requestedPolygonState && requestedPolygonState.jobId === jobId
+      ? requestedPolygonState.polygon
+      : null;
+  const handleRequestedPolygonChange = useCallback(
+    (polygon: Array<[number, number]> | null) => {
+      setRequestedPolygonState((current) =>
+        current && current.jobId === jobId && current.polygon === polygon
+          ? current
+          : { jobId, polygon },
+      );
+    },
+    [jobId],
+  );
+  // The hints the 영역 편집 hand-off carries: derived from the SAME fixes payload
+  // the cards are rendered from, so the region page can never name a finding
+  // this screen does not show.
+  const boundaryHints = useMemo(() => boundaryHintsOf(fixes), [fixes]);
   const focusFinding = useCallback(
     (ref: FindingRef | null, point?: { lat: number; lon: number; label: string }) =>
       requestSelection({ kind: "finding", refs: ref ? [ref] : [], point }),
@@ -2971,7 +2927,7 @@ export default function GenesisJobDetailPage() {
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[65fr_35fr] xl:items-start mb-8">
         <div className="min-w-0">
           {report ? (
-            <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} selectionRequest={mapRequest} onPlaceableChange={handlePlaceableChange} />
+            <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} selectionRequest={mapRequest} onPlaceableChange={handlePlaceableChange} onRequestedPolygonChange={handleRequestedPolygonChange} />
           ) : (
             <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-10 text-center">
               <p className="text-[15px] text-slate-500">
@@ -2986,79 +2942,38 @@ export default function GenesisJobDetailPage() {
         </div>
 
         <div className="min-w-0">
-          {/* Unit #48 -- ONE lasso for EVERY boundary-caused finding in this
-            * verdict, and the fix for what the 2026-08-19 demo actually did.
+          {/* UNIT #48-b -- what stands where unit #48's composite proposal and
+            * its named refusal used to (user decision, 2026-08-20).
             *
-            * THE DEFECT: this job had two boundary-caused findings and offered two
-            * separate widened regions, each derived from the SAME original polygon.
-            * Taking one discarded the other, and because their fingers open onto
-            * different edges of the ring, repeating the extension never healed the
-            * orphan -- the user's own observation, word for word.
+            * BOTH of those are gone: the OFFER ("전부 한 번에 넓혀 다시 생성"),
+            * because widening the ring for every boundary finding at once still
+            * cut new roads at the new edge and the user watched it fail on their
+            * own network; and the REFUSAL prose ("경계 소견을 한 번에 덮는
+            * 영역은 제안하지 않습니다"), because a named reason for withholding
+            * an option nobody is offered any more is noise. The user's word for
+            * the refusal was "이건 지워".
             *
-            * It sits BESIDE the V1-V9 grid rather than inside it, because it is
-            * not one check's answer: it covers findings across V3 and V4 at once,
-            * and `GateCheckGrid`'s own markup is pinned to carry no tint (every
-            * hue in there comes through `checkStateTagClasses`) -- a sky
-            * proposal box belongs to the rail, not to the nine cells.
-            * It renders ONLY when the backend derived one, so an ordinary job never
-            * sees it -- and the per-finding proposals stay on their own cards
-            * either way, which is what makes the refusal below safe to show. */}
-          {fixes?.boundary_extension_all && (
-            <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-slate-800">
-              <BoundaryPatchesProposal
-                proposal={fixes.boundary_extension_all}
-                jobId={selected.id}
-                heading={t(
-                  `경계가 원인인 소견 ${fixes.boundary_extension_all.provenance.finding_count}건을 한 번에 덮는 영역`,
-                  `One region covering all ${fixes.boundary_extension_all.provenance.finding_count} boundary-caused finding(s)`,
-                  `境界が原因の検出 ${fixes.boundary_extension_all.provenance.finding_count} 件をまとめて覆う領域`,
-                )}
-                buttonLabel={t(
-                  "전부 한 번에 넓혀 다시 생성 →",
-                  "Widen for all of them and generate again →",
-                  "まとめて広げて再生成 →",
-                )}
-                t={t}
-              />
-              <p className="mt-2 text-[14px] leading-relaxed text-slate-600">
-                {t(
-                  "소견별 제안은 각 카드에 그대로 있습니다 — 이것은 그 전부를 한 고리에 담은 영역입니다.",
-                  "Each finding's own proposal is still on its own card; this is all of them spliced into one ring.",
-                  "検出ごとの提案は各カードにそのまま残っています — これはそのすべてを一つの輪に収めた領域です。",
-                )}
-              </p>
-            </div>
-          )}
-          {fixes?.boundary_extension_all_refusal && (
-            /* A SENTENCE, never a control. The load-bearing case is two fingers
-              * wanting the same stretch of one ring edge: splicing both would grow
-              * one through the other's mouth, and choosing between them -- or
-              * hulling them into one fatter finger neither corridor measured -- is
-              * not a decision the reader ever saw. So the all-at-once option is
-              * withheld and NAMED, and the per-finding proposals are untouched.
-              * MONO: a limit, not a fault. */
-            <div className="mb-3 rounded-lg border border-slate-400 bg-slate-100 px-4 py-3 text-slate-800 ring-1 ring-slate-400">
-              <p className="text-[15px] font-semibold">
-                {t(
-                  "경계 소견을 한 번에 덮는 영역은 제안하지 않습니다",
-                  "No single region covering every boundary finding is proposed",
-                  "境界の検出をまとめて覆う領域は提案しません",
-                )}
-              </p>
-              <p className="mt-1 font-mono text-[14px] leading-relaxed text-slate-600">
-                {fixes.boundary_extension_all_refusal.reason_code}
-                {fixes.boundary_extension_all_refusal.detail
-                  ? ` — ${fixes.boundary_extension_all_refusal.detail}`
-                  : ""}
-              </p>
-              <p className="mt-1 text-[14px] leading-relaxed text-slate-600">
-                {t(
-                  "소견별 제안은 각 카드에 그대로 있으니 하나씩 처리하실 수 있습니다.",
-                  "Each finding's own proposal is unaffected — take them one at a time.",
-                  "検出ごとの提案はそのまま残っていますので、一つずつ処理できます。",
-                )}
-              </p>
-            </div>
+            * WHAT SURVIVES IS THE MEASUREMENT: every boundary-attributed finding
+            * still says so on its own card, in the backend's own sentences with
+            * the way ids and the cut distances. The button below acts on it by
+            * handing this job's OWN region to the screen that owns the extract.
+            *
+            * It sits BESIDE the V1-V9 grid rather than inside it, for the reason
+            * the composite did: it is not one check's answer -- it is about
+            * findings across V3 and V4 at once -- and `GateCheckGrid`'s markup is
+            * pinned to carry no tint of its own.
+            *
+            * It renders only once the census has actually reported a requested
+            * ring (published up out of the map, which is where that census is
+            * fetched). A hand-uploaded .osm and a bbox fetch have no ring, and
+            * there is nothing to edit for them. */}
+          {requestedPolygon && (
+            <RegionEditInvitation
+              jobId={selected.id}
+              polygon={requestedPolygon}
+              hints={boundaryHints}
+              t={t}
+            />
           )}
           {report ? (
             <GateCheckGrid

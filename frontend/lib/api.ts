@@ -3849,12 +3849,54 @@ export interface GenesisFixRegeneration {
   }>;
 }
 
+/** Unit #39: WHOSE the shortage is — the runway corridor's upstream end
+ * classified against the census's own boundary markers and the source's declared
+ * continuation (`genesis_jobs.derive_v4_boundary_attribution`). MEASUREMENT,
+ * never a tier change: the finding stays a refusal whichever way this lands.
+ *
+ * `status` is the backend's own word and the only safe thing to branch on:
+ * `boundary_attributed` (the requested ring is the cause) or `interior` (the
+ * corridor ends inside the model, so the shortage is the road's). The optional
+ * fields follow the status — an interior attribution names a `terminus_node` and
+ * no `way_id`, and reading one off the other is how a client invents a cause. */
+export interface GenesisFixBoundaryAttribution {
+  status: string;
+  way_id?: number;
+  boundary_node?: number;
+  deficit_m?: number;
+  boundary_marker?: string;
+  terminus_node?: number;
+  reason?: string;
+}
+
 /** Unit #40: the widened REGION that would close a boundary-attributed runway
  * shortage — the user's own requested lasso with a finger spliced into the one
  * ring edge the corridor crosses. Key-ABSENT unless the backend actually
  * derived one (an interior shortage has no region treatment, and a splice it
  * refused by name has none either), so an absent field never reads as "the
  * boundary was not the cause".
+ *
+ * UNIT #48-b (user decision, 2026-08-20): NOTHING IN THIS APP RENDERS THIS
+ * SHAPE ANY MORE. Live use measured the geometry out — every widened ring cuts
+ * new roads somewhere else, so the derived proposals were whack-a-mole (jobs
+ * 7f263915d770 and e2f654400d21) — and the automatic proposal UI was replaced by
+ * a manual 영역 편집 button. The backend derivation and this type are RETAINED
+ * and un-exposed on purpose: the measurement is sound and the obvious next home
+ * for it is a PRE-FLIGHT boundary check on the region screen, before an extract
+ * is ever run. Do not delete either without that decision being made.
+ *
+ * THE KEY'S PRESENCE IS STILL READ, and precisely that — corrected by the
+ * refuter, because saying "nothing renders this" of a key one branch tests was
+ * how a stale imperative survived the removal. `app/genesis/jobs/[id]/page.tsx`
+ * asks whether this key is THERE to decide whether a NOT_AUTOMATABLE card's
+ * one-line answer names the boundary as the cause and points at 영역 편집. It is
+ * the right question to ask, and not an accident of convenience: the key is
+ * absent unless the census recorded a requested POLYGON
+ * (`derive_v4_boundary_extension` refuses `requested_region_not_a_polygon`
+ * otherwise), which is the same field that screen's 영역 편집 button needs before
+ * it renders at all — so the answer line can only name a button that is there.
+ * None of the MEASUREMENTS below are read: not `added_area_km2`, not the
+ * corridor patch, not the polygon.
  *
  * NOT a regeneration (`GenesisFixRegeneration` above): that re-derives from the
  * SAME source bytes, and this shortage's road is not in those bytes — the
@@ -3909,8 +3951,11 @@ export interface GenesisFixBoundaryExtension {
  * Every finger names what it was SIZED BY (`basis_kind`), because half of them
  * are not deficits: a severed orphan's finger reaches the metres the trim
  * ledger says the boundary CUT. Key-ABSENT unless a shape was actually derived;
- * the refusal, when there is one, arrives under its own key and renders a
- * sentence, never a button. */
+ * the refusal, when there is one, arrives under its own key.
+ *
+ * UNIT #48-b (user decision, 2026-08-20): un-exposed, retained. See
+ * `GenesisFixBoundaryExtension` above for the measured reason and for what this
+ * machinery is a candidate to become. */
 export interface GenesisBoundaryExtensionPatches {
   /** `[lat, lon]` pairs, open ring — the region page's own vertex convention. */
   extended_polygon_wgs84: Array<[number, number]>;
@@ -3963,10 +4008,14 @@ export interface GenesisBoundaryExtensionPatches {
   };
 }
 
-/** Unit #48: why no all-at-once region could be derived. A SENTENCE, never a
- * control — and never a reason to hide the per-finding proposals, which are
- * unaffected by whatever made the composite impossible (two fingers wanting the
- * same stretch of one ring edge, above all). */
+/** Unit #48: why no all-at-once region could be derived.
+ *
+ * UNIT #48-b (user decision, 2026-08-20): NOT RENDERED. This refusal used to
+ * print as prose beside the verdict; the user struck it with the proposal it
+ * explained ("이건 지워"), because a named reason for withholding an option
+ * nobody is offered any more is noise, not honesty. The key still arrives on the
+ * wire and is still typed — see `GenesisFixBoundaryExtension` for why the whole
+ * derivation is retained. */
 export interface GenesisBoundaryExtensionRefusal {
   reason_code: string;
   detail: string;
@@ -4048,6 +4097,11 @@ export interface GenesisFixDisposition {
   source_testimony?: GenesisFixSourceTestimony;
   attestation?: GenesisFixAttestationInvitation;
   regenerate?: GenesisFixRegeneration;
+  /** Unit #39, typed here by unit #48-b: the route has always sent this key
+   * (`routers/genesis._render_fix_disposition`) and no client had a use for it
+   * until the 영역 편집 hand-off needed to say WHICH way the ring clipped and at
+   * WHICH node. Key-ABSENT on every finding the derivation did not reach. */
+  boundary_attribution?: GenesisFixBoundaryAttribution;
   boundary_extension?: GenesisFixBoundaryExtension;
   /** Unit #48, `v3_orphan_link` only: why the lasso orphaned this link, and the
    * region that would undo it — one finger per SEVERED END. Its own keys rather
