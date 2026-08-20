@@ -27,14 +27,21 @@ implementations live here; ``RefuseAllWriteGate`` stays defined in
 must agree on, so it lives here rather than being duplicated.
 
 **#44-b addition: ``write_provenance``.** Both gates can carry an optional
-``grant`` (``services.agent.car_following_grant.CarFollowingGrant``) and
-answer ``write_provenance(action)`` with what the APPROVAL MACHINERY knows
-about that action -- which grant covers it, and whether a human's click has
-been consumed for it yet. It is an optional protocol extension in the same
-shape as :meth:`PreapprovedWriteGate.refusal_reason`: ``orchestrator.py``
-probes for it via ``getattr`` and gates that do not define it (the default
-``RefuseAllWriteGate``, and any caller-supplied gate) simply produce no
-provenance at all, which is the pre-#44-b behaviour everywhere.
+``grant`` and answer ``write_provenance(action)`` with what the APPROVAL
+MACHINERY knows about that action -- which grant covers it, and whether a
+human's click has been consumed for it yet. It is an optional protocol
+extension in the same shape as :meth:`PreapprovedWriteGate.refusal_reason`:
+``orchestrator.py`` probes for it via ``getattr`` and gates that do not define
+it (the default ``RefuseAllWriteGate``, and any caller-supplied gate) simply
+produce no provenance at all, which is the pre-#44-b behaviour everywhere.
+
+TWO grant species exist as of unit #51-b (2026-08-20):
+``car_following_grant.CarFollowingGrant`` (Table 5-6) and
+``searched_behaviour_grant.SearchedBehaviourGrant`` (#51's searched
+parameters). This module deliberately knows about NEITHER: it asks a grant
+``covers(action)`` and reads its ``kind``, so adding the second one needed no
+change here at all. :func:`chain_grant_providers` composes one late binder per
+species for a router that wires both.
 
 Why the gate is the carrier: the constraint engine has to be able to tell
 "this write is the one a human approved off a cited Table 5-6 proposal" from
@@ -53,7 +60,16 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from services.agent.car_following_grant import CarFollowingGrant
+    from services.agent.searched_behaviour_grant import SearchedBehaviourGrant
     from services.agent.toolkit import ToolSpec
+
+    #: Either grant SPECIES a gate can carry (#44-b's Table 5-6 grant, #51-b's
+    #: searched-parameter grant). This module never inspects either type: it asks
+    #: ``covers(action)`` and reads ``kind``, so a new species is a new type and
+    #: nothing else. The two are kept as separate types on purpose — each one's
+    #: ``provenance_from`` requires its OWN class by ``isinstance``, which is half
+    #: of what keeps their signature spaces from mixing.
+    Grant = CarFollowingGrant | SearchedBehaviourGrant
 
 
 # ---------------------------------------------------------------------------
@@ -76,21 +92,62 @@ CONSUMED_APPROVAL = "CONSUMED_APPROVAL"
 
 
 def _write_provenance(
-    grant: "CarFollowingGrant | None", action: dict[str, Any], consent: str
+    grant: "Grant | None", action: dict[str, Any], consent: str
 ) -> dict[str, Any] | None:
     """The gate-side half of the #44-b provenance protocol, shared by both gates.
 
     ``None`` -- the answer for every gate that carries no grant, and for every
     action a carried grant does not name -- is what keeps the exception a
     per-action match rather than a mode the engine gets into. ``kind`` is read
-    off the grant itself so this module never has to know what kinds exist.
+    off the grant itself so this module never has to know what kinds exist,
+    which is exactly why unit #51-b's second grant species needed no change
+    here: it is a different ``kind`` and a different type, and the constraint
+    side discriminates on both.
     """
     if grant is None or not grant.covers(action):
         return None
     return {"kind": grant.kind, "grant": grant, "consent": consent}
 
 
-def _resolve_grant(gate: Any, action: dict[str, Any]) -> "CarFollowingGrant | None":
+def chain_grant_providers(
+    *providers: "Callable[[dict[str, Any]], Grant | None] | None",
+) -> "Callable[[dict[str, Any]], Grant | None]":
+    """One late binder over several, first non-``None`` wins (#51-b).
+
+    A gate carries ONE grant per action, but two grant species now exist and a
+    router that wires both (``car_following_broker.grant_provider`` and
+    ``searched_behaviour_broker.grant_provider``) needs to ask each in turn.
+    Composing them here rather than in the router means the composition is one
+    tested thing instead of an inline loop that a later edit can silently drop
+    one arm of.
+
+    Safe by construction to over-supply: each species' provider answers ``None``
+    for an action it has no remembered set/search for, and the two species'
+    signature spaces are disjoint by PARAMETER (Table 5-6 grants name
+    ``ax``/``bx_add``/``bx_mult``; searched grants name the three §5.2.5.1
+    merging-area fields), so at most one can ever answer for a given write.
+
+    A provider that raises is treated as "no grant", never as a failed turn --
+    the same fallback :func:`_resolve_grant` already applies, kept here too so
+    one broken arm cannot hide a healthy one.
+    """
+
+    def _provide(action: dict[str, Any]) -> "Grant | None":
+        for provider in providers:
+            if provider is None:
+                continue
+            try:
+                grant = provider(action)
+            except Exception:  # noqa: BLE001 - a provider failure means no grant
+                continue
+            if grant is not None:
+                return grant
+        return None
+
+    return _provide
+
+
+def _resolve_grant(gate: Any, action: dict[str, Any]) -> "Grant | None":
     """The gate's grant: eager if it has one, else its late binder's answer (#47).
 
     Both gates are constructed by ``routers/assistant.py`` before the thing the
@@ -189,8 +246,8 @@ class ProposeWriteGate:
     #: which only ever emits ``{"tool", "params"}``.
     def __init__(
         self,
-        grant: "CarFollowingGrant | None" = None,
-        grant_provider: "Callable[[dict[str, Any]], CarFollowingGrant | None] | None" = None,
+        grant: "Grant | None" = None,
+        grant_provider: "Callable[[dict[str, Any]], Grant | None] | None" = None,
     ) -> None:
         self.grant = grant
         self.grant_provider = grant_provider
@@ -240,8 +297,8 @@ class PreapprovedWriteGate:
     def __init__(
         self,
         signatures: set[str],
-        grant: "CarFollowingGrant | None" = None,
-        grant_provider: "Callable[[dict[str, Any]], CarFollowingGrant | None] | None" = None,
+        grant: "Grant | None" = None,
+        grant_provider: "Callable[[dict[str, Any]], Grant | None] | None" = None,
     ) -> None:
         self.signatures = set(signatures)
         #: #44-b: the Table 5-6 grant these approved signatures came from, or
@@ -317,5 +374,6 @@ __all__ = [
     "CONSUMED_APPROVAL",
     "PreapprovedWriteGate",
     "ProposeWriteGate",
+    "chain_grant_providers",
     "signature",
 ]

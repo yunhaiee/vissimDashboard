@@ -167,8 +167,8 @@ the false capability claim this repository keeps catching. :func:`runner_require
 states, in one place, what a real runner must provide, so the gap is a specification
 rather than a silence.
 
-5. The guardrail collision this unit does NOT resolve
------------------------------------------------------
+5. The guardrail collision, and how the user resolved it (#51-b, 2026-08-20)
+----------------------------------------------------------------------------
 Every searched parameter is written with ``set_driving_behavior_parameter``, and every
 W74 behaviour in a real consultant model is referenced at least once — so
 ``constraints._check_driving_behavior_shared_object_edit`` refuses the write. #44-b's
@@ -176,13 +176,23 @@ narrow exception does not help: a :class:`~services.agent.car_following_grant.
 CarFollowingGrant` covers ``ax``/``bx_add``/``bx_mult`` at Table 5-6's own values and
 nothing else, by signature, on purpose.
 
-So a search proposal on a shared behaviour WILL be refused at preflight. This module does
-not hide that, does not route around it, and does not pick the localization (duplicate
-the behaviour) that would technically pass — duplicating a network-wide behaviour changes
-what the model means, which is a modeller's decision, not a search's.
-:func:`preflight_forecast` reports the refusal BEFORE the human is asked, by name, with
-the two resolutions the pattern in ``docs/phase2/DECISIONS.md`` (2026-08-18 / 2026-08-19)
-established: widen the exception, or localize — both human calls.
+#51 shipped with that collision open and forecast, and named the two resolutions — widen
+the exception, or localize — as human calls. The user made the call on **2026-08-20**
+(``docs/phase2/DECISIONS.md``): **(a), widen it**, in the same shape and with the same
+narrowness as 2026-08-19's. Localization was REJECTED, in the user's own words: 네트워크
+전체를 채점해 찾은 값을 일부에만 적용하면 값의 의미가 바뀐다.
+
+What that means for this module, and what it deliberately does not mean:
+
+* :func:`grant_from_search` is the exception's structural key and the ONLY minting path.
+  It builds a :class:`~services.agent.searched_behaviour_grant.SearchedBehaviourGrant`
+  only from a COMPLETE search whose holdout acceptance is re-derived from its own ledger.
+* The DIRECT path — a plain tool call, ``fixes.preflight_findings``, the health check —
+  is refused exactly as before. Nothing here is reachable from a payload.
+* :func:`preflight_forecast` now reports BOTH paths (``paths``), and its top-level
+  ``verdict`` still describes the direct one. #44's refuter invariant is unchanged: a
+  forecast may be pessimistic, never optimistic.
+* This module still does not localize, and still never auto-selects anything.
 
 Pure and stdlib-only: no I/O, no COM, no state module, no clock of its own (the clock is
 injected). The engine returns a serializable state dict; persisting it is the caller's.
@@ -190,6 +200,8 @@ injected). The engine returns a serializable state dict; persisting it is the ca
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 import statistics
@@ -198,7 +210,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from services import validation
-from services.agent import fixes, geh_ladder, mrwa_reference, saturation_flow
+from services.agent import (
+    fixes,
+    geh_ladder,
+    mrwa_reference,
+    saturation_flow,
+    searched_behaviour_grant,
+)
+from services.agent.gates import signature
 
 # ---------------------------------------------------------------------------
 # 1. The search space
@@ -2018,14 +2037,451 @@ def accept_winner(
 
 
 # ---------------------------------------------------------------------------
+# 9-b. The grant — minted ONLY from a finished search (unit #51-b)
+#
+# DECISIONS.md 2026-08-20 extended #44-b's narrow exception to this path, in the
+# same shape and with the same narrowness. This is the structural key: the only
+# function anywhere that can build a
+# :class:`~services.agent.searched_behaviour_grant.SearchedBehaviourGrant`, and
+# it refuses everything short of a complete, self-consistent, held-out search.
+#
+# Where the anti-forgery property actually lives, stated once:
+#
+# * NOTHING here reads a file. The caller hands in live payloads, and
+#   ``searched_behaviour_broker`` — the only thing that keeps them between a
+#   proposal and a click — keeps them in PROCESS MEMORY only, exactly as #47
+#   does for Table 5-6 sets. ``pending_approval.json`` carries an opaque
+#   ``search_id`` and nothing else, and an id the process did not mint answers
+#   ``None``.
+# * The acceptance is RE-DERIVED FROM THE LEDGER, never read off the ``code``
+#   field: the two HOLDOUT rows must be present, at a seed the search never
+#   used, over the held-out nodes, and the winner must really beat the baseline
+#   on them. So even a caller that hands in ``{"accepted": True, "code":
+#   "HOLDOUT_PASSED"}`` gets a refusal unless the ledger says the same thing.
+# * The split is RE-DERIVED (``_verified_split``) and no calibration row may
+#   carry a held-out node — the #51 refuter's two walls, re-run at mint time
+#   rather than trusted from run time.
+# ---------------------------------------------------------------------------
+
+
+def ledger_reference(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A citable reference to the ledger a rationale is talking about.
+
+    ``{"search_id", "rows", "digest"}``. The digest is a fingerprint of the ledger the
+    grant was minted from, so a reader handed a ledger can tell whether it is THAT one —
+    it is a citation aid, deliberately NOT a verification key: nothing in this unit
+    accepts a digest as evidence, because a hash a caller supplies is a claim, and this
+    design does not accept claims (see this section's header for where the real property
+    lives).
+    """
+    payload = dict(result or {})
+    state = payload.get("state")
+    state = dict(state) if isinstance(state, Mapping) else {}
+    ledger = [dict(row) for row in state.get("ledger") or ()]
+    canonical = json.dumps(ledger, sort_keys=True, ensure_ascii=False, default=str)
+    return {
+        "search_id": str(payload.get("search_id") or ""),
+        "rows": len(ledger),
+        "digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16],
+    }
+
+
+def grant_from_search(
+    *,
+    result: Mapping[str, Any],
+    acceptance: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    preconditions: Mapping[str, Any],
+) -> searched_behaviour_grant.SearchedBehaviourGrant:
+    """Mint the one thing that can stand ``driving_behavior_shared_object_edit`` down
+    for a searched parameter. THE ONLY MINTING PATH.
+
+    Raises ``ValueError`` — never a partial or narrower grant — because a mis-assembled
+    payload is a programming error at the call site, not a modelling refusal a user should
+    read. The refusals users read are :func:`propose`'s and the constraint engine's.
+
+    The checks, in the order they run and with what each one is for:
+
+    1. ``status == COMPLETE`` — a partial search's best row is a snapshot of an
+       interrupted process. "완료된 탐색에서만" (DECISIONS.md 2026-08-20).
+    2. ``SearchState.from_dict`` — a state from another build is refused, not
+       reinterpreted (its own version wall, re-run here).
+    3. the precondition record is real: the gate passed, and ITS split re-derives to the
+       search's own. A grant is bound to the gate that opened the search.
+    4. the split re-derives (``_verified_split``) and both sides are non-empty; no
+       CALIBRATION row scored a held-out node.
+    5. the acceptance is re-derived from the ledger's own HOLDOUT rows at an unseen seed,
+       with BOTH legs scored on exactly the held-out set — an improvement measured on
+       different nodes than the baseline is not an improvement (refuter, #51-b).
+    6. the winner is in the published bands, was really run on the calibration nodes to a
+       GRADED objective, and is exactly the vector the acceptance validated; and the
+       baseline the ledger ran is the one the search declares, because that vector is
+       what decides which writes check 7 covers.
+    7. the writes are exactly the parameters that MOVED — a partial application of a
+       searched vector is a different vector, carrying none of the evidence the ledger
+       holds — and every one of them was SELECTED by the sensitivity screen.
+
+    **Call order (a contract, not a convenience).** ``accept_winner`` appends the two
+    HOLDOUT rows to the LIVE state, so ``result`` must be snapshotted AFTER acceptance
+    (``search.result(STATUS_COMPLETE)``, not the payload ``run()`` returned): check 5
+    reads those rows, and a result taken before them carries a ledger that cannot
+    support the grant. That is refused by name rather than waved through, because the
+    ledger is the evidence — a grant whose ledger does not contain the holdout is a
+    grant resting on the acceptance dict alone, which is the thing this function
+    deliberately does not trust::
+
+        search.run()
+        acceptance = accept_winner(search, runner, unseen_seed=...)
+        result = search.result(STATUS_COMPLETE)          # <- after, not before
+        proposal = propose(result=result, acceptance=acceptance, behavior=behavior)
+        grant = grant_from_search(result=result, acceptance=acceptance,
+                                  proposal=proposal, preconditions=gate)
+    """
+    payload = dict(result or {})
+    accepted = dict(acceptance or {})
+    offer = dict(proposal or {})
+    gate = dict(preconditions or {})
+
+    # -- 1. a FINISHED search ------------------------------------------------
+    status = str(payload.get("status") or "")
+    if status != STATUS_COMPLETE:
+        raise ValueError(
+            f"grant_from_search: the search is {status or 'unstatused'!r}, not {STATUS_COMPLETE}. "
+            "A grant is issued only from a COMPLETED search — a partial result's best row is a "
+            "snapshot of an interrupted process, not a winner."
+        )
+
+    state = SearchState.from_dict(payload.get("state") or {})
+
+    # -- 3. the precondition gate that opened this search --------------------
+    if not gate.get("ok"):
+        codes = [str(item.get("code")) for item in gate.get("refusals") or ()]
+        raise ValueError(
+            "grant_from_search: no passing precondition record accompanies this search "
+            f"({', '.join(codes) or 'no payload'}). The gate's refusals are the product; a grant "
+            "minted without the record of them would be a search that never had to be justified."
+        )
+    gate_split = _verified_split(gate.get("split") or {})
+
+    # -- 4. the split, re-derived rather than trusted ------------------------
+    split = _verified_split(
+        {"calibration": list(state.calibration_nodes), "holdout": list(state.holdout_nodes)}
+    )
+    calibration_nodes = list(split.get("calibration") or ())
+    holdout_nodes = list(split.get("holdout") or ())
+    if not calibration_nodes or not holdout_nodes:
+        raise ValueError(
+            "grant_from_search: this search has no calibration/holdout split at all "
+            f"(calibration={calibration_nodes!r}, holdout={holdout_nodes!r}). It scored nothing, "
+            "so there is nothing for a grant to stand on."
+        )
+    if gate_split != split:
+        raise ValueError(
+            "grant_from_search: the precondition record's split "
+            f"{gate_split!r} is not the search's own {split!r}. The record must be the one that "
+            "opened THIS search."
+        )
+    held = set(holdout_nodes)
+    for row in state.ledger:
+        if row.get("node_set") != "CALIBRATION":
+            continue
+        leaked = sorted(set(row.get("geh_by_node") or {}) & held, key=_node_sort_key)
+        if leaked:
+            raise ValueError(
+                f"grant_from_search: ledger row {row.get('index')} was scored as CALIBRATION but "
+                f"carries held-out node(s) {leaked!r}. The holdout withholds the DATA; a ledger "
+                "that scored it is not a holdout."
+            )
+
+    # -- 5. the acceptance, RE-DERIVED from the ledger -----------------------
+    holdout = accepted.get("holdout")
+    holdout = dict(holdout) if isinstance(holdout, Mapping) else {}
+    if not accepted.get("accepted") or str(accepted.get("code") or "") != HOLDOUT_PASSED:
+        raise ValueError(
+            f"grant_from_search: the winner was not accepted (code={accepted.get('code')!r}). "
+            "A search whose winner did not survive the holdout has nothing to propose, and a "
+            "grant is never issued over a candidate the validation refused."
+        )
+    unseen_seed = _int(holdout.get("unseen_seed"))
+    if unseen_seed == int(state.seed):
+        raise ValueError(
+            f"grant_from_search: the holdout ran at the search's own seed {unseen_seed!r}. A "
+            "vector that only wins on the seed it was tuned with is exactly what the unseen seed "
+            "exists to catch."
+        )
+    if [str(node) for node in holdout.get("holdout_nodes") or ()] != holdout_nodes:
+        raise ValueError(
+            "grant_from_search: the acceptance names holdout nodes "
+            f"{holdout.get('holdout_nodes')!r}, the search's split says {holdout_nodes!r}."
+        )
+
+    winner = holdout.get("winner")
+    winner = dict(winner) if isinstance(winner, Mapping) else {}
+    winner_params = dict(winner.get("params") or {})
+    if not winner_params or not in_published_range(winner_params):
+        raise ValueError(
+            f"grant_from_search: the accepted winner {winner_params!r} is not a vector inside the "
+            "published MRWA bands "
+            f"({[(d.parameter, d.low, d.high) for d in search_space()]}). The band is the whole "
+            "licence for a searched value; a value outside it is refused, never clipped."
+        )
+    winner_key = _vector_key(winner_params)
+
+    holdout_rows = [
+        row
+        for row in state.ledger
+        if row.get("stage") == STAGE_HOLDOUT
+        and row.get("node_set") == "HOLDOUT"
+        and _int(row.get("seed")) == unseen_seed
+    ]
+    if len(holdout_rows) < 2:
+        raise ValueError(
+            f"grant_from_search: the ledger carries {len(holdout_rows)} HOLDOUT row(s) at seed "
+            f"{unseen_seed}; the acceptance claims a completed comparison, which writes two (the "
+            "winner and the baseline). The acceptance code is never taken on trust — it is "
+            "re-derived from these rows."
+        )
+    # ``accept_winner`` appends the winner first, then the baseline. The LAST pair is
+    # therefore the comparison this acceptance is reporting.
+    winner_row, baseline_row = holdout_rows[-2], holdout_rows[-1]
+
+    baseline_ledger = _best_row(
+        [
+            row
+            for row in state.ledger
+            if row.get("stage") == STAGE_BASELINE and in_published_range(row.get("params"))
+        ]
+    )
+    expected_baseline = (
+        dict(baseline_ledger["params"]) if baseline_ledger else dict(state.baseline_vector)
+    )
+    # The DECLARED baseline and the one the ledger actually RAN have to be one vector.
+    # Check 7 measures what MOVED from ``state.baseline_vector`` while the holdout's
+    # baseline leg is pinned to the ledger's own BASELINE row, and until this line
+    # nothing compared the two -- so moving the declared vector alone re-labelled a
+    # parameter the winner really moved as "unchanged", and a PARTIAL application of the
+    # winner vector could then be minted with every other check still passing (refuter,
+    # #51-b). Both sides have to move together now, and moving the ledger row breaks the
+    # baseline-leg comparison immediately below.
+    if baseline_ledger is not None and _vector_key(dict(state.baseline_vector)) != _vector_key(
+        expected_baseline
+    ):
+        raise ValueError(
+            f"grant_from_search: the search declares its baseline as "
+            f"{dict(state.baseline_vector)!r}, but the ledger's BASELINE row ran "
+            f"{expected_baseline!r}. What a winner MOVED is measured from the baseline, so a "
+            "declared baseline the ledger never ran would decide which writes this grant covers "
+            "with no evidence behind it."
+        )
+    if _vector_key(dict(winner_row.get("params") or {})) != winner_key:
+        raise ValueError(
+            "grant_from_search: the ledger's holdout run was over "
+            f"{winner_row.get('params')!r}, but the acceptance reports {winner_params!r}. The "
+            "vector that was validated is the only vector a grant may cover."
+        )
+    if _vector_key(dict(baseline_row.get("params") or {})) != _vector_key(expected_baseline):
+        raise ValueError(
+            "grant_from_search: the holdout's baseline leg ran "
+            f"{baseline_row.get('params')!r}, not this search's baseline {expected_baseline!r}. "
+            "An improvement measured against something else is not an improvement."
+        )
+    for row, side in ((winner_row, "winner"), (baseline_row, "baseline")):
+        if not row.get("ok") or _number(row.get("objective")) is None:
+            raise ValueError(
+                f"grant_from_search: the {side} holdout row did not grade "
+                f"(ok={row.get('ok')!r}, reason={row.get('reason')!r})."
+            )
+        # EXACTLY the held-out set, on BOTH legs -- not merely a subset of it.
+        # ``_Objective.score`` keys every node it was asked for (an ungradable one carries
+        # ``None``), so an honest holdout row always names the whole set; and the two legs
+        # only mean anything COMPARED, which requires them to have been scored on the same
+        # nodes. A subset check let a winner scored on one easy held-out node "beat" a
+        # baseline scored on both, and let the two legs score disjoint nodes entirely
+        # (refuter, #51-b) -- an improvement measured on different data is the very thing
+        # the baseline-vector check above refuses one line earlier.
+        scored = set(row.get("geh_by_node") or {})
+        if scored != held:
+            raise ValueError(
+                f"grant_from_search: the {side} holdout row scored "
+                f"{sorted(scored, key=_node_sort_key)!r}, which is not the held-out set "
+                f"{holdout_nodes!r}. Both legs of the comparison are scored on the SAME held-out "
+                "nodes; an improvement measured on a different set is not an improvement."
+            )
+    winner_objective = float(_number(winner_row.get("objective")))
+    baseline_objective = float(_number(baseline_row.get("objective")))
+    if not winner_objective < baseline_objective:
+        raise ValueError(
+            f"grant_from_search: the ledger says the winner did NOT improve out of sample "
+            f"({baseline_objective:g} -> {winner_objective:g}), whatever the acceptance code "
+            "claims. HOLDOUT_PASSED is re-derived here, never believed."
+        )
+    if _int(winner_row.get("pass_count")) < _int(baseline_row.get("pass_count")):
+        raise ValueError(
+            "grant_from_search: the winner passes fewer held-out nodes than the baseline "
+            f"({winner_row.get('pass_count')!r} < {baseline_row.get('pass_count')!r}); a mean that "
+            "improved while the pass count fell is not an accepted winner."
+        )
+
+    # -- 6. the winner was really RUN, on the calibration side ---------------
+    # "Ran" means PRODUCED A NUMBER. ``ok`` alone was satisfiable by an appended row that
+    # graded nothing at all -- an empty ``geh_by_node`` and no objective -- which is a
+    # claim that the winner was evaluated, not evidence of it (refuter, #51-b). Every
+    # honest ``ok`` row carries a finite objective, because that is what ``_Objective.
+    # score`` returns one for.
+    if not any(
+        row.get("node_set") == "CALIBRATION"
+        and row.get("ok")
+        and _number(row.get("objective")) is not None
+        and _vector_key(dict(row.get("params") or {})) == winner_key
+        for row in state.ledger
+    ):
+        raise ValueError(
+            f"grant_from_search: no calibration ledger row ever ran the winner {winner_params!r} "
+            "to a graded objective. A vector the search never evaluated is not this search's "
+            "answer, and a row that graded nothing did not evaluate it."
+        )
+
+    # -- 7. the writes are exactly the parameters that MOVED -----------------
+    moved = {
+        name: value
+        for name, value in winner_params.items()
+        if _vector_key({name: value})
+        != _vector_key({name: _number(state.baseline_vector.get(name)) or 0.0})
+    }
+    selected = set(state.selected_parameters)
+    unselected = sorted(set(moved) - selected)
+    if unselected:
+        raise ValueError(
+            f"grant_from_search: the winner moved {unselected!r}, which the sensitivity screen "
+            f"did not select ({sorted(selected)!r}). A parameter this search could not show an "
+            "effect for is a parameter this search does not change."
+        )
+
+    if str(offer.get("outcome") or "") != "PROPOSAL":
+        raise ValueError(
+            f"grant_from_search: the proposal's outcome is {offer.get('outcome')!r}, not "
+            "'PROPOSAL'. A refusal is not a proposal with the safety removed."
+        )
+    actions = [dict(item) for item in offer.get("actions") or () if isinstance(item, Mapping)]
+    if not actions:
+        raise ValueError("grant_from_search: the proposal carries no actions to cover.")
+
+    values: dict[str, float] = {}
+    behavior_nos: set[str] = set()
+    for action in actions:
+        if action.get("tool") != searched_behaviour_grant.GRANT_TOOL:
+            raise ValueError(
+                f"grant_from_search: member tool {action.get('tool')!r} is not "
+                f"{searched_behaviour_grant.GRANT_TOOL!r} — this grant covers searched "
+                "driving-behaviour writes and nothing else."
+            )
+        params = dict(action.get("params") or {})
+        parameter = str(params.get("parameter") or "")
+        behavior_nos.add(str(params.get("behavior_no") or ""))
+        band = searched_behaviour_grant.band_verdict(action)
+        if band is not None:
+            raise ValueError(
+                f"grant_from_search: write {parameter!r}={params.get('value')!r} is refused by the "
+                f"published-band check ({band}). The exception reaches the searched parameters at "
+                "in-band values, and nothing else."
+            )
+        if parameter not in moved:
+            raise ValueError(
+                f"grant_from_search: write {parameter!r} is not one the winner moved "
+                f"({sorted(moved)!r}). A write that sets a parameter to the value it already holds "
+                "would ride the exception for nothing."
+            )
+        if _vector_key({parameter: params.get("value")}) != _vector_key(
+            {parameter: moved[parameter]}
+        ):
+            raise ValueError(
+                f"grant_from_search: write {parameter!r} carries {params.get('value')!r} but the "
+                f"accepted winner is {moved[parameter]!r}. The grant covers the winner's own "
+                "values, byte for byte."
+            )
+        values[parameter] = float(moved[parameter])
+
+    if set(values) != set(moved):
+        raise ValueError(
+            f"grant_from_search: the proposal writes {sorted(values)!r} but the winner moved "
+            f"{sorted(moved)!r}. A PARTIAL application of a searched vector is a different vector "
+            "— it carries none of the evidence this ledger holds, because nothing was ever scored "
+            "at it."
+        )
+    if len(behavior_nos) != 1 or not next(iter(behavior_nos)):
+        raise ValueError(
+            f"grant_from_search: the writes target {sorted(behavior_nos)!r}; a grant covers one "
+            "named behaviour."
+        )
+    behavior_no = next(iter(behavior_nos))
+
+    radius = offer.get("consent_radius")
+    if not isinstance(radius, Mapping) or "complete" not in radius:
+        raise ValueError(
+            "grant_from_search: the proposal carries no consent radius. The exception's whole "
+            "safety argument is that a human read WHERE the edit lands; with no radius there is "
+            "no sentence to have read."
+        )
+
+    return searched_behaviour_grant.build_grant(
+        search_id=str(payload.get("search_id") or ""),
+        behavior_no=behavior_no,
+        values=values,
+        provenance={
+            "search_id": str(payload.get("search_id") or ""),
+            "status": status,
+            "objective": OBJECTIVE,
+            "candidates": _int(payload.get("candidates") or len(state.ledger)),
+            "ledger": ledger_reference(payload),
+            "seed": int(state.seed),
+            "unseen_seed": unseen_seed,
+            "calibration_nodes": calibration_nodes,
+            "holdout_nodes": holdout_nodes,
+            "holdout_objective_baseline": baseline_objective,
+            "holdout_objective_winner": winner_objective,
+            "holdout_pass_baseline": _int(baseline_row.get("pass_count")),
+            "holdout_pass_winner": _int(winner_row.get("pass_count")),
+            "acceptance_code": HOLDOUT_PASSED,
+            "selected_parameters": sorted(selected),
+            "bands": [
+                _dimension_payload(dim) for dim in search_space() if dim.parameter in values
+            ],
+            "citation": mrwa_reference.MERGING_BEHAVIOUR_CITATION,
+            "scope_note": mrwa_reference.MERGING_RANGE_SCOPE_NOTE,
+            "observation_note": mrwa_reference.MERGING_RANGE_OBSERVATION_NOTE,
+            "principle_citation": mrwa_reference.CALIBRATION_PRINCIPLE_INDEPENDENT_DATA_CITATION,
+            "evidence_rank": dict(searched_behaviour_grant.EVIDENCE_RANK),
+            "decision": DECISION_2026_08_20,
+        },
+        consent_radius_payload=dict(radius),
+        signatures=[
+            signature(searched_behaviour_grant.GRANT_TOOL, dict(action.get("params") or {}))
+            for action in actions
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # 10. The guardrail forecast — named before the human is asked
 # ---------------------------------------------------------------------------
 
 SHARED_BEHAVIOR_REFUSAL = "driving_behavior_shared_object_edit"
 
+#: The two constraints #51-b's exception replaces the refusal with (unit #51-b).
+SEARCHED_CONSENTED_CONSTRAINT = "searched_behaviour_shared_edit_consented"
+SEARCHED_RADIUS_DRIFTED_CONSTRAINT = "searched_behaviour_consent_radius_drifted"
+
+#: The user decision this unit's exception implements, cited wherever it acts.
+DECISION_2026_08_20 = "DECISIONS.md 2026-08-20"
+
 GUARDRAIL_WILL_REFUSE = "GUARDRAIL_WILL_REFUSE"
 GUARDRAIL_CLEAR = "GUARDRAIL_CLEAR"
 GUARDRAIL_UNKNOWN = "GUARDRAIL_UNKNOWN"
+
+#: The two ways this proposal's writes can reach the engine, named like
+#: ``saturation_flow``'s so a reader of either forecast reads the same words.
+PATH_DIRECT_EDIT = "direct_edit"
+PATH_APPROVED_SET = "approved_set"
 
 
 def preflight_forecast(behavior: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -2034,92 +2490,232 @@ def preflight_forecast(behavior: Mapping[str, Any] | None) -> dict[str, Any]:
     The collision, stated plainly: every parameter this unit searches is written
     with ``set_driving_behavior_parameter``, and
     ``constraints._check_driving_behavior_shared_object_edit`` refuses that write
-    on any behaviour with ``reference_count > 0``. #44-b's exception does not
-    reach here — a :class:`~services.agent.car_following_grant.CarFollowingGrant`
-    covers ``ax``/``bx_add``/``bx_mult`` at Table 5-6's own values, by signature,
-    and names nothing else on purpose.
+    on any behaviour with ``reference_count > 0``.
 
-    Two resolutions exist and BOTH are human calls, so neither is taken here:
+    **What changed on 2026-08-20 (#51-b), and what did not.** The user resolved the
+    collision the way DECISIONS.md 2026-08-19 resolved #44's: option (a), a narrow
+    exception. So the answer is no longer one verdict but TWO PATHS, and this forecast
+    reports both because they genuinely differ:
 
-    * widen the #44-b exception to cover this path (a decision of the same shape
-      as ``docs/phase2/DECISIONS.md`` 2026-08-19), or
-    * localize — duplicate the behaviour and point only some links at the copy.
+    * :data:`PATH_DIRECT_EDIT` — a plain tool call, ``fixes.preflight_findings``, the
+      health check, any planner write. **Refused exactly as before.** Nothing about the
+      exception is reachable from a payload; it needs a grant that only
+      :func:`grant_from_search` can build and only the write gate can carry.
+    * :data:`PATH_APPROVED_SET` — these writes dispatched through the approval machinery
+      under this search's own grant. Clean via the named exception
+      (:data:`SEARCHED_CONSENTED_CONSTRAINT`) — but only while the blast radius can be
+      named in FULL, and only while it is still the radius consent was given for
+      (:data:`SEARCHED_RADIUS_DRIFTED_CONSTRAINT` refuses by name if it moves).
 
-    Localization is **not auto-selected**. Duplicating a network-wide behaviour
-    changes what the model means; a search may not make that choice on a
-    modeller's behalf.
+    The top-level ``verdict`` still describes the DIRECT path, unchanged in meaning since
+    #51: every existing reader of that key asked "what happens if this write is issued on
+    its own", and that answer did not change.
+
+    #44's refuter invariant is unchanged and now has to hold on both axes: **a forecast
+    may be pessimistic, never optimistic.** A path that says clean is a path where the
+    engine, handed that path's own provenance, produces no refusal — which is why a
+    behaviour whose consumer list is truncated or absent forecasts the approved path as
+    REFUSED too, exactly as ``saturation_flow`` does for #44-b.
     """
     payload = behavior if isinstance(behavior, Mapping) else None
     if payload is None:
+        why = {
+            "ko": "대상 주행행태를 읽지 못해 가드레일 결과를 예보할 수 없습니다.",
+            "en": "The target driving behaviour could not be read, so the guardrail outcome "
+            "cannot be forecast.",
+            "ja": "対象の走行挙動を読めないため、ガードレールの結果を予報できません。",
+        }
         return {
             "verdict": GUARDRAIL_UNKNOWN,
             "constraint_id": SHARED_BEHAVIOR_REFUSAL,
             "reference_count": None,
-            "why": {
-                "ko": "대상 주행행태를 읽지 못해 가드레일 결과를 예보할 수 없습니다.",
-                "en": "The target driving behaviour could not be read, so the guardrail outcome "
-                "cannot be forecast.",
-                "ja": "対象の走行挙動を読めないため、ガードレールの結果を予報できません。",
+            "radius_complete": None,
+            "why": why,
+            "paths": {
+                PATH_DIRECT_EDIT: {
+                    "expected_to_refuse": True,
+                    "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+                    "why": why,
+                },
+                # UNKNOWN is forecast PESSIMISTICALLY on both paths: with no behaviour to
+                # read, the radius cannot be named, and a radius that cannot be named is
+                # a radius the exception is unavailable for.
+                PATH_APPROVED_SET: {
+                    "expected_to_refuse": True,
+                    "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+                    "why": why,
+                },
             },
             "resolutions": _guardrail_resolutions(),
         }
     reference_count = _int(payload.get("reference_count"))
+    radius_complete = bool(searched_behaviour_grant.consent_radius(payload).get("complete"))
     if reference_count <= 0:
+        why = {
+            "ko": "이 주행행태를 참조하는 링크 행태 유형이 없어 공유 객체 가드레일에 걸리지 않습니다.",
+            "en": "No link behaviour type references this driving behaviour, so the shared-object "
+            "guardrail does not apply.",
+            "ja": "この走行挙動を参照するリンク挙動タイプがないため、共有オブジェクトのガードレールに"
+            "かかりません。",
+        }
         return {
             "verdict": GUARDRAIL_CLEAR,
             "constraint_id": SHARED_BEHAVIOR_REFUSAL,
             "reference_count": reference_count,
-            "why": {
-                "ko": "이 주행행태를 참조하는 링크 행태 유형이 없어 공유 객체 가드레일에 걸리지 않습니다.",
-                "en": "No link behaviour type references this driving behaviour, so the shared-object "
-                "guardrail does not apply.",
-                "ja": "この走行挙動を参照するリンク挙動タイプがないため、共有オブジェクトのガードレールに"
-                "かかりません。",
+            "radius_complete": radius_complete,
+            "why": why,
+            "paths": {
+                PATH_DIRECT_EDIT: {
+                    "expected_to_refuse": False,
+                    "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+                    "why": why,
+                },
+                # NOT via the exception — there is nothing here for it to excuse, and
+                # saying otherwise would credit a guardrail bypass for an edit that never
+                # needed one.
+                PATH_APPROVED_SET: {
+                    "expected_to_refuse": False,
+                    "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+                    "why": why,
+                },
             },
             "resolutions": [],
         }
+
+    direct_why = {
+        "ko": f"직접 발행하면 이 쓰기는 거부됩니다. 대상 주행행태는 {reference_count}곳에서 참조되는 "
+        "공유 객체이고, set_driving_behavior_parameter의 공유 객체 가드레일이 이를 막습니다. "
+        f"{DECISION_2026_08_20}이 낸 예외는 승인 기계를 통과한 이 탐색의 grant에만 적용되며, "
+        "그 밖의 모든 경로에서는 종전과 똑같이 거부됩니다.",
+        "en": f"Issued on its own, this write is REFUSED. The target driving behaviour is a shared "
+        f"object ({reference_count} reference(s)) and the shared-object guardrail on "
+        f"set_driving_behavior_parameter blocks it. The exception {DECISION_2026_08_20} decided on "
+        "applies ONLY to this search's own grant dispatched through the approval machinery; every "
+        "other path refuses exactly as before.",
+        "ja": f"単独で発行すればこの書き込みは拒否されます。対象の走行挙動は{reference_count}箇所から"
+        "参照される共有オブジェクトであり、set_driving_behavior_parameterの共有オブジェクト"
+        f"ガードレールが阻みます。{DECISION_2026_08_20}が出した例外は、承認機構を通したこの探索の"
+        "grantにのみ適用され、それ以外の経路では従来どおり拒否されます。",
+    }
+
+    if not radius_complete:
+        approved = {
+            "expected_to_refuse": True,
+            "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+            "why": {
+                "ko": f"승인 경로로도 여전히 거부됩니다: 이 주행행태의 적용 반경을 전부 명명할 수 "
+                f"없습니다(참조 {reference_count}곳 중 명단에 오른 것만 합산 가능). 예외의 근거는 "
+                "사람이 '어디에 함께 적용되는지'를 읽었다는 사실뿐이므로, 그 문장을 사실대로 쓸 수 "
+                "없는 곳에는 예외가 적용되지 않습니다.",
+                "en": "STILL REFUSED, even through the approval machinery: this behaviour's blast "
+                f"radius cannot be named in full ({reference_count} reference(s), of which only the "
+                "named ones can be summed). The exception rests on a human having READ where the "
+                "edit lands, so it does not apply where that sentence cannot be written truthfully.",
+                "ja": f"承認経路でも依然として拒否されます: この走行挙動の適用半径を完全に命名でき"
+                f"ません(参照{reference_count}件のうち名簿に載ったもののみ集計可能)。例外の根拠は人が"
+                "「どこに同時に適用されるか」を読んだという事実だけであるため、その文を事実どおり"
+                "書けない場合には適用されません。",
+            },
+        }
+    else:
+        approved = {
+            "expected_to_refuse": False,
+            "constraint_id": SEARCHED_CONSENTED_CONSTRAINT,
+            "refuses_if_radius_drifts": SEARCHED_RADIUS_DRIFTED_CONSTRAINT,
+            "why": {
+                "ko": f"승인 경로에서는 통과합니다: 이 탐색 자체의 grant"
+                "(parameter_search.grant_from_search)로 승인 기계를 통과해 발행되면 "
+                f"driving_behavior_shared_object_edit가 물러서고 {SEARCHED_CONSENTED_CONSTRAINT}이 "
+                f"대신 반경을 명명합니다 — 링크 행태 유형 {reference_count}곳이 함께, 알고 승인한 "
+                f"채로 바뀝니다({DECISION_2026_08_20}). 이를 정직하게 유지하는 것은 전부 거부이지 "
+                "경고가 아닙니다: grant는 이 쓰기들을 정규 서명으로 명명하므로 다른 것은 예외를 탈 수 "
+                "없고, 값은 도착할 때마다 공표 범위와 대조되며, 승인과 적용 사이에 참조 그래프가 "
+                f"움직이면 {SEARCHED_RADIUS_DRIFTED_CONSTRAINT}가 이름을 대며 거부하고, 반경을 전부 "
+                "명명할 수 없으면 예외 자체가 없습니다.",
+                "en": "Clean via the named exception: dispatched through the approval machinery under "
+                "this search's own grant (parameter_search.grant_from_search), "
+                f"driving_behavior_shared_object_edit stands down and {SEARCHED_CONSENTED_CONSTRAINT} "
+                f"names the radius instead — {reference_count} link-behavior-type consumer(s) changed "
+                f"together, knowingly ({DECISION_2026_08_20}). Four things keep it honest and all four "
+                "refuse rather than warn: the grant names these writes by canonical signature, so "
+                "nothing else rides the exception; every arriving value is re-checked against the "
+                "published band; if the reference graph moves between approval and apply, "
+                f"{SEARCHED_RADIUS_DRIFTED_CONSTRAINT} refuses by name; and the exception is "
+                "unavailable at all unless every consumer is named.",
+                "ja": "承認経路では通過します: この探索自身のgrant"
+                "(parameter_search.grant_from_search)で承認機構を通して発行されると "
+                f"driving_behavior_shared_object_edit が退き、代わりに{SEARCHED_CONSENTED_CONSTRAINT}"
+                f"が半径を命名します — リンク挙動タイプ{reference_count}件が承知のうえで同時に変更され"
+                f"ます({DECISION_2026_08_20})。これを正直に保つ四つはいずれも警告ではなく拒否です: "
+                "grantが正規署名でこれらの書き込みを命名するため他は例外に乗れず、到着ごとに公表範囲と"
+                f"照合され、承認と適用の間に参照グラフが動けば{SEARCHED_RADIUS_DRIFTED_CONSTRAINT}が"
+                "名指しで拒否し、半径を完全に命名できなければ例外自体が存在しません。",
+            },
+        }
+
     return {
         "verdict": GUARDRAIL_WILL_REFUSE,
         "constraint_id": SHARED_BEHAVIOR_REFUSAL,
         "reference_count": reference_count,
-        "why": {
-            "ko": f"이 제안은 지금 상태로는 거부됩니다. 대상 주행행태는 {reference_count}곳에서 참조되는 "
-            "공유 객체이고, set_driving_behavior_parameter의 공유 객체 가드레일이 이를 막습니다. "
-            "#44-b의 예외는 Table 5-6 세트(ax/bx_add/bx_mult)에만 서명 단위로 한정되므로 이 경로에는 "
-            "적용되지 않습니다.",
-            "en": f"As things stand this proposal will be REFUSED. The target driving behaviour is a "
-            f"shared object ({reference_count} reference(s)) and the shared-object guardrail on "
-            "set_driving_behavior_parameter blocks the write. #44-b's exception is confined by "
-            "signature to the Table 5-6 set (ax/bx_add/bx_mult) and does not reach this path.",
-            "ja": f"この提案は現状では拒否されます。対象の走行挙動は{reference_count}箇所から参照される"
-            "共有オブジェクトであり、set_driving_behavior_parameterの共有オブジェクトガードレールが"
-            "これを阻みます。#44-bの例外はTable 5-6セット(ax/bx_add/bx_mult)に署名単位で限定される"
-            "ため、この経路には適用されません。",
+        "radius_complete": radius_complete,
+        "why": direct_why,
+        "paths": {
+            PATH_DIRECT_EDIT: {
+                "expected_to_refuse": True,
+                "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+                "why": direct_why,
+            },
+            PATH_APPROVED_SET: approved,
         },
         "resolutions": _guardrail_resolutions(),
     }
 
 
 def _guardrail_resolutions() -> list[dict[str, Any]]:
+    """The two resolutions #51's forecast offered, with the user's answer on them.
+
+    Kept as the same two keys rather than deleted: the forecast's job is to say what the
+    state of the collision IS, and "(a) was chosen and has landed" is a different fact
+    from "(a) is available". ``auto_selectable`` stays ``False`` on both — nothing in
+    this module selects either one; (a) was selected by a human on 2026-08-20 and
+    implemented by unit #51-b, and (b) remains a modeller's call that a search may never
+    make on their behalf.
+    """
     return [
         {
             "key": "widen_exception",
             "auto_selectable": False,
-            "ko": "#44-b 예외를 이 경로까지 넓힌다 (2026-08-19 결정과 같은 형태의 사람 결정).",
-            "en": "Widen #44-b's exception to cover this path — a human decision of the same shape as "
-            "the 2026-08-19 one.",
-            "ja": "#44-bの例外をこの経路まで広げる(2026-08-19の決定と同型の人間の判断)。",
+            "status": "DECIDED",
+            "decided": True,
+            "decision": DECISION_2026_08_20,
+            "landed_in": "#51-b",
+            "ko": f"결정됨 (a): 탐색 산출물에도 좁은 예외를 낸다 — {DECISION_2026_08_20} 사용자 결정, "
+            "유닛 #51-b에서 구현. 승인 기계를 통과한 이 탐색의 grant에만, 탐색 공간 3종에만, 승자 "
+            "값 그대로만 적용됩니다.",
+            "en": f"DECIDED (a): the narrow exception is extended to searched outputs — user decision "
+            f"{DECISION_2026_08_20}, implemented by unit #51-b. It applies only to this search's own "
+            "grant through the approval machinery, only to the three searched parameters, and only "
+            "at the accepted winner's own values.",
+            "ja": f"決定済み (a): 探索の産出物にも狭い例外を出す — {DECISION_2026_08_20}のユーザー決定、"
+            "ユニット#51-bで実装。承認機構を通したこの探索のgrantにのみ、探索空間の3種にのみ、"
+            "受理された勝者の値そのままにのみ適用されます。",
         },
         {
             "key": "localize_duplicate",
             "auto_selectable": False,
-            "ko": "주행행태를 복제해 일부 링크만 새 행태를 참조하게 한다. 자동으로 선택하지 않습니다 — "
-            "네트워크 전역 행태를 복제하는 것은 모델의 의미를 바꾸는 일이라 모델러의 결정입니다.",
-            "en": "Localize: duplicate the behaviour and repoint some links at the copy. NOT auto-selected "
-            "— duplicating a network-wide behaviour changes what the model means, so it is the "
-            "modeller's call.",
-            "ja": "走行挙動を複製し一部リンクのみ新しい挙動を参照させる。自動選択しません — ネットワーク"
-            "全体の挙動を複製することはモデルの意味を変えるため、モデラーの判断です。",
+            "status": "REJECTED_BY_USER",
+            "decided": True,
+            "decision": DECISION_2026_08_20,
+            "ko": "기각 (b): 주행행태를 복제해 일부 링크만 새 행태를 참조하게 하는 국소화. "
+            f"{DECISION_2026_08_20}에서 기각되었습니다 — 네트워크 전체를 채점해 찾은 값을 일부에만 "
+            "적용하면 값의 의미가 바뀌기 때문입니다. 어느 쪽이든 자동으로 선택하지 않습니다.",
+            "en": "REJECTED (b): localize — duplicate the behaviour and repoint some links at the "
+            f"copy. Rejected in {DECISION_2026_08_20}: a value found by scoring the whole network "
+            "means something else once it is applied to only part of it. Never auto-selected either "
+            "way.",
+            "ja": "却下 (b): 走行挙動を複製し一部リンクのみ新しい挙動を参照させる局所化。"
+            f"{DECISION_2026_08_20}で却下されました — ネットワーク全体を採点して見つけた値を一部に"
+            "のみ適用すると値の意味が変わるためです。いずれにせよ自動選択しません。",
         },
     ]
 
@@ -2136,8 +2732,18 @@ def rationale(
 
     Names, in order: the published range each parameter moved inside and its
     page, how many candidates were run, what the sensitivity screen measured,
-    and the holdout comparison with its own numbers. Every one of those is read
-    off the payloads — nothing here is asserted that the ledger does not carry.
+    the holdout comparison with its own numbers, the LEDGER this all came out of
+    (:func:`ledger_reference`), and — last, because it is the sentence a reader
+    must not miss — the fact that this evidence ranks BELOW Table 5-6's
+    (``searched_behaviour_grant.EVIDENCE_RANK``, DECISIONS.md 2026-08-20). Every
+    one of those is read off the payloads; nothing here is asserted that the
+    ledger does not carry.
+
+    The evidence-rank sentence is not decoration. #44's values are a published
+    table read with a measured number; these are values this product CHOSE inside
+    a band. A rationale that presented the two as equally sourced would be the
+    overstatement this repository keeps catching in its own output, so the
+    rationale says the difference out loud and then says what fills the gap.
     """
     payload = dict(result or {})
     accepted = dict(acceptance or {})
@@ -2210,12 +2816,29 @@ def rationale(
         if held_at_baseline
         else ""
     )
+    # The ledger this rationale is talking about, named so a reader can ask for THAT one
+    # (unit #51-b, DECISIONS.md 2026-08-20: "근거문에 탐색 출처 탑재 — 후보 수·원장 참조·
+    # 홀드아웃 통과·'MRWA 범위 X–Y 내 탐색' 인용").
+    ledger = ledger_reference(payload)
+    ledger_ko = (
+        f" 탐색 원장: {ledger['search_id'] or '-'} · {ledger['rows']}행 · "
+        f"다이제스트 {ledger['digest']}."
+    )
+    ledger_en = (
+        f" Search ledger: {ledger['search_id'] or '-'} · {ledger['rows']} row(s) · "
+        f"digest {ledger['digest']}."
+    )
+    ledger_ja = (
+        f" 探索台帳: {ledger['search_id'] or '-'} · {ledger['rows']}行 · "
+        f"ダイジェスト {ledger['digest']}。"
+    )
+    rank = searched_behaviour_grant.EVIDENCE_RANK
     return {
         "ko": (
             f"MRWA 공표 범위({bands_en}; {citation}) 안에서만 탐색했습니다. 후보 {candidates}개를 "
             f"실행했고, 민감도 스크리닝에서 유의한 파라미터는 {', '.join(significant) or '없음'}입니다"
             f"(기준: 공표 범위를 {bins}개 구간으로 나눈 주효과 ≥ {effect_floor} GEH).{held_ko} "
-            f"최선 후보: {values_en or '없음'}. {_holdout_clause('ko')} "
+            f"최선 후보: {values_en or '없음'}. {_holdout_clause('ko')}{ledger_ko} {rank['ko']} "
             f"{mrwa_reference.MERGING_RANGE_SCOPE_NOTE} {mrwa_reference.MERGING_RANGE_OBSERVATION_NOTE}"
         ),
         "en": (
@@ -2224,14 +2847,15 @@ def rationale(
             f"{', '.join(significant) or 'no'} significant parameter(s) "
             f"(criterion: a main effect of at least {effect_floor} GEH across {bins} strata of the "
             f"published band).{held_en} Best candidate: {values_en or 'none'}. "
-            f"{_holdout_clause('en')} {mrwa_reference.MERGING_RANGE_SCOPE_NOTE} "
+            f"{_holdout_clause('en')}{ledger_en} {rank['en']} "
+            f"{mrwa_reference.MERGING_RANGE_SCOPE_NOTE} "
             f"{mrwa_reference.MERGING_RANGE_OBSERVATION_NOTE}"
         ),
         "ja": (
             f"MRWAの公表範囲({bands_en}; {citation})の中でのみ探索しました。候補{candidates}件を実行し、"
             f"感度スクリーニングで有意なパラメータは{', '.join(significant) or 'なし'}です"
             f"(基準: 公表範囲を{bins}区間に分けた主効果 ≥ {effect_floor} GEH)。{held_ja} "
-            f"最良候補: {values_en or 'なし'}。{_holdout_clause('ja')} "
+            f"最良候補: {values_en or 'なし'}。{_holdout_clause('ja')}{ledger_ja} {rank['ja']} "
             f"{mrwa_reference.MERGING_RANGE_SCOPE_NOTE} {mrwa_reference.MERGING_RANGE_OBSERVATION_NOTE}"
         ),
     }
@@ -2251,12 +2875,27 @@ def propose(
     The guardrail forecast rides along on every proposal, refusal or not: a human
     asked to approve a write that preflight will refuse deserves to be told
     before clicking, not after.
+
+    **``consent_radius`` (unit #51-b).** The blast radius of the target behaviour, as
+    it stands AT PROPOSAL TIME — the left-hand side of the drift check that
+    ``searched_behaviour_grant.evaluate`` performs at apply time, and the number the
+    approval card's sentence is built from. Captured here because this is the moment the
+    human is shown what the edit touches; ``None`` when no behaviour could be read at
+    all, which ``grant_from_search`` then refuses to mint over (an unreadable radius is
+    not a sentence anyone can have read). It is data on the payload, never a claim the
+    payload makes about itself: the grant is minted from it in-process, and the constraint
+    engine re-derives the right-hand side from the live shadow model regardless.
     """
     payload = dict(result or {})
     accepted = dict(acceptance or {})
     forecast = preflight_forecast(behavior)
     reasons = rationale(payload, accepted)
     behavior_no = str((behavior or {}).get("no") or "") if isinstance(behavior, Mapping) else ""
+    radius = (
+        searched_behaviour_grant.consent_radius(behavior)
+        if isinstance(behavior, Mapping)
+        else None
+    )
 
     if not accepted.get("accepted"):
         return {
@@ -2265,6 +2904,7 @@ def propose(
             "actions": [],
             "rationale": reasons,
             "preflight_forecast": forecast,
+            "consent_radius": radius,
             "holdout": accepted.get("holdout"),
             "ledger_size": len(payload.get("state", {}).get("ledger", []) or []),
         }
@@ -2306,6 +2946,7 @@ def propose(
             "unchanged_parameters": unchanged,
             "rationale": reasons,
             "preflight_forecast": forecast,
+            "consent_radius": radius,
             "holdout": accepted.get("holdout"),
             "ledger_size": len(payload.get("state", {}).get("ledger", []) or []),
         }
@@ -2316,11 +2957,13 @@ def propose(
         "unchanged_parameters": unchanged,
         "rationale": reasons,
         "preflight_forecast": forecast,
+        "consent_radius": radius,
         "holdout": accepted.get("holdout"),
         "ledger_size": len(payload.get("state", {}).get("ledger", []) or []),
         "assumptions": [
             "SEARCH_IS_A_LAST_RESORT_NOT_AN_OBSERVATION",
             "PUBLISHED_RANGE_IS_MRWA_MERGING_AREA_SCOPE",
+            "EVIDENCE_RANKS_BELOW_TABLE_5_6_LOOKUP",
         ],
     }
 
@@ -2450,6 +3093,7 @@ __all__ = [
     "ACCEPTANCE_CODES",
     "CHEAPER_RUNGS",
     "CLOSABLE_MISSING_EVIDENCE",
+    "DECISION_2026_08_20",
     "DEFAULT_BUDGET_S",
     "DEFAULT_SCREENING_SAMPLES",
     "Dimension",
@@ -2474,11 +3118,15 @@ __all__ = [
     "NO_REALITY_CHECK",
     "NO_SEARCHABLE_PARAMETER",
     "OBJECTIVE",
+    "PATH_APPROVED_SET",
+    "PATH_DIRECT_EDIT",
     "ParameterSearch",
     "REALITY_CHECK_NOT_CHECKABLE",
     "REFUSAL_CODES",
     "RunOutcome",
     "SEARCHABLE_PARAMETERS",
+    "SEARCHED_CONSENTED_CONSTRAINT",
+    "SEARCHED_RADIUS_DRIFTED_CONSTRAINT",
     "SEARCH_TOOL",
     "SENSITIVITY_BINS",
     "SENSITIVITY_EFFECT_FLOOR",
@@ -2496,8 +3144,10 @@ __all__ = [
     "TABLE_5_6_NOT_APPLIED",
     "accept_winner",
     "evaluate_preconditions",
+    "grant_from_search",
     "in_published_range",
     "latin_hypercube",
+    "ledger_reference",
     "ledger_schema",
     "measure_exhaustion",
     "preflight_forecast",

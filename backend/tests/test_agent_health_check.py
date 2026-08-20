@@ -210,7 +210,12 @@ def test_health_check_runner_against_demo_dataset():
     # with (the grant on the write gate, via the constraint engine's `extra`).
     # A cold whole-network scan has no proposed write and no approval at all,
     # so neither could ever fire there.
-    assert report["summary"]["edit_time_only_n"] == 101
+    # Unit #51-b adds two more (101 -> 103) for exactly the same reason, on the
+    # SECOND grant species (DECISIONS.md 2026-08-20, #51's searched parameters):
+    # searched_behaviour_shared_edit_consented and
+    # searched_behaviour_consent_radius_drifted. Same approval-context key, same
+    # impossibility of firing on a cold scan.
+    assert report["summary"]["edit_time_only_n"] == 103
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

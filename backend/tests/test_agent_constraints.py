@@ -5409,8 +5409,19 @@ def test_registry_size_matches_m3_1_catalog_port():
     # car_following_consent_radius_drifted (refuse -- the consent was to a NAMED
     # radius, so if the reference graph moves between approval and apply the
     # edit is refused by name, quoting both numbers).
+    #
+    # Unit #51-b (2026-08-20) adds TWO more (115 -> 117), the same two halves for
+    # the SECOND narrow exception DECISIONS.md 2026-08-20 decided on -- #51's
+    # searched parameters, whose grant is a separate SPECIES so the two
+    # exceptions' signature spaces cannot mix:
+    # searched_behaviour_shared_edit_consented (warn -- the shared-object refusal
+    # stands down for an accepted, held-out search winner dispatched under an
+    # approval-bound grant, and this names both the blast radius AND the search's
+    # own provenance, including the fact that its evidence ranks one step BELOW
+    # Table 5-6's), and searched_behaviour_consent_radius_drifted (refuse -- same
+    # named-radius rule as #44-b's, quoting both numbers).
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 115
+    assert len(get_registry()) == 117
 
 
 def test_registry_has_unique_ids():
