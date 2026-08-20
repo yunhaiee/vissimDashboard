@@ -479,12 +479,28 @@ function boundaryHintsOf(fixes: GenesisJobFixes | null): RegionPrefillCoverage[]
  * read off the census's own `metadata.boundary.requested_polygon_wgs84` and
  * handed over unchanged; the region page draws it, every corner is draggable,
  * and THAT page's extract button is the ask-first gate this one never crosses.
- * The hints ride along so the reader arrives knowing which edges the boundary
- * cut -- information, not a shape.
+ * The hints ride along in the payload so the reader arrives knowing which edges
+ * the boundary cut -- information, not a shape.
+ *
+ * IT IS A BUTTON AND NOTHING ELSE (user decision, 2026-08-20: "just delete
+ * everything and leave 영역편집 버튼 only"). The panel that stood here carried a
+ * heading ("이 생성이 요청한 영역"), an explanation sentence with a
+ * boundary-finding count branch, a corner count ("점 N개") and a caption under
+ * the button ("누르면 영역 화면이 이 영역으로 열립니다 …"). All four were
+ * struck: they described what the reader is about to see on the very screen the
+ * button opens, and that screen already says it -- the region page's own
+ * pre-filled banner names the parent job, the corner count and the boundary
+ * hints. Saying it twice is not honesty, it is noise, and the card chrome around
+ * one button went with the prose it framed.
+ *
+ * NOTHING BEHIND THE BUTTON CHANGED: the render gate (no recorded ring, no
+ * button), the job tagging, the stashed payload and its one-shot read are all
+ * as they were -- only the words are gone. `hints` is still carried, in `covers`.
  *
  * A store that refuses the write is SAID, not navigated past: landing on an
  * empty region page with no explanation is how a user concludes the feature is
- * broken. */
+ * broken. That message is a REFUSAL, not panel prose -- it exists only when the
+ * hand-off failed, and deleting it would send the reader nowhere, silently. */
 function RegionEditInvitation({
   jobId,
   polygon,
@@ -525,43 +541,17 @@ function RegionEditInvitation({
   };
 
   return (
-    <div className="mb-3 flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-slate-800">
-      <p className="text-[15px] font-semibold">
-        {t("이 생성이 요청한 영역", "The region this generation asked for", "この生成が要求した領域")}
-      </p>
-      <p className="text-[14px] leading-relaxed text-slate-600">
-        {hints.length > 0
-          ? t(
-              `경계가 원인인 소견이 ${hints.length}건 있습니다. 영역을 직접 옮기거나 넓힌 뒤 다시 추출하실 수 있습니다.`,
-              `${hints.length} finding(s) here are caused by this boundary. You can move or widen the region yourself and extract again.`,
-              `境界が原因の検出が ${hints.length} 件あります。領域をご自身で動かす・広げたうえで、もう一度抽出できます。`,
-            )
-          : t(
-              "이 생성이 요청한 영역을 지도에서 직접 편집하실 수 있습니다.",
-              "You can edit the region this generation asked for directly on the map.",
-              "この生成が要求した領域を地図で直接編集できます。",
-            )}
-      </p>
-      <p className="font-mono text-[14px] leading-relaxed text-slate-500">
-        {t(`점 ${polygon.length}개`, `${polygon.length} corners`, `点 ${polygon.length} 個`)}
-      </p>
-      <div>
-        <button
-          type="button"
-          onClick={openRegionEditor}
-          className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px]"
-        >
-          {t("영역 편집 →", "Edit region →", "領域を編集 →")}
-        </button>
-      </div>
-      <p className="text-[14px] leading-relaxed text-slate-500">
-        {t(
-          "누르면 영역 화면이 이 영역으로 열립니다 — 추출은 그 화면의 버튼이 시작합니다.",
-          "This opens the region screen on that same region — the extract is started by that screen's own button.",
-          "押すと領域画面がこの領域で開きます — 抽出はその画面のボタンが開始します。",
-        )}
-      </p>
-      {handOffError && <p className="text-[14px] leading-relaxed text-rose-700">{handOffError}</p>}
+    <div className="mb-3">
+      <button
+        type="button"
+        onClick={openRegionEditor}
+        className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px]"
+      >
+        {t("영역 편집 →", "Edit region →", "領域を編集 →")}
+      </button>
+      {handOffError && (
+        <p className="mt-2 text-[14px] leading-relaxed text-rose-700">{handOffError}</p>
+      )}
     </div>
   );
 }

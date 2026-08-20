@@ -8317,6 +8317,31 @@ contractTest("unit #48-b: 영역 편집 hands over THIS job's own region, and de
     "expected the one manual action to carry all three languages",
   );
 
+  // 1b. A BUTTON, NOT A PANEL -- 사용자 지시 2026-08-20 "버튼만 남겨" ("just
+  //     delete everything and leave 영역편집 버튼 only"). What was struck: the
+  //     heading "이 생성이 요청한 영역", the explanation sentence and its
+  //     boundary-finding-count branch, the corner count "점 N개", and the
+  //     caption under the button. Every one of them described the screen the
+  //     button opens -- and THAT screen says it itself, in its own pre-filled
+  //     banner (parent job, corner count, boundary hints), which is pinned by
+  //     the hand-off test above. Said twice is noise, not honesty.
+  //
+  //     PIN LEDGER, for the record this convention requires: nothing was
+  //     removed to let this through. Every pin in this test was already about
+  //     the DATA FLOW -- the label, the render gate, the ring's validation, the
+  //     job tagging, the stashed payload, the kind-first read, the one-shot --
+  //     and the deleted prose was never pinned by any of them. So this deletion
+  //     ADDS a pin and weakens none.
+  //
+  //     Comment-stripped: the component now records the struck wording verbatim
+  //     where it explains why it went, and a pin that cannot tell prose from
+  //     rendered text would fire on that explanation forever.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /이 생성이 요청한 영역|경계가 원인인 소견이|점 \$\{[^}]*\.length\}개|누르면 영역 화면이 이 영역으로 열립니다/,
+    "the 영역 편집 panel's prose was struck by the user -- the button stands alone, and no heading, count or caption may creep back around it",
+  );
+
   // 2. THE RING IT CARRIES IS THE JOB'S OWN REQUEST, read off the census the map
   //    already fetched -- never derived here, and never re-fetched.
   pin.match(
