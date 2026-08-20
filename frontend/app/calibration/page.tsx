@@ -481,6 +481,14 @@ export default function CalibrationWorkspacePage() {
         <div className="flex flex-col gap-1 text-[13px] text-slate-600">
           <span className="font-semibold">{t("전후 비교", "Before/after", "前後比較")}</span>
           <div className="flex items-center gap-2">
+            {/* SELECTED chip: navy fill + sky TEXT. `text-sky-600`, never 700+ --
+                globals.css's dark @theme remaps `bg-sky-50` to navy (#032042) but
+                remaps the text ramp only up to sky-600, so a 700 here keeps
+                Tailwind's stock light-mode #0369a1 and renders dark-blue-on-navy.
+                Same trap the genesis pages already fixed; every selected chip on
+                this screen (and FlowRail's NEXT chip and proposal badge) follows
+                this one rule. The border stays sky-300 on purpose -- stock #7dd3fc
+                reads as a light hairline on dark, which is the selected look. */}
             <button
               type="button"
               onClick={() => setCompareOn((on) => !on)}
@@ -488,7 +496,7 @@ export default function CalibrationWorkspacePage() {
               disabled={otherScenarios.length === 0}
               className={`inline-flex h-9 items-center rounded-md border px-3 text-[14px] transition ${
                 compareOn
-                  ? "border-sky-300 bg-sky-50 text-sky-700"
+                  ? "border-sky-300 bg-sky-50 text-sky-600"
                   : "border-slate-300 bg-surface text-slate-700 hover:bg-slate-50"
               } ${otherScenarios.length === 0 ? "cursor-not-allowed opacity-60" : ""}`}
             >
@@ -593,7 +601,7 @@ export default function CalibrationWorkspacePage() {
                     onClick={() => setScoringView(key)}
                     className={`inline-flex h-9 items-center rounded-md border px-3 text-[14px] transition ${
                       scoringView === key
-                        ? "border-sky-300 bg-sky-50 text-sky-700"
+                        ? "border-sky-300 bg-sky-50 text-sky-600"
                         : "border-slate-300 bg-surface text-slate-700 hover:bg-slate-50"
                     }`}
                   >
@@ -935,7 +943,7 @@ function NodeContext({
                 onClick={() => onNodeClick(id)}
                 className={`rounded-full border px-2 py-0.5 text-[13px] transition ${
                   activeNodeId === id
-                    ? "border-sky-300 bg-sky-50 text-sky-700"
+                    ? "border-sky-300 bg-sky-50 text-sky-600"
                     : "border-slate-300 bg-surface text-slate-700 hover:bg-slate-50"
                 }`}
               >

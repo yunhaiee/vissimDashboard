@@ -1307,6 +1307,96 @@ export interface AgentCarFollowingSet {
   };
 }
 
+// Unit #51-c: the SECOND grant species' card payload -- one finished, held-out
+// parameter search, as the approval card reads it. Same shape of thing as
+// AgentCarFollowingSet above and it exists for the same reason: the approval
+// machinery authorises each write's signature independently, so a card that
+// showed only the action it paused on would present ONE COORDINATE of a searched
+// vector as if it were the change.
+//
+// What is different from the Table 5-6 set, and why the copy differs with it:
+// these values were CHOSEN by a search inside a published band, not read out of
+// a published table with a measured number. `evidence_rank` is the backend's own
+// three-language sentence saying exactly that, and DECISIONS.md 2026-08-20 made
+// showing it a closing requirement of the decision -- so the panel renders it
+// UNFOLDED, never behind a <details>.
+//
+// `preflight_forecast.paths` carries BOTH paths because they genuinely differ
+// since #51-b: the same write refused when issued directly, clean through the
+// approval machinery under this search's own grant. A single verdict would now
+// be misleading, which is why nothing here reads `verdict`.
+//
+// `grant.reason` is the RE-MINT verdict at card-build time, never a grant: a
+// grant exists only as a live object in the server process
+// (backend/services/agent/searched_behaviour_broker.py).
+export interface AgentSearchedSearch {
+  status: "PROPOSED" | "REFUSED";
+  unit?: string;
+  decision?: string;
+  search_id?: string | null;
+  behavior_no?: string | null;
+  reason_code?: string | null;
+  /** The parameters the winner actually MOVED -- one approval card each. */
+  searched_parameters?: string[];
+  expected_after_apply?: Record<string, number>;
+  /** What the behaviour holds RIGHT NOW for those same parameters, read off the
+   * live shadow model at card-build time. Null when it could not be read. */
+  current_values?: Record<string, number | null> | null;
+  /** Searched but left at baseline -- the screen could not show an effect. */
+  unchanged_parameters?: string[];
+  rationale?: { ko: string; en: string; ja: string };
+  /** The decision's closing requirement. Rendered unfolded. */
+  evidence_rank?: { ko: string; en: string; ja: string };
+  preflight_forecast?: {
+    paths?: Record<
+      string,
+      {
+        expected_to_refuse?: boolean | null;
+        constraint_id?: string;
+        condition?: string;
+        refuses_if_radius_drifts?: string;
+        why?: { ko: string; en: string; ja: string };
+      }
+    >;
+    /** The two resolutions #51 offered, each carrying the USER's answer on it
+     * (`status`: DECIDED / REJECTED_BY_USER). The chips render these fields --
+     * the frontend never composes the verdict itself. */
+    resolutions?: {
+      key: string;
+      status?: string;
+      decided?: boolean;
+      decision?: string;
+      landed_in?: string;
+      ko: string;
+      en: string;
+      ja: string;
+    }[];
+  };
+  consent_radius?: { reference_count?: number; link_total?: number; complete?: boolean } | null;
+  consent_radius_phrase?: string;
+  holdout?: {
+    accepted?: boolean;
+    code?: string | null;
+    holdout_nodes?: string[];
+    calibration_nodes?: string[];
+    unseen_seed?: number | null;
+    winner_objective?: number | null;
+    baseline_objective?: number | null;
+  };
+  ledger?: { search_id?: string; rows?: number; digest?: string };
+  candidates?: number | null;
+  objective?: string;
+  space?: { parameter: string; low: number; high: number; citation: string }[];
+  citation?: string | null;
+  assumptions?: string[];
+  grant?: {
+    reason: string;
+    available: boolean;
+    consented_radius?: Record<string, unknown> | null;
+    current_radius?: Record<string, unknown> | null;
+  };
+}
+
 export interface AgentApproval {
   approval_id: string;
   actions: AgentAction[];
@@ -1317,6 +1407,10 @@ export interface AgentApproval {
    * car-following set. Additive, payload-level (a sibling of actions/warnings,
    * exactly like `focus`) so `actions` stays byte-unchanged. */
   car_following_set?: AgentCarFollowingSet;
+  /** Unit #51-c: the same, for a pause that is one write of a searched vector.
+   * The two are mutually exclusive in practice -- the species' signature spaces
+   * are disjoint by parameter -- but nothing here depends on that. */
+  searched_search?: AgentSearchedSearch;
 }
 
 export interface AgentQueryResponse {
@@ -2422,6 +2516,42 @@ export interface CalibrationRailTrack {
      * execution needs Vissim COM and belongs to the job queue, not the browser. */
     runner: { interface: string; wired: boolean; requires: string[]; why_not_here: string };
   } | null;
+  /** Unit #51-c: what becomes of a searched value on each of the two paths, and
+   * the user's recorded answer on the collision (DECISIONS.md 2026-08-20).
+   *
+   * On the TRACK, not the card, because it is true of this door whether or not
+   * it has opened — a locked track is what this screen shows most of the time.
+   *
+   * `conditional: true` and it means it: no behaviour has been chosen here, so
+   * the approved path carries `expected_to_refuse: null` — a condition
+   * (`RADIUS_NAMED_IN_FULL`), not a verdict. The per-behaviour verdict is
+   * `AgentSearchedSearch.preflight_forecast`, on the card that approves a
+   * winner. Rendering either of them as one "will refuse" line is what #51-b's
+   * two-path split made misleading. */
+  guardrail?: {
+    conditional?: boolean;
+    decision?: string;
+    paths?: Record<
+      string,
+      {
+        expected_to_refuse?: boolean | null;
+        constraint_id?: string;
+        condition?: string;
+        refuses_if_radius_drifts?: string;
+        why?: { ko: string; en: string; ja: string };
+      }
+    >;
+    resolutions?: {
+      key: string;
+      status?: string;
+      decided?: boolean;
+      decision?: string;
+      landed_in?: string;
+      ko: string;
+      en: string;
+      ja: string;
+    }[];
+  };
 }
 
 export interface CalibrationRailStep {
@@ -2556,6 +2686,10 @@ export interface CalibrationPendingApproval {
   assumptions: string[];
   focus?: AgentApprovalFocus | null;
   car_following_set?: AgentCarFollowingSet | null;
+  /** Unit #51-c. Null for every pause that is not a searched write, and null
+   * for one whose search did not survive a backend restart -- the panel is
+   * rebuilt from the in-process broker, never invented from the pending file. */
+  searched_search?: AgentSearchedSearch | null;
 }
 
 export async function fetchCalibrationRail(params?: {

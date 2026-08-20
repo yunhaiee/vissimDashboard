@@ -112,7 +112,7 @@ def _write_provenance(
 def chain_grant_providers(
     *providers: "Callable[[dict[str, Any]], Grant | None] | None",
 ) -> "Callable[[dict[str, Any]], Grant | None]":
-    """One late binder over several, first non-``None`` wins (#51-b).
+    """One late binder over several: the first grant that COVERS the action wins (#51-b).
 
     A gate carries ONE grant per action, but two grant species now exist and a
     router that wires both (``car_following_broker.grant_provider`` and
@@ -127,9 +127,25 @@ def chain_grant_providers(
     ``ax``/``bx_add``/``bx_mult``; searched grants name the three §5.2.5.1
     merging-area fields), so at most one can ever answer for a given write.
 
+    **Why "covers", not "first non-``None``" (#51-c, from #51-b's refuter).** The
+    first version returned the first grant any arm produced, which made an arm's
+    answer authoritative for actions it does not name. A provider is free to
+    answer with a grant that covers a DIFFERENT write -- ``car_following_broker``
+    pinned to a ``set_id`` by ``/agent/approve`` does exactly that, returning that
+    set's grant for whatever action it is handed -- and that non-covering grant
+    then shadowed a healthy later arm whose grant did name the write. The gate
+    would have produced no provenance at all (``_write_provenance`` re-checks
+    ``covers``), so nothing was ever wrongly excused; the loss was a legitimate
+    exception silently going missing, i.e. a refusal instead of an approved write.
+    Asking ``covers()`` HERE makes the chain's answer mean the same thing the gate
+    will conclude from it, and it is additive: a single provider whose grant covers
+    the action still wins, and one whose grant does not was already producing no
+    provenance.
+
     A provider that raises is treated as "no grant", never as a failed turn --
     the same fallback :func:`_resolve_grant` already applies, kept here too so
-    one broken arm cannot hide a healthy one.
+    one broken arm cannot hide a healthy one. A ``covers()`` that raises is read
+    the same way, for the same reason.
     """
 
     def _provide(action: dict[str, Any]) -> "Grant | None":
@@ -140,7 +156,13 @@ def chain_grant_providers(
                 grant = provider(action)
             except Exception:  # noqa: BLE001 - a provider failure means no grant
                 continue
-            if grant is not None:
+            if grant is None:
+                continue
+            try:
+                covered = bool(grant.covers(action))
+            except Exception:  # noqa: BLE001 - an unreadable grant covers nothing
+                covered = False
+            if covered:
                 return grant
         return None
 

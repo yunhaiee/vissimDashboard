@@ -12,10 +12,12 @@ The tests are grouped the way the module's own risks are:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from services import validation
-from services.agent import mrwa_reference, parameter_search as ps
+from services.agent import mrwa_reference, parameter_search as ps, searched_behaviour_grant
 
 
 # ===========================================================================
@@ -664,6 +666,110 @@ def test_the_forecast_never_auto_selects_localization():
         "localize_duplicate",
     }
     assert all(item["auto_selectable"] is False for item in forecast["resolutions"])
+
+
+def test_the_standing_policy_states_the_rule_and_forecasts_nothing():
+    """Unit #51-c: the ⑫ track's guardrail block, where no behaviour has been chosen.
+
+    ``preflight_forecast`` gives a verdict because it has a behaviour to read.
+    :func:`guardrail_policy` has none — it is what the track shows BEFORE a search is
+    even started — so the direct arm asserts its unconditional refusal and the approved
+    arm asserts nothing at all, naming its CONDITION instead. A ``False`` there would be
+    an optimistic forecast over a radius nobody has read, which is the one direction #44's
+    refuter invariant forbids.
+    """
+    policy = ps.guardrail_policy()
+    assert policy["conditional"] is True
+    assert policy["decision"] == ps.DECISION_2026_08_20
+
+    direct = policy["paths"][ps.PATH_DIRECT_EDIT]
+    approved = policy["paths"][ps.PATH_APPROVED_SET]
+    assert direct["expected_to_refuse"] is True
+    assert direct["constraint_id"] == ps.SHARED_BEHAVIOR_REFUSAL
+    assert approved["expected_to_refuse"] is None, "a policy must not forecast an outcome"
+    assert approved["condition"] == "RADIUS_NAMED_IN_FULL"
+    assert approved["constraint_id"] == ps.SEARCHED_CONSENTED_CONSTRAINT
+    assert approved["refuses_if_radius_drifts"] == ps.SEARCHED_RADIUS_DRIFTED_CONSTRAINT
+    for path in (direct, approved):
+        for language in ("ko", "en", "ja"):
+            assert path["why"][language].strip()
+
+    # The user's two answers ride along, with the decision that made them.
+    resolutions = {item["key"]: item for item in policy["resolutions"]}
+    assert resolutions["widen_exception"]["status"] == "DECIDED"
+    assert resolutions["widen_exception"]["landed_in"] == "#51-b"
+    assert resolutions["localize_duplicate"]["status"] == "REJECTED_BY_USER"
+    assert all(item["auto_selectable"] is False for item in resolutions.values())
+
+
+def _card_record():
+    """The four payloads a card (and a grant) are built from, in the order that works."""
+    gate = _open_gate()
+    search = _search()
+    search.run()
+    acceptance = ps.accept_winner(search, _runner(), unseen_seed=99)
+    result = search.result(ps.STATUS_COMPLETE)
+    proposal = ps.propose(result=result, acceptance=acceptance, behavior=SHARED_BEHAVIOR)
+    return {
+        "result": result,
+        "acceptance": acceptance,
+        "proposal": proposal,
+        "preconditions": gate,
+    }
+
+
+def test_the_card_payload_quotes_the_proposal_and_carries_the_evidence_rank():
+    """Unit #51-c: what the approval card reads, built from the same four payloads
+    ``grant_from_search`` takes — so a card can never describe a search the grant could
+    not be minted from."""
+    record = _card_record()
+    proposal = record["proposal"]
+    payload = ps.card_payload(**record)
+
+    assert payload["status"] == "PROPOSED"
+    assert payload["search_id"] == record["result"]["search_id"]
+    assert payload["behavior_no"] == str(SHARED_BEHAVIOR["no"])
+    # Exactly the parameters the winner MOVED, at exactly the proposed values.
+    assert payload["searched_parameters"] == [
+        action["params"]["parameter"] for action in proposal["actions"]
+    ]
+    assert payload["expected_after_apply"] == {
+        action["params"]["parameter"]: action["params"]["value"] for action in proposal["actions"]
+    }
+    # Quoted, never re-written.
+    assert payload["rationale"] == proposal["rationale"]
+    assert payload["preflight_forecast"] == proposal["preflight_forecast"]
+    assert payload["consent_radius"] == proposal["consent_radius"]
+    # DECISIONS.md 2026-08-20's closing requirement, as its OWN field so the card can
+    # render it without unfolding a rationale.
+    assert payload["evidence_rank"] == searched_behaviour_grant.EVIDENCE_RANK
+    # The evidence behind the number: the ledger it came from and the holdout that
+    # accepted it, both re-readable from the payload.
+    assert payload["ledger"] == ps.ledger_reference(record["result"])
+    assert payload["holdout"]["accepted"] is True
+    assert payload["holdout"]["unseen_seed"] == record["acceptance"]["holdout"]["unseen_seed"]
+    assert payload["holdout"]["holdout_nodes"] == record["result"]["holdout_nodes"]
+    assert payload["consent_radius_phrase"]
+    # A payload is never a grant.
+    assert "signatures" not in json.dumps(payload, default=str)
+
+
+def test_a_refused_search_produces_a_refused_card_not_a_proposal():
+    """A holdout that did not pass has nothing to approve, and the card says so."""
+    search = _search()
+    result = search.run()
+    acceptance = {"accepted": False, "code": ps.HOLDOUT_NOT_IMPROVED, "holdout": {}}
+    proposal = ps.propose(result=result, acceptance=acceptance, behavior=SHARED_BEHAVIOR)
+    payload = ps.card_payload(
+        result=result, acceptance=acceptance, proposal=proposal, preconditions=_open_gate()
+    )
+    assert payload["status"] == "REFUSED"
+    assert payload["searched_parameters"] == []
+    assert payload["reason_code"] == ps.HOLDOUT_NOT_IMPROVED
+    assert payload["holdout"]["accepted"] is False
+    # Still carries the rank sentence: a refusal a human reads is still a statement
+    # about searched evidence.
+    assert payload["evidence_rank"] == searched_behaviour_grant.EVIDENCE_RANK
 
 
 def test_an_unreferenced_behaviour_forecasts_clear_and_an_unreadable_one_unknown():

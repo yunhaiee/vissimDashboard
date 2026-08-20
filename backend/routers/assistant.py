@@ -24,13 +24,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # language and its 403 in another.
 from routers.auth import _language as _auth_language, current_user, require_role
 from services import workspaces
-from services.agent import car_following_broker
+from services.agent import car_following_broker, searched_behaviour_broker
 from services.agent.edit_session import (
     VissimEditSession,
     clear_active_edit_session,
     set_active_edit_session,
 )
-from services.agent.gates import PreapprovedWriteGate, ProposeWriteGate, signature
+from services.agent.gates import (
+    PreapprovedWriteGate,
+    ProposeWriteGate,
+    chain_grant_providers,
+    signature,
+)
 from services.agent.guardrails import GuardrailEngine
 from services.agent.orchestrator import run_agent_turn
 from services.agent.planner import pick_language_text
@@ -727,6 +732,57 @@ def _car_following_card_payload(
     return payload
 
 
+def _searched_search_card_payload(
+    search_id: str, session_id: str, shadow_model: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Unit #51-c: the finished SEARCH behind one approval card, for the UI.
+
+    ``_car_following_card_payload``'s twin for the other grant species, and it exists
+    for the same reason: the approval machinery authorises each searched write's
+    signature independently, so a card that showed only the action it paused on would
+    present one coordinate of a searched vector as though it were the change. This
+    payload is what lets the card say the whole thing — which parameters moved, the
+    ledger and holdout the values came out of, the guardrail forecast on BOTH paths,
+    the radius consent is being asked for, and the sentence DECISIONS.md 2026-08-20
+    made a closing requirement: this evidence ranks one below Table 5-6's.
+
+    Every sentence is the proposal's own (``parameter_search.card_payload`` quotes
+    them); nothing here composes a claim about the edit.
+
+    ``grant`` reports the RE-MINT verdict at card-build time so the card can say
+    honestly whether the approved dispatch is expected to be clean. It never carries
+    the grant itself — a grant exists only as a live object inside
+    ``searched_behaviour_broker`` and only in this process (see that module's
+    docstring for why nothing about one is ever serialized).
+    """
+    record = searched_behaviour_broker.recall(search_id, session_id=session_id)
+    if not record:
+        return None
+    # Imported here, not at module scope, for this file's usual reason: the agent
+    # tool layer pulls in the results readers and the shadow-model parser, and this
+    # router is imported by the FastAPI app at startup.
+    from services.agent import parameter_search
+
+    payload = parameter_search.card_payload(**record)
+    # What the behaviour holds RIGHT NOW for the parameters that moved — the same
+    # field #47's panel needs, for the same reason: the vector is approved one
+    # parameter at a time, so by the second card part of it is already in the model.
+    live_behavior = car_following_broker.behavior_in_model(payload.get("behavior_no"), shadow_model)
+    payload["current_values"] = (
+        {name: live_behavior.get(name) for name in (payload.get("searched_parameters") or ())}
+        if live_behavior is not None
+        else None
+    )
+    verdict = searched_behaviour_broker.mint(search_id, shadow_model, session_id=session_id)
+    payload["grant"] = {
+        "reason": verdict["reason"],
+        "available": verdict["grant"] is not None,
+        "consented_radius": verdict["consented_radius"],
+        "current_radius": verdict["current_radius"],
+    }
+    return payload
+
+
 def _record_approval_decision(
     work_dir: Path,
     session_id: str,
@@ -1207,6 +1263,17 @@ async def _stream_agent_turn(
                 # session's set becomes visible to another. Reset in `finally`
                 # alongside the other two.
                 car_following_broker.set_active_session(session_id)
+                # Unit #51-c: the SAME pointer for the second grant species. A
+                # searched proposal is remembered per session exactly as a Table 5-6
+                # set is, and for the same reason — the store is keyed per session
+                # regardless of what this says, so an unset global means nothing is
+                # remembered or recalled, never that one session's search becomes
+                # visible to another. No live runner is wired in this build, so
+                # nothing REMEMBERS a search during an ordinary product turn yet;
+                # publishing the pointer here is what makes the recall/mint half of
+                # the path work the moment one does (and what makes it work for the
+                # harness that drives it today).
+                searched_behaviour_broker.set_active_session(session_id)
                 if edit_session is not None:
                     set_active_edit_session(edit_session)
                 try:
@@ -1242,6 +1309,7 @@ async def _stream_agent_turn(
                     # so a later unrelated request cannot write into this
                     # session's store.
                     car_following_broker.set_active_session(None)
+                    searched_behaviour_broker.set_active_session(None)
         except Exception as exc:  # noqa: BLE001 - surfaced as an apologetic `done`, never raised
             holder["error"] = exc
         finally:
@@ -1399,6 +1467,24 @@ async def _stream_agent_turn(
             if car_following_set_id
             else None
         )
+        # Unit #51-c: the same question for the second grant species, asked the same
+        # way — of the BROKER, by canonical signature. The two spaces are disjoint by
+        # parameter (Table 5-6 names ax/bx_add/bx_mult, a search names the three
+        # §5.2.5.1 merging fields), so at most one of these two can ever answer for a
+        # given pause; asking both is how the router stays correct without encoding
+        # that disjointness anywhere.
+        searched_search_id = searched_behaviour_broker.search_id_covering(
+            action_entry, session_id=session_id
+        )
+        searched_search = (
+            _searched_search_card_payload(
+                searched_search_id,
+                session_id,
+                artifact_manager.shadow_model,
+            )
+            if searched_search_id
+            else None
+        )
         pending_file_payload = {
             "approval_id": approval_id,
             "created_at": time.time(),
@@ -1435,6 +1521,16 @@ async def _stream_agent_turn(
         # anything here, so no field in this file can widen what it covers.
         if car_following_set_id:
             pending_file_payload["car_following_set_id"] = car_following_set_id
+        # Unit #51-c — a REFERENCE, never a payload, on exactly #47's terms. An
+        # opaque search id naming a search THIS PROCESS finished in THIS session.
+        # `searched_behaviour_broker.recall` answers None for every id it did not
+        # remember itself, so a hand-edited value here buys nothing: the approve leg
+        # builds its gate with no grant and the shared-object guardrail refuses as it
+        # did before #51-b. The grant is RE-MINTED at approve time from the live
+        # payloads — `grant_from_search` re-derives the holdout acceptance from the
+        # ledger every time — so no field in this file can widen what it covers.
+        if searched_search_id:
+            pending_file_payload["searched_search_id"] = searched_search_id
         _write_pending_approval(work_dir, pending_file_payload)
         approval_payload = {
             "approval_id": approval_id,
@@ -1449,6 +1545,10 @@ async def _stream_agent_turn(
             # the existing exact-equality assertions on `approval_event["actions"]`
             # keep passing.
             approval_payload["car_following_set"] = car_following_set
+        if searched_search is not None:
+            # Payload level, same as its twin above and for the same reason:
+            # `action_entry` stays byte-unchanged.
+            approval_payload["searched_search"] = searched_search
         yield encode_stream_event(
             {"type": "approval_request", "stream_id": stream_id, **approval_payload}
         )
@@ -1573,9 +1673,19 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
     # from a real proposal set against the CURRENT working copy. No set, no
     # session, or a radius that has moved -> no grant, and the ordinary
     # shared-object refusal applies exactly as it did before #44-b.
+    #
+    # Unit #51-c: TWO species, one gate. `chain_grant_providers` asks each in turn
+    # and answers with the first grant that COVERS the action, so neither arm can
+    # speak for a write the other one's proposal produced. Over-supplying is safe by
+    # construction — a species with nothing remembered for this action answers None.
     gate = ProposeWriteGate(
-        grant_provider=car_following_broker.grant_provider(
-            lambda: artifact_manager.shadow_model, session_id=session_id
+        grant_provider=chain_grant_providers(
+            car_following_broker.grant_provider(
+                lambda: artifact_manager.shadow_model, session_id=session_id
+            ),
+            searched_behaviour_broker.grant_provider(
+                lambda: artifact_manager.shadow_model, session_id=session_id
+            ),
         )
     )
     # P7: resolved HERE, in the request handler, rather than on the streaming
@@ -1701,6 +1811,13 @@ def approve_agent_action(
     declined_set_id = pending.get("car_following_set_id")
     if not payload.approved and isinstance(declined_set_id, str) and declined_set_id:
         car_following_broker.forget(declined_set_id, session_id=payload.session_id)
+    # Unit #51-c: the same for a declined SEARCH, on the same reasoning — including
+    # that reading the id off the untrusted file is safe in this one direction,
+    # because the worst a tampered value can do is forget a search, and a forgotten
+    # search only ever produces refusals.
+    declined_search_id = pending.get("searched_search_id")
+    if not payload.approved and isinstance(declined_search_id, str) and declined_search_id:
+        searched_behaviour_broker.forget(declined_search_id, session_id=payload.session_id)
 
     if not payload.approved:
 
@@ -1756,17 +1873,32 @@ def approve_agent_action(
     # here and the radius would be re-derived against nothing. The provider is
     # consulted during preflight, on the turn thread, against the re-synced
     # working copy.
+    #
+    # Unit #51-c: both species are wired, each PINNED to the reference its own key
+    # carries (or absent when the file names none). A pinned provider answers with
+    # that set's/search's grant for whatever action it is handed, which is exactly why
+    # the chain asks `covers()` before accepting an arm's answer — otherwise a pinned
+    # car-following grant would shadow a searched grant that really does name the
+    # write, and the exception the human approved would silently go missing.
     car_following_set_ref = pending.get("car_following_set_id")
+    searched_search_ref = pending.get("searched_search_id")
     gate = PreapprovedWriteGate(
         set(pending.get("signatures") or []),
-        grant_provider=(
+        grant_provider=chain_grant_providers(
             car_following_broker.grant_provider(
                 lambda: artifact_manager.shadow_model,
                 session_id=payload.session_id,
                 set_id=str(car_following_set_ref),
             )
             if isinstance(car_following_set_ref, str) and car_following_set_ref
-            else None
+            else None,
+            searched_behaviour_broker.grant_provider(
+                lambda: artifact_manager.shadow_model,
+                session_id=payload.session_id,
+                search_id=str(searched_search_ref),
+            )
+            if isinstance(searched_search_ref, str) and searched_search_ref
+            else None,
         ),
     )
     # M2.4: a run-tier approval needs the artifact manager + active-inpx

@@ -72,6 +72,7 @@ function toApprovalState(pending: CalibrationPendingApproval): AgentApprovalStat
     resolution: "pending",
     focus: pending.focus ?? undefined,
     carFollowingSet: pending.car_following_set ?? undefined,
+    searchedSearch: pending.searched_search ?? undefined,
   };
 }
 

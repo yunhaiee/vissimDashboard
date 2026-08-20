@@ -7740,14 +7740,18 @@ contractTest("unit #47: a grant is re-minted from memory, never carried by the p
     "the pending-approval file must never carry a grant",
   );
   // Both gates get the grant LATE, from the broker, against the live model.
+  // Unit #51-c moved both behind `chain_grant_providers` (a SECOND grant species
+  // now exists), so the pins follow the code: what they still say is that the
+  // proposing gate resolves through the broker and the approve gate is PINNED to
+  // the id the file named.
   pin.match(
     assistantRouter,
-    /gate = ProposeWriteGate\(\s*\n\s*grant_provider=car_following_broker\.grant_provider\(/,
+    /gate = ProposeWriteGate\(\s*\n\s*grant_provider=chain_grant_providers\(\s*\n\s*car_following_broker\.grant_provider\(/,
     "expected the proposing gate to resolve its grant through the broker",
   );
   pin.match(
     assistantRouter,
-    /grant_provider=\(\s*\n\s*car_following_broker\.grant_provider\([\s\S]{0,300}?set_id=str\(car_following_set_ref\)/,
+    /grant_provider=chain_grant_providers\(\s*\n\s*car_following_broker\.grant_provider\([\s\S]{0,300}?set_id=str\(car_following_set_ref\)/,
     "expected the approve gate to be pinned to the set id the file named, and re-mint it",
   );
   // The broker never deserializes: it re-runs the real minting path.
@@ -8602,6 +8606,305 @@ contractTest("unit #51: the behaviour station shows the rail's track, not a seco
     page,
     /Not built yet|아직 만들어지지 않았습니다/,
     "expected no 'not built yet' placeholder -- #51 shipped, and the track states its real state",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #51-c — the searched winner reaches the approval machinery, and the
+// user's decision of 2026-08-20 reaches the screen.
+//
+// Three things could go wrong here and each has its own test below, because
+// each fails for a different reason:
+//
+//   * the WIRING could persist more than a reference (the #47 property, now for
+//     a second grant species);
+//   * the FORECAST could keep saying one thing where there are now two, which
+//     since #51-b is misleading in whichever direction it picks;
+//   * the EVIDENCE RANK could end up behind a disclosure, which is the one
+//     thing DECISIONS.md 2026-08-20 asked for by name.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #51-c: a searched winner reaches the card, and the file only NAMES it", (pin) => {
+  const assistantRouter = readFileSync(
+    path.join(repoRoot, "backend", "routers", "assistant.py"),
+    "utf-8",
+  );
+  const searchedBroker = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "searched_behaviour_broker.py"),
+    "utf-8",
+  );
+  const api = read("lib/api.ts");
+  const approvalSurface = readApprovalSurface();
+
+  // The turn publishes the session BOTH brokers are keyed by, and clears it.
+  pin.match(
+    assistantRouter,
+    /searched_behaviour_broker\.set_active_session\(session_id\)/,
+    "expected the turn to publish its session to the searched broker, beside the car-following one",
+  );
+  pin.match(
+    assistantRouter,
+    /searched_behaviour_broker\.set_active_session\(None\)/,
+    "expected the pointer to be cleared when the turn ends",
+  );
+  // A REFERENCE, never a payload -- #47's property, for the second species.
+  pin.match(
+    assistantRouter,
+    /pending_file_payload\["searched_search_id"\] = searched_search_id/,
+    "expected only an opaque search id to be persisted beside the signatures",
+  );
+  pin.doesNotMatch(
+    assistantRouter,
+    /pending_file_payload\["searched_(behaviour_)?grant"\]|pending_file_payload\["consent_radius"\]/,
+    "the pending-approval file must never carry a grant or the radius it was minted against",
+  );
+  // Which search names THIS write is the BROKER's answer, by canonical
+  // signature -- never a tool-name sniff, which is how "the router thinks this
+  // belongs to the search" and "the grant covers it" would come to disagree.
+  pin.match(
+    assistantRouter,
+    /searched_search_id = searched_behaviour_broker\.search_id_covering\(\s*\n\s*action_entry, session_id=session_id\s*\n\s*\)/,
+    "expected the router to ask the broker which search covers this action",
+  );
+  // Both species on one gate, and the approve leg PINNED to what the file named.
+  pin.match(
+    assistantRouter,
+    /gate = ProposeWriteGate\(\s*\n\s*grant_provider=chain_grant_providers\([\s\S]{0,600}?searched_behaviour_broker\.grant_provider\(/,
+    "expected the proposing gate to ask both species through the chain",
+  );
+  pin.match(
+    assistantRouter,
+    /grant_provider=chain_grant_providers\([\s\S]{0,900}?searched_behaviour_broker\.grant_provider\([\s\S]{0,300}?search_id=str\(searched_search_ref\)/,
+    "expected the approve gate to be pinned to the search id the file named, and re-mint it",
+  );
+  // A declined search stops existing -- the store is the only place it lives.
+  pin.match(
+    assistantRouter,
+    /searched_behaviour_broker\.forget\(declined_search_id, session_id=payload\.session_id\)/,
+    "expected a declined approval to forget its search",
+  );
+  // The broker re-mints; it never rehydrates, and it never touches disk.
+  pin.match(
+    searchedBroker,
+    /grant = parameter_search\.grant_from_search\(\*\*record\)\s*\n\s*except \(ValueError, TypeError, AttributeError, KeyError\):\s*\n\s*return \{\*\*result, "reason": REMINT_FAILED\}/,
+    "expected mint() to re-run the only minting path rather than rehydrate a payload",
+  );
+  pin.doesNotMatch(
+    withoutComments(searchedBroker),
+    /write_text\(|json\.dump|open\(/,
+    "the searched broker must never write a grant, or anything one can be rebuilt from, to disk",
+  );
+  // ...and the wire carries the CARD, not the grant.
+  pin.match(
+    api,
+    /searched_search\?: AgentSearchedSearch;/,
+    "expected the search to ride on the approval payload as a sibling of actions/warnings/focus",
+  );
+  pin.match(
+    approvalSurface,
+    /searchedSearch: event\.searched_search/,
+    "expected the approval state to carry the search through from the wire event",
+  );
+  pin.match(
+    approvalSurface,
+    /<SearchedParameterPanel search=\{approval\.searchedSearch\} action=\{approval\.actions\[0\]\} \/>/,
+    "expected the approval card to render the searched panel",
+  );
+  pin.match(
+    read("components/calibration/StationProposals.tsx"),
+    /searchedSearch: pending\.searched_search \?\? undefined/,
+    "expected the ⑫ station's own listing to carry it too -- one card, both surfaces",
+  );
+});
+
+contractTest("unit #51-c: the guardrail speaks in TWO paths, and the decision is on the screen", (pin) => {
+  const cards = read("components/agent/ApprovalCards.tsx");
+  const rail = read("components/calibration/FlowRail.tsx");
+
+  // BOTH arms render. A single line was true until 2026-08-20 and became
+  // misleading the moment decision (a) landed: the same write is refused
+  // directly and clean through the approval machinery.
+  pin.match(
+    cards,
+    /const direct = paths\?\.\[GUARDRAIL_PATH_DIRECT\];\s*\n\s*const approved = paths\?\.\[GUARDRAIL_PATH_APPROVED\];/,
+    "expected both paths to be bound from the server payload",
+  );
+  pin.match(
+    cards,
+    /\{direct && \(/,
+    "expected the direct-edit arm to render",
+  );
+  pin.match(
+    cards,
+    /\{approved && \(/,
+    "expected the approved-path arm to render -- one line cannot say what two paths do",
+  );
+  pin.match(
+    cards,
+    /outcome\(approved\)/,
+    "expected the approved path to state its own outcome, not inherit the direct one's",
+  );
+  // THREE states, because the server has three: refused, passes, and "not
+  // forecast, here is the condition". Inventing a pass where the server
+  // declined to forecast is the optimistic-forecast failure #44's refuter named.
+  pin.match(
+    cards,
+    /expected_to_refuse === true\s*\n?\s*\?[\s\S]{0,200}?expected_to_refuse === false/,
+    "expected the outcome to distinguish refuse / pass / not-forecast, never to collapse to a boolean",
+  );
+  pin.match(
+    cards,
+    /통과 \(반경 전부 명명 시\)/,
+    "expected the un-forecast approved path to be qualified, never rendered as a plain pass",
+  );
+  // ...and the QUALIFIER itself is the server's, printed as its machine code beside
+  // the phrase. The line above is prose this client composes; on its own it would go
+  // on saying "the radius is named in full" after a backend that changed what the
+  // approved path is conditional on, and no test here could see the difference
+  // (refuter, #51-c). `condition` is the field that makes the change visible.
+  pin.match(
+    cards,
+    /const condition = \(path: GuardrailPath\)[\s\S]{0,240}?path\.condition;/,
+    "expected the server's own `condition` code to be read, not just paraphrased",
+  );
+  pin.match(
+    cards,
+    /\{condition\(approved\) && \(\s*\n\s*<span[^>]*>\{condition\(approved\)\}<\/span>/,
+    "expected that condition code to actually be printed on the approved arm",
+  );
+
+  // The two path KEYS are a cross-language contract: these string literals are the
+  // dictionary keys the backend fills in, and nothing else in either build agrees
+  // them. Renaming `PATH_DIRECT_EDIT` in parameter_search.py would leave every lookup
+  // here resolving to `undefined`, which makes `GuardrailPathLines` return null and
+  // DELETES the two-path forecast from both the card and the ⑫ track -- silently, and
+  // with every other pin in this test still passing (refuter, #51-c). So they are
+  // pinned on BOTH sides.
+  const parameterSearch = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "parameter_search.py"),
+    "utf-8",
+  );
+  pin.match(
+    cards,
+    /export const GUARDRAIL_PATH_DIRECT = "direct_edit";\s*\nexport const GUARDRAIL_PATH_APPROVED = "approved_set";/,
+    "expected the client's path keys to be exactly the two the backend emits",
+  );
+  pin.match(
+    parameterSearch,
+    /PATH_DIRECT_EDIT = "direct_edit"\s*\nPATH_APPROVED_SET = "approved_set"/,
+    "expected the backend to still emit those same two keys -- a rename here blanks the forecast",
+  );
+  // Nothing anywhere READS the single top-level verdict any more. Comments are
+  // stripped on purpose: this unit's own doc comments narrate the removed
+  // GUARDRAIL_WILL_REFUSE copy while explaining why it went.
+  pin.doesNotMatch(
+    withoutComments(`${cards}\n${rail}`),
+    /GUARDRAIL_WILL_REFUSE|preflight_forecast\??\.?\s*\.?verdict|guardrail\??\.\s*verdict/,
+    "no surface may read the single-verdict field -- it describes only the direct path",
+  );
+
+  // The user's answer on the collision, rendered from the SERVER's status field.
+  pin.match(
+    cards,
+    /export function GuardrailResolutionChips\(/,
+    "expected one resolution-chip component, shared by the track and the card",
+  );
+  // MUTATION-CHECKED: pinning only `{item.status}` was NOT enough -- wrapping
+  // the block in `{false && item.status && (` left the reference standing and
+  // the pin passed over a chip that renders nothing. So the BINDING is pinned,
+  // which a dead branch cannot satisfy (the same lesson #51's refusal pin
+  // carries a few tests above).
+  pin.match(
+    cards,
+    /\{item\.status && \(/,
+    "expected the decision to be the server's own status code, never a verdict this client composes",
+  );
+  pin.match(
+    cards,
+    /\{item\.status\}/,
+    "expected that status code to actually be printed",
+  );
+  pin.match(
+    cards,
+    /item\.status === "REJECTED_BY_USER"/,
+    "expected the rejected resolution to be told apart from the decided one",
+  );
+  pin.match(
+    cards,
+    /pickText\(item, lang\)/,
+    "expected the decision sentence itself to be the server's, in the reader's language",
+  );
+
+  // The ⑫ TRACK carries them in BOTH states -- the locked one is what this
+  // screen shows most of the time, and the decision is a fact about the product
+  // rather than about one search run. Pinned per branch, by slicing at the
+  // locked return, so deleting either call site fails here.
+  //
+  // Both anchors are SINGLE-LINE and the slice is sanity-checked, because a
+  // derived-source pin fails open when its end anchor misses: `indexOf` answers
+  // -1, `slice(start, -1)` hands back the rest of the file, and the pin then
+  // passes on the OTHER branch's call site while the one it names is gone.
+  const lockedBranch = rail.slice(
+    rail.indexOf("if (track.locked || !card)"),
+    rail.indexOf("bg-sky-50/60"),
+  );
+  pin.doesNotMatch(
+    lockedBranch,
+    /card\.runner\.wired/,
+    "slice sanity: the locked-branch slice must end before the open branch begins",
+  );
+  pin.match(
+    lockedBranch,
+    /<TrackGuardrail guardrail=\{track\.guardrail\} lang=\{lang\} t=\{t\} \/>/,
+    "expected the LOCKED track to state the guardrail and the decision",
+  );
+  pin.match(
+    rail.slice(rail.indexOf("card.runner.wired")),
+    /<TrackGuardrail guardrail=\{track\.guardrail\} lang=\{lang\} t=\{t\} \/>/,
+    "expected the OPEN track to state them too",
+  );
+  pin.match(
+    rail,
+    /<GuardrailPathLines paths=\{guardrail\.paths\} t=\{t\} \/>[\s\S]{0,200}?<GuardrailResolutionChips resolutions=\{guardrail\.resolutions\}/,
+    "expected the track to reuse the card's own two components, not a second copy of the sentence",
+  );
+});
+
+contractTest("unit #51-c: the evidence rank is never folded away", (pin) => {
+  const cards = read("components/agent/ApprovalCards.tsx");
+  const panel = cards.slice(cards.indexOf("export function SearchedParameterPanel"));
+  // Everything ABOVE this panel's one disclosure. DECISIONS.md 2026-08-20 made
+  // showing the rank a closing requirement of the decision, so a reader who
+  // never opens the fold must still have read it -- which is exactly what a
+  // slice at `<details` can check and a plain "is it in the file" pin cannot.
+  const aboveTheFold = panel.slice(0, panel.indexOf("<details"));
+
+  pin.match(
+    aboveTheFold,
+    /pickText\(search\.evidence_rank, lang\)/,
+    "expected the evidence-rank sentence to render ABOVE the fold, never inside the disclosure",
+  );
+  pin.match(
+    aboveTheFold,
+    /<GuardrailPathLines paths=\{search\.preflight_forecast\?\.paths\} t=\{t\} \/>/,
+    "expected the two-path forecast to be unfolded too -- it is the verdict, not the reasoning",
+  );
+  pin.match(
+    aboveTheFold,
+    /<GuardrailResolutionChips/,
+    "expected the user's decision to be unfolded",
+  );
+  // The sentence is the SERVER's, in three languages -- this client never
+  // writes its own version of "this evidence ranks below Table 5-6's".
+  pin.match(
+    read("lib/api.ts"),
+    /evidence_rank\?: \{ ko: string; en: string; ja: string \};/,
+    "expected the rank sentence to arrive from the backend in all three languages",
+  );
+  pin.doesNotMatch(
+    withoutComments(cards),
+    /한 단계 낮|one rank BELOW|一段低い/,
+    "the client must never compose the evidence-rank sentence itself -- it quotes the server's",
   );
 });
 

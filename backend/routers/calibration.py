@@ -370,7 +370,9 @@ def list_pending_approvals(request: Request):
     outlived a backend restart comes back without its Table 5-6 panel and with
     ``car_following_set: null``. That is honest: the grant it describes no
     longer exists either, and inventing the panel from the file would show a
-    human a set the approve leg could not re-mint.
+    human a set the approve leg could not re-mint. ``searched_search`` (#51-c) is
+    the same field for the second grant species, rebuilt from
+    ``searched_behaviour_broker`` on exactly the same terms.
     """
     # These four are ``routers.assistant``'s own helpers. Imported rather than
     # copied on purpose: the pending-approval file's path, its parse, the
@@ -381,6 +383,7 @@ def list_pending_approvals(request: Request):
         _agent_session_work_dir,
         _car_following_card_payload,
         _read_pending_approval,
+        _searched_search_card_payload,
         _session_belongs_to_workspace,
     )
 
@@ -417,6 +420,7 @@ def list_pending_approvals(request: Request):
             "assumptions": [],
             "focus": record.get("focus"),
             "car_following_set": None,
+            "searched_search": None,
         }
         set_id = record.get("car_following_set_id")
         if set_id:
@@ -427,6 +431,18 @@ def list_pending_approvals(request: Request):
             except Exception as exc:  # noqa: BLE001 — a lost broker is not an error
                 logger.info(
                     "calibration: car-following card unavailable (%s: %s)",
+                    type(exc).__name__,
+                    exc,
+                )
+        search_id = record.get("searched_search_id")
+        if search_id:
+            try:
+                entry["searched_search"] = _searched_search_card_payload(
+                    str(search_id), session_id, _shadow_model()
+                )
+            except Exception as exc:  # noqa: BLE001 — a lost broker is not an error
+                logger.info(
+                    "calibration: searched-parameter card unavailable (%s: %s)",
                     type(exc).__name__,
                     exc,
                 )

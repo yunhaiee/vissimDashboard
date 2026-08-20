@@ -34,6 +34,7 @@ import {
   type AgentCarFollowingSet,
   type AgentDiagnosis,
   type AgentDiagnosisNode,
+  type AgentSearchedSearch,
   type AgentStep,
   type AgentWarning,
 } from "@/lib/api";
@@ -78,6 +79,10 @@ export type AgentApprovalState = {
    * Undefined for every other approval, which is every approval this app had
    * before this unit; CarFollowingSetPanel renders nothing then. */
   carFollowingSet?: AgentCarFollowingSet;
+  /** Unit #51-c: the finished, held-out parameter SEARCH this pause is one
+   * write of -- see AgentSearchedSearch in lib/api.ts. The other grant species,
+   * carried the same way and rendered by SearchedParameterPanel. */
+  searchedSearch?: AgentSearchedSearch;
 };
 
 // M2.3: builds/reconciles agentApproval state from either wire source --
@@ -94,6 +99,7 @@ export function approvalStateFromEvent(
     assumptions?: string[];
     focus?: AgentApprovalFocus;
     car_following_set?: AgentCarFollowingSet;
+    searched_search?: AgentSearchedSearch;
   },
   sessionId: string,
 ): AgentApprovalState {
@@ -106,6 +112,7 @@ export function approvalStateFromEvent(
     resolution: "pending",
     focus: event.focus,
     carFollowingSet: event.car_following_set,
+    searchedSearch: event.searched_search,
   };
 }
 
@@ -667,6 +674,10 @@ export function AgentApprovalCard({
         <CarFollowingSetPanel set={approval.carFollowingSet} action={approval.actions[0]} />
       )}
 
+      {approval.searchedSearch && (
+        <SearchedParameterPanel search={approval.searchedSearch} action={approval.actions[0]} />
+      )}
+
       {approval.focus?.bbox && (
         <ApprovalFocusMap focus={approval.focus} sessionId={approval.sessionId} action={approval.actions[0]} />
       )}
@@ -957,6 +968,323 @@ export function CarFollowingSetPanel({
           <p className="font-mono text-[13px] text-slate-400">
             {lookup.citation ?? ""}
             {set.grant?.reason ? ` · ${set.grant.reason}` : ""}
+          </p>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Unit #51-c: the guardrail's TWO PATHS, and the user's answer on them.
+//
+// Until 2026-08-20 a searched write had one forecast -- GUARDRAIL_WILL_REFUSE --
+// and a UI that printed it said the true thing. #51-b implemented the user's
+// decision (a), and from that moment the single line became MISLEADING: the same
+// write is still refused when issued directly and is clean through the approval
+// machinery under the search's own grant. So both are always printed, and
+// nothing here ever reads the payload's top-level `verdict`, which describes only
+// the direct path.
+//
+// `expected_to_refuse` has THREE states, and the third one is the point:
+// `null`/absent means the backend deliberately did not forecast (the ⑫ trigger
+// card, where no behaviour has been chosen and no radius has been read). That
+// renders as the CONDITION the backend named, never as a pass -- a forecast may
+// be pessimistic, never optimistic, and inventing an outcome the server refused
+// to state would be the client doing exactly that.
+//
+// Spans, not paragraphs, and no <details>: this renders inside FlowRail's
+// phrasing-content track as well as inside this module's card.
+// ---------------------------------------------------------------------------
+
+/** The two path keys, matching parameter_search.PATH_DIRECT_EDIT / PATH_APPROVED_SET. */
+export const GUARDRAIL_PATH_DIRECT = "direct_edit";
+export const GUARDRAIL_PATH_APPROVED = "approved_set";
+
+type GuardrailPath = {
+  expected_to_refuse?: boolean | null;
+  constraint_id?: string;
+  condition?: string;
+  refuses_if_radius_drifts?: string;
+  why?: { ko: string; en: string; ja: string };
+};
+
+export function GuardrailPathLines({
+  paths,
+  t,
+}: {
+  paths?: Record<string, GuardrailPath>;
+  t: Translate;
+}) {
+  const direct = paths?.[GUARDRAIL_PATH_DIRECT];
+  const approved = paths?.[GUARDRAIL_PATH_APPROVED];
+  if (!direct && !approved) return null;
+  // A stated refusal is rose, a stated pass is emerald, and "not forecast" is the
+  // neutral ramp -- the same three accents the rest of the app uses, never a
+  // fourth hue for the third state.
+  const tone = (path: GuardrailPath) =>
+    path.expected_to_refuse === true
+      ? "border-rose-200 bg-rose-50 text-rose-700"
+      : path.expected_to_refuse === false
+        ? "border-emerald-200 bg-emerald-50 text-slate-800"
+        : "border-slate-300 bg-slate-50 text-slate-700";
+  const outcome = (path: GuardrailPath) =>
+    path.expected_to_refuse === true
+      ? t("거부", "refused", "拒否")
+      : path.expected_to_refuse === false
+        ? t("통과", "passes", "通過")
+        : t("통과 (반경 전부 명명 시)", "passes (where the radius is named in full)", "通過（半径を完全に命名できる場合）");
+  // The third state's qualifier is the SERVER's `condition`, printed as the machine
+  // code beside the phrase -- the same treatment `constraint_id` and
+  // `refuses_if_radius_drifts` already get, and for the same reason (refuter, #51-c).
+  // Without it the only thing on the screen naming the condition was the sentence
+  // above, which this client composes: a backend that changed what the approved path
+  // is conditional on would have gone on rendering "the radius is named in full"
+  // forever, and no test could see it. Printing the code makes the field live.
+  const condition = (path: GuardrailPath) =>
+    path.expected_to_refuse === true || path.expected_to_refuse === false ? undefined : path.condition;
+  return (
+    <span className="mt-1.5 block space-y-1">
+      {direct && (
+        <span className={`block rounded-md border px-2 py-1 text-[13px] leading-5 ${tone(direct)}`}>
+          <span className="font-semibold">{t("직접 발행", "Issued directly", "単独発行")}</span>
+          {" → "}
+          <span className="font-semibold">{outcome(direct)}</span>
+          {condition(direct) && (
+            <span className="ml-1.5 font-mono text-[13px] opacity-80">{condition(direct)}</span>
+          )}
+          {direct.constraint_id && (
+            <span className="ml-1.5 font-mono text-[13px] opacity-80">{direct.constraint_id}</span>
+          )}
+        </span>
+      )}
+      {approved && (
+        <span className={`block rounded-md border px-2 py-1 text-[13px] leading-5 ${tone(approved)}`}>
+          <span className="font-semibold">
+            {t("승인 경로", "Through the approval machinery", "承認経路")}
+          </span>
+          {" → "}
+          <span className="font-semibold">{outcome(approved)}</span>
+          {condition(approved) && (
+            <span className="ml-1.5 font-mono text-[13px] opacity-80">{condition(approved)}</span>
+          )}
+          {approved.constraint_id && (
+            <span className="ml-1.5 font-mono text-[13px] opacity-80">{approved.constraint_id}</span>
+          )}
+          {approved.refuses_if_radius_drifts && (
+            <span className="ml-1.5 font-mono text-[13px] opacity-80">
+              {t("반경 이동 시", "drifts →", "半径移動時")} {approved.refuses_if_radius_drifts}
+            </span>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** The two resolutions #51 offered, each carrying the USER's answer (#51-c).
+ *
+ * The verdict word is the SERVER's: `status` is the machine code (DECIDED /
+ * REJECTED_BY_USER) and the ko/en/ja sentence beside it already opens with
+ * "결정됨 (a)" / "기각 (b)" and cites the decision. This component picks a
+ * language and lays out three server fields; it writes no verdict of its own,
+ * which is what keeps the screen from claiming a decision the backend has not
+ * recorded. */
+export function GuardrailResolutionChips({
+  resolutions,
+  lang,
+  t,
+}: {
+  resolutions?: {
+    key: string;
+    status?: string;
+    decided?: boolean;
+    decision?: string;
+    landed_in?: string;
+    ko: string;
+    en: string;
+    ja: string;
+  }[];
+  lang: string;
+  t: Translate;
+}) {
+  if (!resolutions || resolutions.length === 0) return null;
+  return (
+    <span className="mt-1.5 block space-y-1">
+      <span className="block text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {t("해소 방안 — 사용자 결정", "Resolutions — the user's decision", "解消案 — ユーザーの決定")}
+      </span>
+      {resolutions.map((item) => (
+        <span key={item.key} className="block rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+          <span className="block">
+            <span className="font-mono text-[13px] text-slate-500">{item.key}</span>
+            {item.status && (
+              <span
+                className={`ml-1.5 rounded-full border px-1.5 py-0.5 font-mono text-[13px] font-semibold ${
+                  item.status === "REJECTED_BY_USER"
+                    ? "border-slate-400 bg-slate-100 text-slate-700"
+                    : "border-emerald-200 bg-emerald-50 text-slate-800"
+                }`}
+              >
+                {item.status}
+              </span>
+            )}
+            {item.landed_in && (
+              <span className="ml-1.5 font-mono text-[13px] text-slate-500">{item.landed_in}</span>
+            )}
+          </span>
+          <span className="mt-0.5 block text-[13px] leading-5 text-slate-700">{pickText(item, lang)}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Unit #51-c: the finished SEARCH, on the card that approves one write of it.
+//
+// CarFollowingSetPanel's twin, and the differences between them are the whole
+// reason this is a second panel rather than a parameter on the first:
+//
+//   * a Table 5-6 value is READ from a published table with a measured number;
+//     a searched value is CHOSEN inside a published band. `evidence_rank` is the
+//     backend's own sentence saying so, and DECISIONS.md 2026-08-20 made showing
+//     it a closing requirement of the decision -- so it renders UNFOLDED, above
+//     the fold, never inside the <details>. A reader who never opens the fold
+//     must still have read it.
+//   * what stands behind the number is a LEDGER and a HOLDOUT, not a table row,
+//     so the fold names the ledger digest, the held-out nodes and the unseen
+//     seed the winner was re-scored at.
+//
+// Every sentence is the backend's. The only prose this component writes is
+// labels -- the same rule CarFollowingSetPanel states above.
+// ---------------------------------------------------------------------------
+export function SearchedParameterPanel({
+  search,
+  action,
+}: {
+  search: AgentSearchedSearch;
+  action?: AgentAction;
+}) {
+  const { t, lang } = useLanguage();
+  if (search.status !== "PROPOSED") return null;
+
+  const parameters = search.searched_parameters ?? [];
+  const expected = search.expected_after_apply ?? {};
+  const current = search.current_values ?? {};
+  const thisParameter = typeof action?.params?.parameter === "string" ? action.params.parameter : "";
+  const landed = (name: string) =>
+    typeof current[name] === "number" && current[name] === expected[name];
+  const holdout = search.holdout ?? {};
+  const ledger = search.ledger ?? {};
+
+  return (
+    <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50/50 px-2.5 py-2">
+      <p className="text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {t("범위-구속 탐색 결과", "Range-bounded search result", "範囲拘束探索の結果")}
+        <span className="ml-1.5 font-mono text-[13px] font-normal normal-case tracking-normal text-slate-500">
+          {t(
+            `행태 ${search.behavior_no ?? "-"} · ${parameters.length}건 중 1건 승인`,
+            `behaviour ${search.behavior_no ?? "-"} · approving 1 of ${parameters.length}`,
+            `挙動 ${search.behavior_no ?? "-"} · ${parameters.length} 件中 1 件を承認`,
+          )}
+        </span>
+      </p>
+
+      <div className="mt-1.5 space-y-0.5">
+        {parameters.map((name) => {
+          const isThis = name === thisParameter;
+          return (
+            <div
+              key={name}
+              className={`flex items-baseline justify-between gap-2 rounded-md px-2 py-1 text-[13px] leading-5 ${
+                isThis ? "border border-sky-300 bg-surface text-slate-900" : "text-slate-600"
+              }`}
+            >
+              <span className="font-mono">{name}</span>
+              <span className="flex items-baseline gap-1.5">
+                <span className="font-mono font-semibold">{expected[name] ?? "-"}</span>
+                <span className="text-[13px] text-slate-500">
+                  {isThis
+                    ? t("이 승인", "this approval", "この承認")
+                    : landed(name)
+                      ? t("현재 값 일치", "already at this value", "現在値と一致")
+                      : t("미적용", "not applied yet", "未適用")}
+                </span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* THE CLOSING REQUIREMENT of DECISIONS.md 2026-08-20. Never folded, never
+          shortened: this value's evidence ranks one below Table 5-6's, and the
+          card that approves it says so where the reviewer is looking. */}
+      {search.evidence_rank && (
+        <p className="mt-1.5 rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[13px] leading-5 text-slate-800">
+          {pickText(search.evidence_rank, lang)}
+        </p>
+      )}
+
+      {/* Both paths, plus the radius the human is actually consenting to. */}
+      <GuardrailPathLines paths={search.preflight_forecast?.paths} t={t} />
+      {search.consent_radius_phrase && (
+        <p className="mt-1 font-mono text-[13px] text-slate-600">{search.consent_radius_phrase}</p>
+      )}
+
+      <GuardrailResolutionChips
+        resolutions={search.preflight_forecast?.resolutions}
+        lang={lang}
+        t={t}
+      />
+
+      <details className="mt-1.5 text-[13px] leading-5 text-slate-600">
+        <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (원장·홀드아웃·예보)", "More (ledger, holdout, forecast)", "詳細（台帳・ホールドアウト・予報）")}
+        </summary>
+        <div className="mt-1.5 flex flex-col gap-1.5 border-l border-slate-300 pl-3">
+          <p>
+            <span className="font-semibold">{t("탐색 원장", "Search ledger", "探索台帳")}: </span>
+            <span className="font-mono">
+              {ledger.search_id || "-"} · {ledger.rows ?? "-"} rows · {ledger.digest || "-"}
+            </span>
+            {typeof search.candidates === "number" && (
+              <span className="font-mono"> · {search.candidates} candidates</span>
+            )}
+          </p>
+          <p>
+            <span className="font-semibold">{t("홀드아웃", "Holdout", "ホールドアウト")}: </span>
+            <span className="font-mono">
+              {(holdout.holdout_nodes ?? []).join(", ") || "-"} · seed {holdout.unseen_seed ?? "-"} ·{" "}
+              {holdout.baseline_objective ?? "-"} → {holdout.winner_objective ?? "-"}
+            </span>
+            {holdout.code && <span className="font-mono"> · {holdout.code}</span>}
+          </p>
+          {search.unchanged_parameters && search.unchanged_parameters.length > 0 && (
+            <p>
+              <span className="font-semibold">
+                {t("기준값 유지", "Left at baseline", "基準値のまま")}:{" "}
+              </span>
+              <span className="font-mono">{search.unchanged_parameters.join(", ")}</span>
+            </p>
+          )}
+          {/* The server's own sentence on each path, quoted in full. The lines
+              above are the verdict; this is the reasoning behind it. */}
+          {search.preflight_forecast?.paths?.[GUARDRAIL_PATH_DIRECT]?.why && (
+            <p>
+              <span className="font-semibold">
+                {t("승인 밖 경로", "Outside this approval", "この承認の外")}:{" "}
+              </span>
+              {pickText(search.preflight_forecast.paths[GUARDRAIL_PATH_DIRECT].why, lang)}
+            </p>
+          )}
+          {search.preflight_forecast?.paths?.[GUARDRAIL_PATH_APPROVED]?.why && (
+            <p>{pickText(search.preflight_forecast.paths[GUARDRAIL_PATH_APPROVED].why, lang)}</p>
+          )}
+          {search.rationale && <p>{pickText(search.rationale, lang)}</p>}
+          <p className="font-mono text-[13px] text-slate-400">
+            {search.citation ?? ""}
+            {search.grant?.reason ? ` · ${search.grant.reason}` : ""}
           </p>
         </div>
       </details>

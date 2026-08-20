@@ -50,6 +50,12 @@
 
 import { useState } from "react";
 
+// Unit #51-c: the guardrail's two-path line and the decision chips are the SAME
+// components the approval card uses. Imported rather than re-written for the
+// reason StationProposals states about the card itself — a second copy of a
+// sentence a human acts on is a second place for it to drift, and this one is
+// the user's own recorded decision.
+import { GuardrailPathLines, GuardrailResolutionChips } from "@/components/agent/ApprovalCards";
 import { useLanguage } from "@/components/LanguageProvider";
 import type {
   CalibrationRail,
@@ -88,7 +94,12 @@ const STATUS_ORDER: CalibrationStepStatus[] = [
 const STATUS_CHIP: Record<CalibrationStepStatus, string> = {
   DONE: "border-emerald-200 bg-emerald-50 text-emerald-700",
   IN_PROGRESS: "border-slate-400 bg-slate-100 text-slate-800",
-  NEXT: "border-sky-300 bg-sky-50 text-sky-700",
+  // `text-sky-600`, not 700: globals.css's dark `@theme` remaps sky-50 to a NAVY
+  // (#032042) but only remaps sky-400/500/600 on the text side, so a `text-sky-700`
+  // here keeps Tailwind's stock light-mode #0369a1 and lands dark-blue-on-navy —
+  // the blue-on-blue trap the genesis pages already had to fix. 600 is remapped
+  // (#6da7ec) and is the app's own "navy fill, sky text" badge idiom.
+  NEXT: "border-sky-300 bg-sky-50 text-sky-600",
   NOT_APPLICABLE: "border-slate-200 bg-slate-50 text-slate-500",
   NO_EVIDENCE: "border-slate-300 bg-surface text-slate-600",
 };
@@ -151,7 +162,7 @@ function ProposalBadge({ count, t }: { count: number; t: Translate }) {
   if (count <= 0) return null;
   return (
     <span
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[13px] font-semibold text-sky-700"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[13px] font-semibold text-sky-600"
       title={t("승인 대기 중인 제안", "Proposals awaiting approval", "承認待ちの提案")}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden="true" />
@@ -211,6 +222,7 @@ export function ParameterSearchTrack({
             </span>
           ))}
         </span>
+        <TrackGuardrail guardrail={track.guardrail} lang={lang} t={t} />
       </span>
     );
   }
@@ -247,6 +259,48 @@ export function ParameterSearchTrack({
               "このビルドには実行機が接続されていません — 探索の実行にはVissim COMが必要で、ジョブキュー(ユーザーの実行環境)の担当です。このカードは開始の可否を尋ねるだけです。",
             )}
       </span>
+      <TrackGuardrail guardrail={track.guardrail} lang={lang} t={t} />
+    </span>
+  );
+}
+
+/** Unit #51-c: what happens to a value this search would produce, and the user's
+ * answer on the collision — on the track in BOTH states.
+ *
+ * Rendered locked as well as open on purpose: the locked state is what this
+ * screen shows most of the time, and "the collision that used to block this door
+ * has been decided, this way, on this date" is a fact about the product, not
+ * about one search run.
+ *
+ * TWO LINES, NEVER ONE. Until 2026-08-20 a searched write had a single forecast
+ * and printing it was true; #51-b implemented decision (a) and from that moment
+ * one line would be a lie in one direction or the other. The approved arm here
+ * carries a CONDITION rather than a verdict — no behaviour has been chosen at
+ * this point, so the server states the rule and forecasts nothing, and
+ * `GuardrailPathLines` renders exactly that (the card, where a behaviour exists,
+ * gets the verdict). Every sentence and every status word is the server's. */
+function TrackGuardrail({
+  guardrail,
+  lang,
+  t,
+}: {
+  guardrail: CalibrationRailTrack["guardrail"];
+  lang: string;
+  t: Translate;
+}) {
+  if (!guardrail) return null;
+  return (
+    <span className="mt-1.5 block border-t border-slate-200 pt-1.5">
+      <span className="block text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {t("탐색 산출물의 가드레일", "The guardrail on a searched value", "探索産出物のガードレール")}
+        {guardrail.decision && (
+          <span className="ml-1.5 font-mono text-[13px] font-normal normal-case tracking-normal text-slate-500">
+            {guardrail.decision}
+          </span>
+        )}
+      </span>
+      <GuardrailPathLines paths={guardrail.paths} t={t} />
+      <GuardrailResolutionChips resolutions={guardrail.resolutions} lang={lang} t={t} />
     </span>
   );
 }

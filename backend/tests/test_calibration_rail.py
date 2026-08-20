@@ -553,6 +553,31 @@ def test_the_track_unlocks_with_an_ask_first_card_when_the_ladder_is_exhausted()
     assert card["plan"]["holdout_nodes"] and card["plan"]["calibration_nodes"]
 
 
+def test_the_track_states_the_guardrail_and_the_users_decision_in_both_states():
+    """Unit #51-c: the collision's resolution is a fact about the product, so it rides
+    on the TRACK — locked or open — rather than only on a card a search has to produce.
+
+    A locked track is what this screen shows most of the time, and it is where a reader
+    learns that the door, once opened, leads somewhere: refused if the write is issued
+    directly, clean through the approval machinery. Nothing here forecasts: no behaviour
+    has been chosen at this point, so the approved arm carries a CONDITION.
+    """
+    for evidence, expected_lock in ((_search_evidence(nodes=2), True), (_search_evidence(), False)):
+        track = _search_track(evidence)
+        assert track["locked"] is expected_lock
+        guardrail = track["guardrail"]
+        assert guardrail == parameter_search.guardrail_policy()
+        assert guardrail["paths"][parameter_search.PATH_DIRECT_EDIT]["expected_to_refuse"] is True
+        assert (
+            guardrail["paths"][parameter_search.PATH_APPROVED_SET]["expected_to_refuse"] is None
+        )
+        statuses = {item["key"]: item["status"] for item in guardrail["resolutions"]}
+        assert statuses == {"widen_exception": "DECIDED", "localize_duplicate": "REJECTED_BY_USER"}
+
+    # ... and on the degenerate bundle too, where there is no reality check to read.
+    assert _search_track({})["guardrail"]["decision"] == parameter_search.DECISION_2026_08_20
+
+
 def test_the_track_reads_this_rails_own_step_6_rather_than_a_second_opinion():
     """One screen, one verdict about signals: the gate is handed the steps this
     rail just built, so the ⑥ chip and the ⑫ lock cannot disagree."""

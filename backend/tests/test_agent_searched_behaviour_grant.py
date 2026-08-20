@@ -942,6 +942,61 @@ def test_one_gate_can_carry_both_species_through_a_chained_provider():
     assert chain_grant_providers(_explodes, lambda a: grant)(searched_payload) is grant
 
 
+def test_a_non_covering_grant_in_the_first_arm_does_not_shadow_the_covering_one():
+    """BROKEN → FIXED (#51-c, from #51-b's own "remaining" note).
+
+    The chain returned the first NON-``None`` answer, and the test above could not see
+    the flaw because both of its arms filtered by ``covers`` themselves. The REAL
+    providers do not: ``car_following_broker.grant_provider(..., set_id=...)`` — what
+    ``/agent/approve`` builds from ``pending_approval.json`` — is PINNED to one set and
+    hands that set's grant back for whatever action it is asked about. So on a pause
+    that carried BOTH keys, the pinned Table 5-6 arm answered first with a grant that
+    does not name the searched write, and the searched arm — whose grant does name it —
+    was never reached.
+
+    Nothing was ever wrongly excused (``gates._write_provenance`` re-checks ``covers``),
+    so the damage was in the safe direction: an exception the human approved silently
+    went missing and the write met the ordinary shared-object refusal. That is still a
+    product defect, and it is the one this asserts is gone.
+
+    Both halves are pinned: that the first arm really does answer with a non-covering
+    grant (so this is a reproduction, not a hypothetical), and that the chain now
+    resolves to the arm whose grant covers the action.
+    """
+    record = _finished()
+    grant = _grant(record)
+    table_grant = sf.grant_from_proposals(_table_proposals(4))
+    searched_payload = _payloads(record)[0]
+    table_payload = _table_payloads(_table_proposals(4))[0]
+
+    # A PINNED provider, the shape the approve leg builds: it answers with its own
+    # grant regardless of the action. This is the pre-fix reproduction.
+    pinned_table = lambda action: table_grant  # noqa: E731 - the shape under test
+    pinned_searched = lambda action: grant  # noqa: E731
+    assert pinned_table(searched_payload) is table_grant
+    assert table_grant.covers(searched_payload) is False, (
+        "premise: the Table 5-6 grant must NOT name a searched write"
+    )
+
+    provider = chain_grant_providers(pinned_table, pinned_searched)
+    assert provider(searched_payload) is grant, "the covering arm lost to a non-covering one"
+    # ... and symmetrically, with the arms the other way round.
+    assert chain_grant_providers(pinned_searched, pinned_table)(table_payload) is table_grant
+    # An action neither grant names still resolves to nothing at all.
+    assert (
+        provider({"tool": sbg.GRANT_TOOL, "params": {"behavior_no": "2", "parameter": "cc0", "value": 1.0}})
+        is None
+    )
+
+    # A grant whose own ``covers`` raises is read as "does not cover", never as a
+    # failed turn — same rule as a provider that raises.
+    class _Hostile:
+        def covers(self, action):  # noqa: D401 - fixture
+            raise RuntimeError("unreadable grant")
+
+    assert chain_grant_providers(lambda a: _Hostile(), pinned_searched)(searched_payload) is grant
+
+
 # ===========================================================================
 # 4. The broker — the joint, and why no file can forge it
 # ===========================================================================

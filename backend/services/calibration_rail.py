@@ -921,10 +921,21 @@ def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
     The rail's own step 6 is passed to the gate rather than re-derived, so "the
     rail says signals are done" and "the gate says signals are done" cannot
     disagree on the same screen.
+
+    ``guardrail`` (#51-c) rides on the track in BOTH states, locked or not: it is
+    ``parameter_search.guardrail_policy()`` — what becomes of a searched value on
+    each of the two paths, and the user's recorded answer on the collision
+    (DECISIONS.md 2026-08-20). It belongs to the TRACK rather than to the trigger
+    card because it is true of this door whether or not it has opened, and because
+    a locked track is what this screen shows most of the time. It forecasts
+    nothing: no behaviour has been chosen here, so the approved path carries a
+    CONDITION rather than a verdict (see that function). The per-behaviour verdict
+    lives on the approval card, where a behaviour finally exists to read.
     """
+    base = {**PARAMETER_SEARCH_TRACK, "guardrail": parameter_search.guardrail_policy()}
     reality = evidence.get("reality_check")
     if not isinstance(reality, Mapping):
-        return dict(PARAMETER_SEARCH_TRACK)
+        return base
     preconditions = parameter_search.evaluate_preconditions(
         reality_check=reality,
         applied_rows=evidence.get("applied_rows"),
@@ -932,7 +943,7 @@ def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
     )
     if not preconditions["ok"]:
         return {
-            **PARAMETER_SEARCH_TRACK,
+            **base,
             "locked": True,
             "refusals": [
                 {"code": item["code"], "why": item["why"], "opens_when": item["opens_when"]}
@@ -940,7 +951,7 @@ def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
             ],
         }
     return {
-        **PARAMETER_SEARCH_TRACK,
+        **base,
         "locked": False,
         "why": _text(
             "사다리가 소진되어 탐색을 시작할 수 있는 상태입니다. 시작 여부는 사람이 정합니다 — "

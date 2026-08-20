@@ -2671,6 +2671,68 @@ def preflight_forecast(behavior: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def guardrail_policy() -> dict[str, Any]:
+    """The two paths a searched write can take, stated BEFORE any winner exists (#51-c).
+
+    :func:`preflight_forecast` answers this for one behaviour and gives a VERDICT.
+    This answers it for a search a modeller has not started yet — the ⑫ trigger card's
+    surface, where no behaviour has been chosen and no radius has been read. So it
+    states the RULE and the CONDITION and forecasts nothing: the direct path's refusal
+    is unconditional and is asserted, while the approved path carries
+    ``expected_to_refuse: None`` because its answer genuinely depends on a radius nobody
+    has read. #44's invariant (a forecast may be pessimistic, never optimistic) is kept
+    here the only way it can be: by not forecasting an outcome that has no evidence yet.
+
+    The user's two answers ride along (:func:`_guardrail_resolutions`), which is the
+    point of this on the rail: the decision of 2026-08-20 is a fact about the product,
+    and the screen that offers the search is where it belongs.
+    """
+    return {
+        "conditional": True,
+        "decision": DECISION_2026_08_20,
+        "paths": {
+            PATH_DIRECT_EDIT: {
+                "expected_to_refuse": True,
+                "constraint_id": SHARED_BEHAVIOR_REFUSAL,
+                "why": {
+                    "ko": "직접 발행하면 거부됩니다 — 탐색 파라미터는 모두 공유 객체인 주행행태에 "
+                    f"쓰이고, {SHARED_BEHAVIOR_REFUSAL}가 그 쓰기를 막습니다. 예외는 페이로드로 "
+                    "닿을 수 없습니다.",
+                    "en": "Issued on its own, the write is REFUSED — every searched parameter lands "
+                    f"on a shared driving behaviour and {SHARED_BEHAVIOR_REFUSAL} blocks it. Nothing "
+                    "about the exception is reachable from a payload.",
+                    "ja": "単独で発行すれば拒否されます — 探索パラメータはすべて共有オブジェクトである"
+                    f"走行挙動に書き込まれ、{SHARED_BEHAVIOR_REFUSAL}が阻みます。例外はペイロードから"
+                    "は届きません。",
+                },
+            },
+            PATH_APPROVED_SET: {
+                # NOT a verdict. See this function's docstring: no behaviour has been
+                # read, so there is nothing to be right or wrong about yet.
+                "expected_to_refuse": None,
+                "constraint_id": SEARCHED_CONSENTED_CONSTRAINT,
+                "condition": "RADIUS_NAMED_IN_FULL",
+                "refuses_if_radius_drifts": SEARCHED_RADIUS_DRIFTED_CONSTRAINT,
+                "why": {
+                    "ko": "승인 경로로는 통과합니다 — 단, 적용 반경을 전부 명명할 수 있을 때만. "
+                    f"완료된 탐색의 grant로 승인 기계를 통과하면 {SEARCHED_CONSENTED_CONSTRAINT}이 "
+                    "반경을 명명하며 대신 서고, 반경을 전부 명명할 수 없으면 예외 자체가 없습니다"
+                    f"({DECISION_2026_08_20}).",
+                    "en": "Through the approval machinery it passes — but only where the blast "
+                    "radius can be named in full. Dispatched under a completed search's own grant, "
+                    f"{SEARCHED_CONSENTED_CONSTRAINT} names the radius and stands in; where every "
+                    f"consumer cannot be named there is no exception at all ({DECISION_2026_08_20}).",
+                    "ja": "承認経路では通過します — ただし適用半径を完全に命名できる場合のみ。完了した"
+                    f"探索のgrantで承認機構を通ると{SEARCHED_CONSENTED_CONSTRAINT}が半径を命名して"
+                    f"代わりに立ち、全消費者を命名できない場合は例外自体がありません"
+                    f"({DECISION_2026_08_20})。",
+                },
+            },
+        },
+        "resolutions": _guardrail_resolutions(),
+    }
+
+
 def _guardrail_resolutions() -> list[dict[str, Any]]:
     """The two resolutions #51's forecast offered, with the user's answer on them.
 
@@ -2969,6 +3031,104 @@ def propose(
 
 
 # ---------------------------------------------------------------------------
+# 11-b. The approval card's payload (unit #51-c)
+# ---------------------------------------------------------------------------
+
+
+def card_payload(
+    *,
+    result: Mapping[str, Any],
+    acceptance: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    preconditions: Mapping[str, Any],
+) -> dict[str, Any]:
+    """One remembered search, as the approval card reads it (#51-c).
+
+    #47's ``tools_calibration.build_proposal_payload`` for the other grant species,
+    and the same argument for existing: the approval machinery authorises ONE write
+    per pause, so a card that showed only the action it paused on would present one
+    coordinate of a searched vector as though it were the change. The vector, the
+    ledger it came out of, the holdout that accepted it and the radius it lands on
+    are what a human is actually being asked about.
+
+    Deliberately takes the SAME four payloads ``grant_from_search`` does, so a caller
+    holding a broker record can splat it into either and the card can never describe a
+    search the grant could not be minted from.
+
+    Every sentence in it is the proposal's own (``rationale``, the forecast's ``why``
+    on both paths, the resolutions' decision text) plus
+    ``searched_behaviour_grant.EVIDENCE_RANK``, which DECISIONS.md 2026-08-20 made a
+    closing requirement: this value's evidence ranks below Table 5-6's, and the card
+    that approves it has to say so where a reader cannot miss it. Nothing here composes
+    a new claim, and nothing here is a grant — a grant exists only as a live object in
+    this process (``searched_behaviour_broker``).
+    """
+    payload = dict(result or {})
+    accepted = dict(acceptance or {})
+    offer = dict(proposal or {})
+    gate = dict(preconditions or {})
+
+    actions = [item for item in offer.get("actions") or () if isinstance(item, Mapping)]
+    parameters: list[str] = []
+    expected: dict[str, Any] = {}
+    behavior_no = ""
+    for action in actions:
+        params = action.get("params")
+        params = dict(params) if isinstance(params, Mapping) else {}
+        name = str(params.get("parameter") or "")
+        if not name:
+            continue
+        behavior_no = behavior_no or str(params.get("behavior_no") or "")
+        parameters.append(name)
+        expected[name] = params.get("value")
+
+    radius = offer.get("consent_radius")
+    radius = dict(radius) if isinstance(radius, Mapping) else None
+    holdout = accepted.get("holdout")
+    holdout = dict(holdout) if isinstance(holdout, Mapping) else {}
+    space = [dict(item) for item in payload.get("space") or () if isinstance(item, Mapping)]
+    forecast = offer.get("preflight_forecast")
+    forecast = dict(forecast) if isinstance(forecast, Mapping) else {}
+
+    return {
+        "status": "PROPOSED" if offer.get("outcome") == "PROPOSAL" else "REFUSED",
+        "unit": "#51-b",
+        "decision": DECISION_2026_08_20,
+        "search_id": str(payload.get("search_id") or "") or None,
+        "behavior_no": behavior_no or None,
+        "reason_code": offer.get("reason_code"),
+        "searched_parameters": parameters,
+        "expected_after_apply": expected,
+        "unchanged_parameters": list(offer.get("unchanged_parameters") or ()),
+        "rationale": dict(offer.get("rationale") or {}),
+        # The sentence the decision closes on. Carried as its own field rather than
+        # left inside `rationale`'s prose so the card can render it unfolded.
+        "evidence_rank": dict(searched_behaviour_grant.EVIDENCE_RANK),
+        "preflight_forecast": forecast,
+        "consent_radius": radius,
+        "consent_radius_phrase": searched_behaviour_grant.radius_phrase(radius),
+        "holdout": {
+            "accepted": bool(accepted.get("accepted")),
+            "code": accepted.get("code"),
+            "holdout_nodes": [str(node) for node in holdout.get("holdout_nodes") or ()],
+            "calibration_nodes": [
+                str(node) for node in (gate.get("split") or {}).get("calibration") or ()
+            ],
+            "unseen_seed": holdout.get("unseen_seed"),
+            "winner_objective": (holdout.get("winner_holdout") or {}).get("objective"),
+            "baseline_objective": (holdout.get("baseline_holdout") or {}).get("objective"),
+        },
+        "ledger": ledger_reference(payload),
+        "candidates": payload.get("candidates"),
+        "objective": payload.get("objective") or OBJECTIVE,
+        "space": space,
+        "citation": (space[0].get("citation") if space else None)
+        or mrwa_reference.MERGING_BEHAVIOUR_CITATION,
+        "assumptions": list(offer.get("assumptions") or ()),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 12. The trigger card — ask-first, never auto-start
 # ---------------------------------------------------------------------------
 
@@ -3143,8 +3303,10 @@ __all__ = [
     "SyntheticRunner",
     "TABLE_5_6_NOT_APPLIED",
     "accept_winner",
+    "card_payload",
     "evaluate_preconditions",
     "grant_from_search",
+    "guardrail_policy",
     "in_published_range",
     "latin_hypercube",
     "ledger_reference",
