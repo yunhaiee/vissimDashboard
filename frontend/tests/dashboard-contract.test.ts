@@ -12,6 +12,19 @@ import {
   takeRegionPrefill,
 } from "../lib/region-prefill.ts";
 import {
+  CALIBRATION_STATIONS,
+  DEFAULT_STATION,
+  MRWA_STEP_BY_TOOL,
+  STATION_BY_STEP,
+  STATION_LABELS,
+  groupProposals,
+  groupSteps,
+  placeProposal,
+  stationForStep,
+  stationResolverFor,
+  stationRowsShown,
+} from "../lib/calibrationStations.ts";
+import {
   CRITICAL_INTERSECTION_GEH_MAX,
   SATURATION_FLOW_WITHIN_PCT,
   SIGNAL_TIMING_CRITERIA,
@@ -8228,6 +8241,12 @@ contractTest("unit #48: the multi-finding hand-off round-trips, and a broken cov
 
 contractTest("unit #50: the flow rail renders the guideline's thirteen steps and states nothing of its own", (pin) => {
   const rail = read("components/calibration/FlowRail.tsx");
+  // RETARGETED by #50-b (2026-08-20), meaning unchanged. The rail became the
+  // permanent left NAVIGATION and the per-step BASIS sentence moved to the
+  // station panel with the evidence that produced it, so the two pins about
+  // what the server (not the client) says now read the page. Both still assert
+  // the same thing: the sentence and the manual-area naming are the backend's.
+  const page = read("app/calibration/page.tsx");
 
   // The statuses are the SERVER's vocabulary. A sixth word invented on the
   // client would be a status no backend rule can produce, and therefore a
@@ -8242,22 +8261,21 @@ contractTest("unit #50: the flow rail renders the guideline's thirteen steps and
   }
 
   // The step's own basis sentence is the backend's, picked by language.
-  pin.match(rail, /pick\(step\.basis, lang\)/, "expected the rail to print the server's basis sentence, never its own");
-  pin.match(rail, /\{rail\.citation\}/, "expected the rail to carry §2.12.1's citation");
+  pin.match(page, /pick\(step\.basis, lang\)/, "expected the station to print the server's basis sentence, never its own");
+  pin.match(rail, /\{rail\?\.citation\}/, "expected the rail to carry §2.12.1's citation");
   pin.match(rail, /rail\.principles\.map/, "expected the guideline's ordering principles to be shown, not just the order");
 
   // NO_EVIDENCE must read as a real state a human acts on, not as a disabled
   // row -- that is the whole honesty claim of this screen.
   pin.match(
-    rail,
+    page,
     /step\.manual_area && \(/,
     "expected a manual-check area to be named on the step, not silently blank",
   );
   pin.match(rail, /수동 확인 영역/, "expected the Korean manual-check wording on the rail");
 
   // The rail is a control too: clicking a step goes to the station whose
-  // evidence produced it, using the SERVER's anchor so it cannot point at a
-  // section that moved.
+  // evidence produced it.
   pin.match(rail, /onSelectStep\(step\)/, "expected a step to be clickable through to its work area");
 });
 
@@ -8284,7 +8302,9 @@ contractTest("unit #50: the rail's step status is never computed on the client",
 
 contractTest("unit #50: the workspace reads through the shared API bindings, never a bare fetch", (pin) => {
   const page = read("app/calibration/page.tsx");
-  const proposals = read("components/calibration/ProposalRail.tsx");
+  // #50-b renamed ProposalRail.tsx -> StationProposals.tsx when the collection
+  // panel became per-station cards. Same module, same reads, same pins.
+  const proposals = read("components/calibration/StationProposals.tsx");
   const api = read("lib/api.ts");
 
   for (const binding of [
@@ -8309,7 +8329,7 @@ contractTest("unit #50: the workspace reads through the shared API bindings, nev
 contractTest("unit #50: the approval card is shared with the drawer, never reimplemented", (pin) => {
   const cards = read("components/agent/ApprovalCards.tsx");
   const drawer = read("components/FloatingAssistant.tsx");
-  const proposals = read("components/calibration/ProposalRail.tsx");
+  const proposals = read("components/calibration/StationProposals.tsx");
 
   // The MOVE: the drawer no longer defines these, it imports them.
   pin.match(cards, /export function AgentApprovalCard\(/, "expected the approval card to live in the shared module");
@@ -8328,8 +8348,8 @@ contractTest("unit #50: the approval card is shared with the drawer, never reimp
 
   // The calibration page renders the SAME card, and the decision still goes to
   // the one endpoint that owns approvals.
-  pin.match(proposals, /<AgentApprovalCard/, "expected the proposal rail to render the shared card");
-  pin.match(proposals, /approveAgentAction\(/, "expected the proposal rail to approve through the existing endpoint");
+  pin.match(proposals, /<AgentApprovalCard/, "expected the station's proposals to render the shared card");
+  pin.match(proposals, /approveAgentAction\(/, "expected the station's proposals to approve through the existing endpoint");
   pin.doesNotMatch(
     withoutComments(proposals),
     /\/api\/calibration\/[a-z-]*approve/,
@@ -8419,7 +8439,7 @@ contractTest("unit #50: every new calibration string carries its own Japanese", 
     "components/calibration/FlowRail.tsx",
     "components/calibration/NodeScoreTable.tsx",
     "components/calibration/BehaviourStation.tsx",
-    "components/calibration/ProposalRail.tsx",
+    "components/calibration/StationProposals.tsx",
   ]) {
     pin.doesNotMatch(
       read(file),
@@ -8552,9 +8572,12 @@ contractTest("unit #51: the trigger card asks, and offers no button it cannot ho
 contractTest("unit #51: the behaviour station shows the rail's track, not a second copy", (pin) => {
   const page = read("app/calibration/page.tsx");
 
+  // #50-b widened the import (the station panel now renders the rail's own
+  // chips and labels too), so the pin matches the binding rather than the exact
+  // one-line form -- it still says: ONE ParameterSearchTrack, imported.
   pin.match(
     page,
-    /import FlowRail, \{ ParameterSearchTrack \}/,
+    /import FlowRail, \{[\s\S]{0,200}?\bParameterSearchTrack,/,
     "expected the page to import the shared track component",
   );
   pin.match(
@@ -8579,6 +8602,464 @@ contractTest("unit #51: the behaviour station shows the rail's track, not a seco
     page,
     /Not built yet|아직 만들어지지 않았습니다/,
     "expected no 'not built yet' placeholder -- #51 shipped, and the track states its real state",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #50-b — the workspace becomes a rail plus ONE station.
+//
+// The user drove #50's real screen and could not read it: every station stacked
+// down one column, so the thirteen-step rail was a list to scroll past rather
+// than a place to stand. #50-b folds the thirteen rows into eight station
+// groups, makes the rail permanent navigation, shows one station at a time, and
+// DELETES the proposal collection panel so every card renders at the step it
+// acts on.
+//
+// That last move is the one with teeth. A collection panel could not lose a
+// proposal; per-station cards can — a tool nobody mapped, a station nobody
+// opened. So the placement is a plain module (lib/calibrationStations.ts) that
+// this suite RUNS rather than regex-pins: the claims below are executed against
+// synthetic payloads, because "no proposal is orphaned" is not a claim a
+// pattern match can make.
+// ---------------------------------------------------------------------------
+
+/** §2.12.1's steps the way the rail payload describes them, with the SERVER's
+ * own manual-area list read out of calibration_rail.py — so this suite fails
+ * when the two drift apart, which is exactly how step ⑨ nearly ended up
+ * mislabelled as a manual-check area when it left that list. */
+function railStepsFromBackend(): { number: number; manual_area: boolean }[] {
+  const source = readFileSync(
+    path.join(repoRoot, "backend", "services", "calibration_rail.py"),
+    "utf-8",
+  );
+  const declaration = /STEPS_WITHOUT_EVIDENCE_SOURCE = \(([^)]*)\)/.exec(source);
+  assert.ok(declaration, "expected calibration_rail.py to declare STEPS_WITHOUT_EVIDENCE_SOURCE");
+  const manual = (declaration[1].match(/\d+/g) ?? []).map(Number);
+  assert.ok(manual.length > 0, "expected the manual-area list to name at least one step");
+  return Array.from({ length: 13 }, (_, index) => ({
+    number: index + 1,
+    manual_area: manual.includes(index + 1),
+  }));
+}
+
+contractTest("unit #50-b: thirteen steps fold into eight rail rows, and none is lost", (pin) => {
+  const steps = railStepsFromBackend();
+  const grouped = groupSteps(steps);
+
+  // Nothing may fall out of the fold.
+  const placedCount = CALIBRATION_STATIONS.reduce(
+    (total, station) => total + grouped.byStation[station].length,
+    0,
+  );
+  assert.equal(
+    placedCount + grouped.unplaced.length,
+    steps.length,
+    "every one of the thirteen steps must land in exactly one rail row",
+  );
+  assert.deepEqual(grouped.unplaced, [], "no step of the current rail may be left without a station");
+
+  // EIGHT rows: 채점·진단 (no step of its own) plus the seven that carry steps.
+  const rowsWithSteps = CALIBRATION_STATIONS.filter(
+    (station) => grouped.byStation[station].length > 0,
+  );
+  assert.equal(rowsWithSteps.length, 7, "expected seven step-carrying rows beside 채점·진단");
+  assert.equal(CALIBRATION_STATIONS.length, 8, "expected eight rail rows in total");
+  assert.equal(CALIBRATION_STATIONS[0], DEFAULT_STATION, "expected 채점·진단 to lead the rail");
+
+  // The manual row is the SERVER's list, whole and nothing else -- six rows
+  // when it opens.
+  assert.deepEqual(
+    grouped.byStation.manual.map((step) => step.number),
+    steps.filter((step) => step.manual_area).map((step) => step.number),
+    "the 수동 확인 영역 row must contain exactly the steps the server flags manual",
+  );
+  assert.equal(grouped.byStation.manual.length, 6, "expected six manual-check steps behind the folded row");
+
+  // ⑨ is the case this pin exists for: it left the manual list, so it must NOT
+  // be folded in with the steps this product measures nothing for.
+  assert.equal(stationForStep({ number: 9, manual_area: false }), "transit");
+  assert.ok(
+    !grouped.byStation.manual.some((step) => step.number === 9),
+    "step 9 has an evidence source and must not sit inside 수동 확인 영역",
+  );
+
+  // Every station a step can be sent to is one the rail can actually draw.
+  for (const station of Object.values(STATION_BY_STEP)) {
+    assert.ok(
+      (CALIBRATION_STATIONS as readonly string[]).includes(station),
+      `step routing names a station the rail does not have: ${station}`,
+    );
+  }
+
+  // And the labels the rail and the station header share carry all three
+  // languages -- the same rule as every t() on this screen.
+  for (const station of CALIBRATION_STATIONS) {
+    const label = STATION_LABELS[station];
+    assert.equal(label.length, 3, `expected ko/en/ja for the ${station} station label`);
+    for (const text of label) assert.ok(text.trim().length > 0, `empty label for ${station}`);
+  }
+
+  pin.match(
+    read("lib/calibrationStations.ts"),
+    /if \(step\.manual_area\) return "manual";/,
+    "expected the manual row to be the SERVER's flag, never a client-side list of step numbers",
+  );
+});
+
+contractTest("unit #50-b: a step with no station is NAMED, never filed under 수동 확인 영역", (pin) => {
+  // The distinction the whole screen rests on: "we have not placed this step"
+  // and "this product measures nothing for this step" are different claims, and
+  // only the server may make the second one.
+  assert.equal(
+    stationForStep({ number: 2, manual_area: true }),
+    "manual",
+    "a server-flagged manual step belongs in 수동 확인 영역",
+  );
+  assert.equal(
+    stationForStep({ number: 2, manual_area: false }),
+    null,
+    "a step with no station and no manual flag must come back null, not 'manual'",
+  );
+
+  const grouped = groupSteps([
+    { number: 1, manual_area: false },
+    { number: 4, manual_area: false },
+  ]);
+  assert.deepEqual(
+    grouped.unplaced.map((step) => step.number),
+    [4],
+    "an unplaced step must surface in its own list",
+  );
+  assert.equal(grouped.byStation.manual.length, 0, "an unplaced step must not be counted as manual");
+
+  // ...and the rail must RENDER that list rather than dropping it.
+  const rail = read("components/calibration/FlowRail.tsx");
+  pin.match(rail, /grouped\.unplaced\.length > 0/, "expected the rail to show unplaced steps when there are any");
+  pin.match(rail, /단계 미배치/, "expected the unplaced row to be named in Korean");
+});
+
+contractTest("unit #50-b: every pending proposal reaches exactly one station -- no orphans", (pin) => {
+  const steps = railStepsFromBackend();
+  const resolver = stationResolverFor(steps);
+  const proposals = [
+    { id: "demand", actions: [{ tool: "set_vehicle_input_volume", params: {} }] },
+    { id: "signals", actions: [{ tool: "set_signal_cycle", params: {} }] },
+    { id: "behaviour", actions: [{ tool: "set_driving_behavior_parameter", params: {} }] },
+    { id: "assignment", actions: [{ tool: "set_route_relative_flow", params: {} }] },
+    { id: "transit", actions: [{ tool: "add_pt_line", params: {} }] },
+    { id: "network", actions: [{ tool: "add_link", params: {} }] },
+    // A manual-check step (② 차량 속도) can still receive an agent edit. Its
+    // card belongs in 수동 확인 영역, not at the default station.
+    { id: "manual", actions: [{ tool: "set_des_speed_decision", params: {} }] },
+    // A tool with no guideline step at all.
+    { id: "unmapped", actions: [{ tool: "set_random_seed", params: {} }] },
+    // A batch: the real tools are inside the plan, not in its own name.
+    {
+      id: "batch",
+      actions: [
+        {
+          tool: "apply_edit_plan",
+          params: { steps: [{ tool: "set_signal_offset" }, { tool: "set_vehicle_input_volume" }] },
+        },
+      ],
+    },
+    // No actions at all -- a malformed payload must still be visible.
+    { id: "empty", actions: [] },
+  ];
+
+  const grouped = groupProposals(proposals, resolver);
+
+  // THE INVARIANT. Every card lands somewhere, exactly once.
+  assert.equal(grouped.total, proposals.length);
+  const landed = CALIBRATION_STATIONS.flatMap((station) => grouped.byStation[station]);
+  assert.equal(landed.length, proposals.length, "a proposal was dropped or duplicated");
+  assert.deepEqual(
+    [...new Set(landed.map((entry) => entry.proposal.id))].sort(),
+    proposals.map((proposal) => proposal.id).sort(),
+    "every proposal must appear at exactly one station",
+  );
+
+  // THE BADGE ARITHMETIC. What the rail prints adds up to what is waiting.
+  const badgeTotal = CALIBRATION_STATIONS.reduce((sum, station) => sum + grouped.counts[station], 0);
+  assert.equal(badgeTotal, grouped.total, "the sky badges must sum to the pending count");
+  for (const station of CALIBRATION_STATIONS) {
+    assert.equal(
+      grouped.counts[station],
+      grouped.byStation[station].length,
+      `the ${station} badge must equal the cards that station shows`,
+    );
+  }
+
+  // The placements themselves.
+  const at = (id: string) => landed.find((entry) => entry.proposal.id === id)!;
+  assert.equal(at("demand").station, "demand");
+  assert.equal(at("signals").station, "signals");
+  assert.equal(at("behaviour").station, "behaviour");
+  assert.equal(at("assignment").station, "assignment");
+  assert.equal(at("transit").station, "transit");
+  assert.equal(at("network").station, "network");
+  assert.equal(at("manual").station, "manual", "a manual step's proposal belongs at its own step");
+  assert.equal(at("manual").step, 2);
+
+  // A batch is placed by its FIRST real tool and names the other step it moves,
+  // rather than being drawn twice.
+  assert.equal(at("batch").station, "signals");
+  assert.equal(at("batch").tool, "set_signal_offset");
+  assert.deepEqual(at("batch").alsoSteps, [10]);
+
+  pin.match(
+    read("lib/calibrationStations.ts"),
+    /export function actionTools\(/,
+    "expected a batch plan's nested tools to be read, not its wrapper name",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// REFUTER, 2026-08-20. The test above proves the invariant in the MODULE:
+// `sum(counts) === total`, every card at exactly one station. It ran green
+// while the SCREEN still lost cards, because it only ever asked the question
+// with a fully loaded rail.
+//
+// The rail drew a row only for stations that carried steps. `groupProposals`
+// places a card from the static step→station table, which answers whether or
+// not the rail loaded. So whenever the rail had no steps for a station -- the
+// request failed, or the pending listing simply arrived first, or the payload
+// omitted a step -- the card at that station had no badge, no row, and no way
+// to be opened at all (the open station is only ever set from a rail row).
+// Meanwhile the station the reader WAS on printed "N are waiting at other
+// steps -- see the blue badges on the left rail", pointing at badges that were
+// not rendered. Measured before the fix: 4 of 5 orphaned on a failed rail.
+//
+// "Every proposal reaches exactly one station" is only true if the station can
+// be REACHED, so the row rule now lives beside the placement rule and this test
+// executes them together.
+// ---------------------------------------------------------------------------
+contractTest("unit #50-b: a station holding a proposal is a row, even before the rail loads", (pin) => {
+  const pending = [
+    { id: "network", actions: [{ tool: "add_link", params: {} }] },
+    { id: "signals", actions: [{ tool: "set_signal_cycle", params: {} }] },
+    { id: "transit", actions: [{ tool: "add_pt_line", params: {} }] },
+    { id: "demand", actions: [{ tool: "set_vehicle_input_volume", params: {} }] },
+    { id: "unmapped", actions: [{ tool: "set_random_seed", params: {} }] },
+  ];
+
+  /** Every station a reader can actually open, for a given rail payload. */
+  const reachable = (railSteps: { number: number; manual_area: boolean }[]) => {
+    const grouped = groupProposals(pending, stationResolverFor(railSteps));
+    const rows = stationRowsShown(groupSteps(railSteps), grouped.counts);
+    return { grouped, rows };
+  };
+
+  const full = railStepsFromBackend();
+  for (const [name, railSteps] of [
+    // The rail request failed, or has not answered yet. THE case this exists for.
+    ["no rail at all", [] as typeof full],
+    // A payload that omits steps -- ① and ⑨ here.
+    ["a rail missing steps 1 and 9", full.filter((step) => step.number !== 1 && step.number !== 9)],
+    // The happy path, which must not regress.
+    ["the full rail", full],
+  ] as const) {
+    const { grouped, rows } = reachable(railSteps as { number: number; manual_area: boolean }[]);
+
+    for (const station of CALIBRATION_STATIONS) {
+      if (grouped.byStation[station].length === 0) continue;
+      assert.ok(
+        rows.includes(station),
+        `${name}: ${grouped.byStation[station].length} proposal(s) placed at "${station}", which the rail draws no row for -- unreachable`,
+      );
+    }
+
+    // The badge arithmetic a READER can perform: what is on screen adds up to
+    // what is pending. A badge that is not drawn cannot be counted.
+    const visible = rows.reduce((sum, station) => sum + grouped.counts[station], 0);
+    assert.equal(
+      visible,
+      grouped.total,
+      `${name}: only ${visible} of ${grouped.total} pending proposals wear a badge a reader can see`,
+    );
+
+    // The default station is always a row: it is the fallback placement's home
+    // and the station the screen opens on.
+    assert.ok(rows.includes(DEFAULT_STATION), `${name}: the default station must always be reachable`);
+  }
+
+  // A station with neither steps nor proposals stays OFF the rail -- the fix
+  // must not turn the rule into "always draw everything", which would put eight
+  // empty rows in front of a reader whose rail failed.
+  const emptyRows = stationRowsShown(groupSteps([]), {});
+  assert.deepEqual(emptyRows, [DEFAULT_STATION], "with nothing to show, only the default station is a row");
+
+  // The rail must USE the shared rule rather than keeping its own guard: two
+  // copies of "which rows exist" is how this defect happened in the first place.
+  const rail = read("components/calibration/FlowRail.tsx");
+  pin.match(rail, /stationRowsShown\(grouped, proposalCounts\)/, "expected the rail to draw rows by the shared rule");
+  pin.doesNotMatch(
+    withoutComments(rail),
+    /steps\.length === 0 && !isScoring\) return null/,
+    "expected no private row guard that can disagree with where the cards were placed",
+  );
+  // ...and a row drawn for its badge alone must say its steps are unread rather
+  // than reading as "nothing to do here".
+  pin.match(rail, /stepsUnread && <StepsUnreadNote/, "expected a steps-unread row to say so");
+});
+
+contractTest("unit #50-b: a proposal this product cannot place says so, and is never hidden", (pin) => {
+  const unmapped = placeProposal({ actions: [{ tool: "set_random_seed", params: {} }] });
+  assert.equal(unmapped.station, DEFAULT_STATION, "an unplaceable proposal goes to the station always shown");
+  assert.equal(unmapped.step, null, "no guideline step may be invented for it");
+  assert.deepEqual(unmapped.unmappedTools, ["set_random_seed"], "its tool must be named for the caption");
+  assert.equal(unmapped.fallback, true, "a fallback placement must be flagged so the card can be captioned");
+
+  // An empty payload is the same story: visible, and honest about knowing
+  // nothing.
+  const empty = placeProposal({ actions: [] });
+  assert.equal(empty.station, DEFAULT_STATION);
+  assert.equal(empty.step, null);
+  assert.equal(empty.fallback, true);
+
+  // A placed card carries NO caption -- the note is for the exceptions only.
+  const placed = placeProposal({ actions: [{ tool: "set_vehicle_input_volume", params: {} }] });
+  assert.equal(placed.fallback, false);
+  assert.equal(placed.station, "demand");
+  assert.deepEqual(placed.alsoSteps, []);
+
+  // Every tool this module DOES place must name a step §2.12.1 actually has.
+  for (const [tool, step] of Object.entries(MRWA_STEP_BY_TOOL)) {
+    assert.ok(
+      Number.isInteger(step) && step >= 1 && step <= 13,
+      `${tool} is mapped to a step §2.12.1 does not have: ${step}`,
+    );
+  }
+
+  const proposals = read("components/calibration/StationProposals.tsx");
+  pin.match(proposals, /placed\.fallback/, "expected the fallback placement to be captioned, not silent");
+  pin.match(
+    proposals,
+    /단계를 지어내지 않습니다/,
+    "expected the unplaceable card to say the step was not invented",
+  );
+  // The empty state must not read as "nothing anywhere" when there is work at
+  // another step.
+  pin.match(proposals, /otherCount > 0/, "expected an empty station to say how many proposals wait elsewhere");
+});
+
+contractTest("unit #50-b: the rail navigates by switching stations, and never by scrolling", (pin) => {
+  const rail = read("components/calibration/FlowRail.tsx");
+  const page = read("app/calibration/page.tsx");
+  const source = withoutComments(`${rail}\n${page}`);
+
+  // #50 scrolled to an anchor. Measured on the real screen: with every station
+  // stacked, a scroll left the reader unable to see WHAT the page contained --
+  // and a smooth scroll silently did nothing at all on a non-compositing
+  // browser. The rail switches the panel now, so nothing is below a fold.
+  pin.doesNotMatch(source, /scrollIntoView/, "expected no scroll navigation -- the rail switches stations");
+  pin.doesNotMatch(source, /getElementById/, "expected no anchor lookup -- the station is state, not a section id");
+  pin.match(rail, /onSelectStation\(station\)/, "expected a rail row to switch the open station");
+
+  // The open station is a DERIVED selection (lib/asyncResource.ts), never an
+  // effect that corrects itself one painted frame later.
+  pin.match(
+    page,
+    /resolveSelection\(stationIntent, CALIBRATION_STATIONS/,
+    "expected the open station to be resolved during render from the reader's intent",
+  );
+
+  // One station is shown at a time: the panel bodies are keyed off the active
+  // station, not stacked as sections.
+  pin.doesNotMatch(page, /id="station-/, "expected no anchored station sections -- there is one panel now");
+  for (const station of ["scoring", "network", "signals", "behaviour", "manual"]) {
+    pin.match(
+      page,
+      literalPattern(`activeStation === "${station}"`),
+      `expected the ${station} body to render only when its station is open`,
+    );
+  }
+});
+
+contractTest("unit #50-b: the context bar owns what belongs to no single step", (pin) => {
+  const page = read("app/calibration/page.tsx");
+
+  // Dataset, run, verdict, before/after -- global context, in one place, so no
+  // step can appear to own it.
+  pin.match(page, /fetchActiveDataset\(\)/, "expected the active dataset to be named in the context bar");
+  pin.match(page, /데이터셋/, "expected the dataset label");
+  pin.match(page, /채점할 실행/, "expected the run selector in the context bar");
+  pin.match(page, /종합 판정/, "expected the one-line verdict in the context bar");
+  pin.match(page, /전후 비교/, "expected the before/after toggle in the context bar");
+  pin.match(page, /aria-pressed=\{compareOn\}/, "expected the comparison to be a real toggle control");
+
+  // The verdict is the scoring table's OWN comparison, imported rather than
+  // repeated: a second copy is how a header and the table under it would come
+  // to disagree about which nodes passed.
+  pin.match(
+    page,
+    /nodeGehPasses \} from "@\/components\/calibration\/NodeScoreTable"/,
+    "expected the header verdict to reuse the table's pass rule",
+  );
+  pin.match(
+    read("components/calibration/NodeScoreTable.tsx"),
+    /export function nodeGehPasses\(/,
+    "expected exactly one pass rule, exported",
+  );
+  // ...and it must state what it could NOT grade rather than shrinking the
+  // denominator quietly.
+  pin.match(page, /ungradedCount/, "expected ungradable nodes to be stated beside the pass count");
+});
+
+contractTest("unit #50-b: a map is drawn only where the server named the nodes", (pin) => {
+  const page = read("app/calibration/page.tsx");
+
+  // The user's decision: 채점 always, and the step stations only where node
+  // context exists. Which nodes belong to a step is geh_ladder's OWN answer
+  // (`next_action.mrwa_step`), never a classification made here.
+  pin.match(
+    page,
+    /node\.diagnosis\?\.next_action\?\.mrwa_step/,
+    "expected a station's nodes to come from the server's own step attribution",
+  );
+  pin.match(
+    page,
+    /if \(ids\.length === 0\) return null;/,
+    "expected no map at all when the server named no node for this station",
+  );
+  // ⑫ has no per-node rung of its own, so its node context is the search plan's
+  // own split -- also the server's.
+  pin.match(
+    page,
+    /card\.plan\.calibration_nodes/,
+    "expected the behaviour station's nodes to be the search plan's own split",
+  );
+  // The scoring station's map is unconditional: it is where a reader asks
+  // where the failing nodes ARE.
+  pin.match(page, /h-\[420px\]/, "expected the scoring station to keep its full-height map");
+});
+
+contractTest("unit #50-b: the proposal collection panel is gone, and nothing imports it", (pin) => {
+  // The user's decision: a proposal read away from the step it acts on is a
+  // decision made without its evidence. The panel is deleted -- not hidden --
+  // and the cards live at their steps.
+  for (const file of appSourceFiles()) {
+    pin.doesNotMatch(
+      read(file),
+      /calibration\/ProposalRail/,
+      `${file} still imports the deleted proposal collection panel`,
+    );
+  }
+  assert.ok(
+    !appSourceFiles().includes("components/calibration/ProposalRail.tsx"),
+    "components/calibration/ProposalRail.tsx must be gone, not merely unused",
+  );
+
+  const page = read("app/calibration/page.tsx");
+  pin.match(page, /<StationProposals/, "expected the open station to render its own proposals inline");
+  pin.match(page, /이 단계의 제안/, "expected the inline proposals to be named as this step's");
+  // One read for the whole screen: the badges and the cards are the same fact,
+  // and two requests would let a badge say 2 where the station shows 1.
+  pin.match(page, /usePendingProposals\(\{/, "expected one pending read, shared by the rail and the station");
+  pin.match(
+    read("components/calibration/StationProposals.tsx"),
+    /fetchCalibrationPendingApprovals\(\)/,
+    "expected the pending listing to stay in the module that renders it",
   );
 });
 

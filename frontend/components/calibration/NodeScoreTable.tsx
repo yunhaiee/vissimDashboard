@@ -55,7 +55,12 @@ function fmt(value: number | null | undefined, digits = 1): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "-";
 }
 
-function nodeGehPasses(node: CalibrationRealityNode, threshold: number | null | undefined): boolean | null {
+/** Pass, fail, or neither — the REPORT's own threshold decides, and an
+ * undefined GEH is neither. Exported because the workspace's context bar states
+ * the same verdict in one line ("6노드 중 4 합격"): a second copy of this
+ * comparison is how a header and the table under it would come to disagree
+ * about which nodes passed. */
+export function nodeGehPasses(node: CalibrationRealityNode, threshold: number | null | undefined): boolean | null {
   if (typeof node.node_total_geh !== "number" || typeof threshold !== "number") return null;
   return node.node_total_geh < threshold;
 }

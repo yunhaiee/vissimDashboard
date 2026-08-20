@@ -179,7 +179,13 @@ test("band constants are a single spelling", () => {
 
 test("neither page keeps a private copy of the GEH formula (D2)", () => {
   const rootDir = path.resolve(import.meta.dirname, "..");
-  for (const relativePath of ["app/dashboard/page.tsx", "app/base-model/page.tsx"]) {
+  // RETARGETED, meaning unchanged: unit #50 absorbed `/base-model` into the
+  // calibration workspace's scoring station, so the screen this pin is about
+  // is components/calibration/BaseModelStation.tsx now. The path was left
+  // behind and this suite has been failing on ENOENT ever since — an
+  // assertion that cannot run is worse than none, because the run reports it
+  // as a failure nobody reads rather than as the rule it is.
+  for (const relativePath of ["app/dashboard/page.tsx", "components/calibration/BaseModelStation.tsx"]) {
     const source = readFileSync(path.join(rootDir, relativePath), "utf-8");
     assert.doesNotMatch(
       source,
