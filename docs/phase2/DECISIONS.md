@@ -6725,3 +6725,44 @@ downloaded 2026-07-28). Two measurements and one action:
   `LMA_MurdochLink.png` (357 KB) — an LMA site drawing. The D1 ask ("LMA/LMB drawings,
   detector→movement, upgrades SCATS calibration site→movement") may be partially answerable
   from disk. User to confirm coverage.
+
+## 2026-08-21 — #51-r: the runner is built offline, and three live rounds teach it what offline cannot see
+
+**The unit** (`8bb010b`): VissimSearchRunner + thread job + one write route + a wired-branch-only
+start control. Orchestrator decisions inside the spec: no budget picker on screen (the button
+spends the server's own plan); behaviour choice is a named refusal when plural; the drawer's
+session id travels by the existing `vissim:agent-session` broadcast (fourth listener, not a
+fourth mechanism), and a search with no session to land in refuses by name before Vissim
+spends a second. Refuter (19/19 units with real defects): an unwrapped sqlite read falsified
+run()'s never-raises contract (structural guard + 16 offline tests made the docstring true);
+an unguarded thread.start() wedged a workspace forever; a border-sky-300 reproduced the named
+dark-remap trap (calibration sweep pin added; page.tsx's five, behind a documented-look note,
+escalated to the user by a pin that watches the note).
+
+**The live lane earned its keep three times** (`674ce5b`, real client model, this machine):
+1. Scenario-managed exports refuse standalone LoadNet — the raw upload is the one file no
+   product path ever feeds Vissim. Candidates now materialize via ArtifactManager.clone's
+   exact transform (byte-equality pinned). `_make_network_standalone` was rejected BY
+   MEASUREMENT: it sets simRes 10→2, changing the physics the workbook graded — a completed
+   measurement with wrong numbers, the product's named worst class.
+2. Vissim enforces standing-lateral ≤ driving-lateral at AttValue time — invisible to the
+   per-field #85 probes (they probed each scalar alone where the coupling held). Write order
+   is now constraint-derived with a proof one order is always legal; infeasible pairs refuse
+   pre-COM by name. Couplings are one declared table; teaching the guardrail preflight is
+   chip task_d451d977.
+3. disconnect()'s Exit() is a request, not a join — every COM caller shares the gap; the
+   search is the first caller that runs long enough to pay (3 leaked Vissim.exe / 13
+   candidates, killed by hand). Bounded reap, set-difference-scoped: a human's own Vissim is
+   structurally untouchable.
+
+**Acceptance (run 3): 18/18 real candidate runs, 0 failures, 0 leaks, COMPLETE — winner tied
+the baseline exactly (objective 1.8775), because on an uncongested network these three
+parameters do not move volumes. accept_winner refused the no-improvement proposal
+(HOLDOUT_NOT_IMPROVED); nothing reached the broker. That refusal is the product working.**
+The congested scene (#49) is where the parameters have physics — a future demo build.
+
+**Gate defects found while deriving the acceptance recipe (chips):** ENTRANCE_NOT_MEASURED
+reads an evidence key nothing writes — dead on real data, its test fabricates the shape
+(task_93c5b5dd); the rail's reality check is built TARGETLESS, so LADDER_NOT_EXHAUSTED is
+unreachable via the route on any real workspace — the start button can only refuse honestly
+until targets are threaded (task_2ebde59b).
