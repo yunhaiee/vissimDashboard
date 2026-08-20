@@ -574,6 +574,7 @@ def build_reality_check_report(
     observation_set_id: str | None = None,
     observation_period: str | None = None,
     site_nodes: list[ObservationSiteNode] | None = None,
+    result_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve the run, load the counts, run the check. No COM, no writes.
 
@@ -582,8 +583,22 @@ def build_reality_check_report(
     unchanged: the modelled side still comes from THIS run's
     ``movement_volumes``, the grading is still U4's, and the site-level join is
     still reported in both directions rather than inner-joined away.
+
+    ``result_dir`` (#51's live runner, 2026-08-21) scores a directory the CALLER
+    produced instead of resolving one from ``scenario_id``. It exists for exactly
+    one caller — ``services.agent.search_runner.VissimSearchRunner``, which runs
+    a candidate into its own job work dir and must grade it with THIS function
+    rather than a second copy of the observed-side logic. Everything downstream
+    is byte-identical; only the two lines that FIND the directory are skipped,
+    and they are skipped because their job is to answer "may this caller read
+    that run?" — a question with no meaning for a directory the caller wrote
+    itself, seconds ago, on a thread bound to the workspace that asked for it. A
+    candidate is deliberately not a scenario: it has no job record and must never
+    appear in the run picker, which is precisely what registering one to satisfy
+    the resolver would have done. **No HTTP route accepts this argument**; it is
+    reachable only from in-process code.
     """
-    result_dir = _resolve_result_dir(scenario_id)
+    result_dir = Path(result_dir) if result_dir is not None else _resolve_result_dir(scenario_id)
     db_paths = results_evidence.result_db_paths(result_dir) if result_dir is not None else []
     if not db_paths:
         return reality_check.not_checkable(

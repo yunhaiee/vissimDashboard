@@ -1010,6 +1010,21 @@ class RunOutcome:
     elapsed_s: float = 0.0
 
 
+#: What a live runner must do, in the order it must do it. The specification
+#: half of :func:`runner_requirement`, hoisted to a constant so the same five
+#: lines are reported whether or not this machine can run one — and so
+#: ``search_runner``'s module docstring can be checked against a single source
+#: rather than against a copy inside a function body.
+RUNNER_REQUIRES = (
+    "clone the active dataset into a job work dir (never edit the active .inpx in place)",
+    "apply the candidate vector with set_driving_behavior_parameter, one field at a time",
+    "run through the job queue with RunContinuous, at the pinned seed",
+    "score the finished run with build_reality_check_report against the SAME observation "
+    "set and period the search's preconditions were evaluated on",
+    "return validation.geh per node — None, never 0.0, where the statistic is undefined",
+)
+
+
 class SearchRunner(Protocol):
     """One candidate -> one scored run.
 
@@ -1018,7 +1033,10 @@ class SearchRunner(Protocol):
     per-step loop — CLAUDE.md's COM rules), scores the finished run against the
     same observed counts the reality check used, and returns GEH per node.
 
-    **No such implementation ships in this unit.** See :func:`runner_requirement`.
+    ``services.agent.search_runner.VissimSearchRunner`` is that implementation
+    (2026-08-21); ``SyntheticRunner`` below is the offline one the tests search
+    against. See :func:`runner_requirement` for what a machine must provide
+    before the live one can be used at all.
     """
 
     def run(
@@ -1028,28 +1046,51 @@ class SearchRunner(Protocol):
 
 
 def runner_requirement() -> dict[str, Any]:
-    """What a real runner must provide, in one place, so the gap is a spec.
+    """What a real runner must provide, and whether THIS MACHINE can provide it.
 
-    Stated rather than half-built. A COM-driving runner written here could not
-    be executed or verified in this unit (live Vissim is out of scope by the
-    unit's own rules), and shipping an untested one would be a capability claim
-    this repository has been burned by before.
+    ``requires`` is unchanged from the day this was a pure specification, and it
+    is kept in full whichever way ``wired`` comes out: it is the list
+    ``services.agent.search_runner`` is written against, line for line, and a
+    reader of an unwired card is owed the same statement of what running one
+    would take.
+
+    ``wired`` stopped being a constant on 2026-08-21, when that implementation
+    landed. It is now a MEASUREMENT of the box the backend is running on —
+    Windows plus pywin32, the same probe every COM entry point in this codebase
+    already makes — and it is re-taken on every call rather than cached, so the
+    answer a card shows is the answer at the moment it was asked. On the
+    consultant's Windows machine it reads True; on the Mac laptop this repo is
+    also developed on it reads False, honestly, with ``why_not_here`` naming the
+    reason. It is NOT a claim that a search will succeed: the precondition gate,
+    the job's own refusals and the holdout all still stand between this flag and
+    a proposal.
     """
+    try:
+        from services.agent import search_runner
+    except Exception as exc:  # noqa: BLE001 — an unimportable runner IS "not wired"
+        return {
+            "interface": "services.agent.parameter_search.SearchRunner",
+            "implementation": None,
+            "wired": False,
+            "requires": list(RUNNER_REQUIRES),
+            "why_not_here": (
+                "The live runner module could not be imported in this backend "
+                f"({type(exc).__name__}: {exc}), so no search can be started here."
+            ),
+        }
+
+    available, reason = search_runner.runner_availability()
     return {
-        "interface": "services.agent.parameter_search.SearchRunner",
-        "wired": False,
-        "requires": [
-            "clone the active dataset into a job work dir (never edit the active .inpx in place)",
-            "apply the candidate vector with set_driving_behavior_parameter, one field at a time",
-            "run through the job queue with RunContinuous, at the pinned seed",
-            "score the finished run with build_reality_check_report against the SAME observation "
-            "set and period the search's preconditions were evaluated on",
-            "return validation.geh per node — None, never 0.0, where the statistic is undefined",
-        ],
-        "why_not_here": (
-            "Live Vissim COM is out of scope for this unit. A runner that cannot be executed here "
-            "cannot be verified here, and an unverified COM path presented as working is the "
-            "failure mode this product exists to prevent."
+        "interface": search_runner.RUNNER_INTERFACE,
+        "implementation": search_runner.RUNNER_IMPLEMENTATION,
+        "wired": bool(available),
+        "requires": list(RUNNER_REQUIRES),
+        "why_not_here": None
+        if available
+        else (
+            f"{reason} Running a search means driving Vissim over COM, so this backend cannot "
+            "start one — the card still says what a search would do, and on a machine that can "
+            "run it the same card carries the start control."
         ),
     }
 
@@ -3133,7 +3174,9 @@ def card_payload(
 # ---------------------------------------------------------------------------
 
 
-def trigger_card(preconditions: Mapping[str, Any]) -> dict[str, Any] | None:
+def trigger_card(
+    preconditions: Mapping[str, Any], *, search_job: Mapping[str, Any] | None = None
+) -> dict[str, Any] | None:
     """"Shall I start a search?" — or ``None`` when the gate has not opened.
 
     ``None`` is the common case and the important one: no card, no nudge, no
@@ -3141,8 +3184,19 @@ def trigger_card(preconditions: Mapping[str, Any]) -> dict[str, Any] | None:
     which is the user's decision ② (a proposal card on ladder exhaustion,
     ask-first, never an automatic start).
 
-    Approving it enqueues a job; it never starts anything by itself, and this
-    module cannot start one either — see :func:`runner_requirement`.
+    Answering it enqueues a job on ``POST /api/calibration/parameter-search/start``;
+    NOTHING here starts one. ``auto_start`` is False and this function has no
+    side effect of any kind — it reads a gate payload and returns a question.
+
+    ``search_job`` is the state of the search this workspace has already started,
+    if any, built by ``services.agent.search_job.job_card`` and passed in by the
+    caller rather than read here: this module stays pure, and the job registry is
+    per-process state that a pure gate evaluation must not reach into. It rides
+    on the TRACK as well (``calibration_rail.parameter_search_track``), because a
+    finished search must stay visible after its own success re-locks the gate —
+    a search that fixes every node's GEH closes the door behind it with
+    ``GEH_ALREADY_PASSES``, and the card that would have reported the winner is
+    ``None`` by then.
     """
     payload = preconditions if isinstance(preconditions, Mapping) else {}
     if not payload.get("ok"):
@@ -3196,6 +3250,7 @@ def trigger_card(preconditions: Mapping[str, Any]) -> dict[str, Any] | None:
             mrwa_reference.MERGING_RANGE_SCOPE_NOTE,
         ],
         "runner": runner_requirement(),
+        "search_job": dict(search_job) if isinstance(search_job, Mapping) else None,
     }
 
 
@@ -3283,6 +3338,7 @@ __all__ = [
     "ParameterSearch",
     "REALITY_CHECK_NOT_CHECKABLE",
     "REFUSAL_CODES",
+    "RUNNER_REQUIRES",
     "RunOutcome",
     "SEARCHABLE_PARAMETERS",
     "SEARCHED_CONSENTED_CONSTRAINT",

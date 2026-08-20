@@ -103,6 +103,8 @@ import {
   type CalibrationStationId,
   type GroupedSteps,
 } from "@/lib/calibrationStations";
+import { pick } from "@/lib/serverText";
+import ParameterSearchStart from "@/components/calibration/ParameterSearchStart";
 
 type Translate = (ko: string, en: string, ja?: string) => string;
 
@@ -132,7 +134,13 @@ const STATUS_CHIP: Record<CalibrationStepStatus, string> = {
   // here keeps Tailwind's stock light-mode #0369a1 and lands dark-blue-on-navy —
   // the blue-on-blue trap the genesis pages already had to fix. 600 is remapped
   // (#6da7ec) and is the app's own "navy fill, sky text" badge idiom.
-  NEXT: "border-sky-300 bg-sky-50 text-sky-600",
+  //
+  // `border-sky-200`, not 300, for exactly the same reason on the BORDER side
+  // (2026-08-21): the remap covers sky 50/200/400/500/600 and nothing else, so
+  // the 300 shade falls through to stock #7dd3fc — a bright cyan hairline
+  // nothing else in this app draws. Every sky border in this file is 200, and
+  // all five of them are hairlines around a tint, never a fill.
+  NEXT: "border-sky-200 bg-sky-50 text-sky-600",
   NOT_APPLICABLE: "border-slate-200 bg-slate-50 text-slate-500",
   NO_EVIDENCE: "border-slate-300 bg-surface text-slate-600",
 };
@@ -166,13 +174,14 @@ export function stationLabel(station: CalibrationStationId, t: Translate): strin
   return entry ? t(entry[0], entry[1], entry[2]) : station;
 }
 
-/** The server's own localized text, picked — never composed here. */
-export function pick(text: { ko: string; en: string; ja: string } | undefined | null, lang: string): string {
-  if (!text) return "";
-  if (lang === "ko") return text.ko;
-  if (lang === "ja") return text.ja;
-  return text.en;
-}
+/** The server's own localized text, picked — never composed here.
+ *
+ * MOVED to lib/serverText.ts (#51's live runner, 2026-08-21) and re-exported
+ * from here, because a second component now renders server verdicts too
+ * (ParameterSearchStart). Re-exported rather than relocated-and-rewritten: every
+ * caller has always imported it from this module, and a helper with two homes is
+ * the drift this codebase keeps having to undo. */
+export { pick };
 
 /** How many steps of a group are in each status, in the server's order.
  *
@@ -195,7 +204,7 @@ function ProposalBadge({ count, t }: { count: number; t: Translate }) {
   if (count <= 0) return null;
   return (
     <span
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[14px] font-semibold text-sky-600"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[14px] font-semibold text-sky-600"
       title={t("승인 대기 중인 제안", "Proposals awaiting approval", "承認待ちの提案")}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden="true" />
@@ -212,11 +221,18 @@ function ProposalBadge({ count, t }: { count: number; t: Translate }) {
 // renders the LIST — a modeller reads which door to open instead of learning
 // that a door exists. It is the same ladder grammar the #43 diagnosis uses.
 //
-// Unlocked, this shows the ask-first card and NO start button. That is not an
-// omission: the search needs live Vissim COM, which belongs to the job queue on
-// the user's own machine, and `card.runner.wired` is false in this build. A
-// button that could not do what it says would be worse than no button, so the
-// card states the runner's real state instead of implying one.
+// Unlocked, this shows the ask-first card. Whether it also shows a START
+// CONTROL is the backend's answer, not this file's: `card.runner.wired` used to
+// be false in every build and is, since the live runner landed (2026-08-21), a
+// MEASUREMENT of the machine the backend runs on. Where it is true the control
+// renders (components/calibration/ParameterSearchStart.tsx); where it is false
+// the same sentence as before renders instead, verbatim, and no control does —
+// a button that could not do what it says is still worse than no button.
+//
+// `ParameterSearchTrack` itself therefore contains NO `<button>` in either
+// branch, which is what makes "the start control cannot be reached unless the
+// runner is wired" a checkable property of this file. Ask-first also survives:
+// the card asks, the control is the answer, and nothing starts on its own.
 //
 // #50-b moved where it is RENDERED (the ⑫ station panel, beside the Table 5-6
 // evidence it acts on) and changed nothing about what it says. It stays
@@ -230,10 +246,20 @@ export function ParameterSearchTrack({
   track,
   lang,
   t,
+  scenarioId = "",
+  sessionId = null,
+  onSearchFinished,
 }: {
   track: CalibrationRailTrack;
   lang: string;
   t: Translate;
+  /** The run the rail's gate was derived from, threaded into the start request
+   * so the search scores against the same evidence this card was built on. */
+  scenarioId?: string;
+  /** The drawer's current agent session, from its `vissim:agent-session`
+   * broadcast. Passed through untouched — this component never inspects it. */
+  sessionId?: string | null;
+  onSearchFinished?: () => void;
 }) {
   const card = track.card;
   const refusals = track.refusals ?? [];
@@ -268,11 +294,26 @@ export function ParameterSearchTrack({
             </p>
           </details>
         )}
+        {/* A search this workspace already ran, on a track that is locked again.
+            That is the NORMAL end of a successful search, not an edge case: the
+            winner fixes the GEH miss, so the next rail read refuses with
+            GEH_ALREADY_PASSES and there is no card any more. Reporting the job
+            only on the card would erase the completion at the moment it arrived.
+            The server's sentence, and no control — starting one is the open
+            track's business. */}
+        {track.search_job && (
+          <p className="mt-1 border-l border-slate-300 pl-2">
+            <span className="font-semibold text-slate-700">
+              {pick(track.search_job.status_text, lang)}
+            </span>{" "}
+            {pick(track.search_job.headline, lang)}
+          </p>
+        )}
       </div>
     );
   }
   return (
-    <div className="mt-1 rounded-md border border-sky-300 bg-sky-50/60 px-2.5 py-2 text-[14px] leading-6 text-slate-700">
+    <div className="mt-1 rounded-md border border-sky-200 bg-sky-50/60 px-2.5 py-2 text-[14px] leading-6 text-slate-700">
       <p className="font-semibold text-slate-800">
         {pick(track.label, lang)}
         <span className="ml-1 font-mono text-[14px] font-normal text-slate-500">{track.unit}</span>
@@ -290,20 +331,35 @@ export function ParameterSearchTrack({
         {t("분", "min", "分")}
         {card.plan.resumable ? t(" (이어하기 가능)", " (resumable)", " (再開可)") : ""}
       </p>
-      {/* The honest half. Never hidden behind a disclosure. */}
-      <p className="mt-1 border-l border-sky-300 pl-2 text-slate-600">
-        {card.runner.wired
-          ? t(
-              "실행기가 연결되어 있습니다.",
-              "A runner is wired.",
-              "実行機が接続されています。",
-            )
-          : t(
-              "이 빌드에는 실행기가 연결되어 있지 않습니다 — 탐색 실행은 Vissim COM이 필요해 잡 큐(사용자 실행 환경)의 몫입니다. 이 카드는 시작 여부를 묻기만 합니다.",
-              "No runner is wired in this build — running a search needs Vissim COM and belongs to the job queue on your own machine. This card only asks whether to start one.",
-              "このビルドには実行機が接続されていません — 探索の実行にはVissim COMが必要で、ジョブキュー(ユーザーの実行環境)の担当です。このカードは開始の可否を尋ねるだけです。",
-            )}
-      </p>
+      {/* The honest half, and — since 2026-08-21 — the ACTION half, in one
+          ternary so exactly one of them always renders.
+          `card.runner.wired` is the backend's own measurement (Windows plus
+          pywin32, re-taken on every read). Where it is true the start control
+          appears; where it is false the sentence that has always been here
+          appears instead, verbatim, and NO control does — a button that cannot
+          do what it says is still worse than no button.
+          Note what is NOT here: no `<button>`, in either branch or in the locked
+          one above. The control lives in ParameterSearchStart, which is why
+          "the start control is unreachable unless the runner is wired" is a
+          checkable property of this file rather than a promise about it. */}
+      {card.runner.wired ? (
+        <ParameterSearchStart
+          track={track}
+          scenarioId={scenarioId}
+          sessionId={sessionId}
+          lang={lang}
+          t={t}
+          onFinished={onSearchFinished}
+        />
+      ) : (
+        <p className="mt-1 border-l border-sky-200 pl-2 text-slate-600">
+          {t(
+            "이 빌드에는 실행기가 연결되어 있지 않습니다 — 탐색 실행은 Vissim COM이 필요해 잡 큐(사용자 실행 환경)의 몫입니다. 이 카드는 시작 여부를 묻기만 합니다.",
+            "No runner is wired in this build — running a search needs Vissim COM and belongs to the job queue on your own machine. This card only asks whether to start one.",
+            "このビルドには実行機が接続されていません — 探索の実行にはVissim COMが必要で、ジョブキュー(ユーザーの実行環境)の担当です。このカードは開始の可否を尋ねるだけです。",
+          )}
+        </p>
+      )}
       {/* The band's PAGE. The range is a number and stays above; the citation is
           provenance, and the user's 2026-08-20 decision put provenance one click
           away. It travels with the band it authorises, verbatim. */}
@@ -407,7 +463,7 @@ export default function FlowRail({
   const rowClass = (station: CalibrationStationId) =>
     `w-full rounded-lg border px-2.5 py-2 text-left transition ${
       activeStation === station
-        ? "border-sky-300 bg-sky-50/60"
+        ? "border-sky-200 bg-sky-50/60"
         : "border-slate-200 bg-surface hover:bg-slate-50"
     }`;
 

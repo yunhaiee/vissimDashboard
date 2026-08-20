@@ -2475,6 +2475,69 @@ export type CalibrationStepStatus =
   | "NOT_APPLICABLE"
   | "NO_EVIDENCE";
 
+/** One driving behaviour a search could be run on: all three searched
+ * parameters readable off it, so a baseline vector exists and a write could be
+ * verified. The server lists them; the screen offers the CHOICE. Nothing picks
+ * one of several on the modeller's behalf — see
+ * `search_job.resolve_target_behaviour`. */
+export interface ParameterSearchBehaviour {
+  no: string;
+  name: string;
+  reference_count?: number | null;
+  params: Record<string, number>;
+}
+
+/** One live/finished parameter-search job, exactly as the server describes it
+ * (`services/agent/search_job.job_card`).
+ *
+ * Every word a reader sees comes from here. There is no client-side status
+ * vocabulary for a search, no client-side elapsed arithmetic and no client-side
+ * opinion about whether a finished search produced anything: `headline` is the
+ * sentence, `status_text` is the chip, and which one they are was decided on the
+ * job thread. */
+export interface ParameterSearchJob {
+  id: string;
+  status: "QUEUED" | "RUNNING" | "COMPLETE" | "PARTIAL" | "FAILED";
+  /** Still going? A server FIELD, not a client derivation from `status` — the
+   * moment the client owns "QUEUED and RUNNING mean keep polling" it owns a
+   * status vocabulary of its own, and a sixth status would read as finished. */
+  live: boolean;
+  status_text: { ko: string; en: string; ja: string };
+  headline: { ko: string; en: string; ja: string };
+  phase?: string | null;
+  candidates_evaluated: number;
+  candidates_failed: number;
+  budget_s: number;
+  elapsed_s: number;
+  consumed_s: number;
+  duration_s?: number | null;
+  seed?: number | null;
+  holdout_seed?: number | null;
+  behavior_no?: string | null;
+  behavior_name?: string | null;
+  session_id?: string | null;
+  /** Set only when a COMPLETE search was remembered by the broker — the
+   * reference an approval card is later rebuilt from. */
+  search_id?: string | null;
+  remembered: boolean;
+  terminal_reason?: string | null;
+  acceptance_code?: string | null;
+  proposal_outcome?: string | null;
+  winner?: {
+    params: Record<string, number>;
+    objective?: number | null;
+    pass_count?: number | null;
+    graded?: number | null;
+    baseline_objective?: number | null;
+  } | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  /** A NAMED non-feature: a partial search's state is written for audit and is
+   * never read back, because a grant may only be minted from a search this
+   * process ran and remembered. */
+  resume_from_disk?: { supported: boolean; why: string; artifact: string };
+}
+
 /** Unit #51's step-⑫ second track: the range-bounded parameter search.
  *
  * `locked` is the normal state and carries the precondition gate's own NAMED
@@ -2512,10 +2575,33 @@ export interface CalibrationRailTrack {
       algorithm_citation: string;
     };
     caveats: string[];
-    /** The runner seam's honest state: `wired: false` in this build — live
-     * execution needs Vissim COM and belongs to the job queue, not the browser. */
-    runner: { interface: string; wired: boolean; requires: string[]; why_not_here: string };
+    /** The runner seam's honest state, MEASURED on the backend's own machine
+     * since 2026-08-21: `wired` is Windows-plus-pywin32, re-taken on every read.
+     * True on the consultant's box (the start control appears), false on a Mac
+     * (it does not, and `why_not_here` says why). Never a claim that a search
+     * will succeed — the gate, the job's refusals and the holdout all still
+     * stand between this flag and a proposal. */
+    runner: {
+      interface: string;
+      implementation?: string | null;
+      wired: boolean;
+      requires: string[];
+      why_not_here: string | null;
+    };
+    /** Mirrors the track's own `search_job` — same object, so a reader of
+     * either sees the same state. */
+    search_job?: ParameterSearchJob | null;
   } | null;
+  /** The newest search THIS workspace started, or null. On the TRACK rather
+   * than only on the card because a search that SUCCEEDS closes the gate behind
+   * it (every node passes, so the next rail read refuses with
+   * `GEH_ALREADY_PASSES` and `card` is null) — a job block that lived only on
+   * the card would erase the completion at the moment it arrived. */
+  search_job?: ParameterSearchJob | null;
+  /** Which behaviours a search could target, and the one to preselect when
+   * there is exactly one. `null` means "more than one, or none — ask". */
+  behaviours?: ParameterSearchBehaviour[];
+  default_behavior_no?: string | null;
   /** Unit #51-c: what becomes of a searched value on each of the two paths, and
    * the user's recorded answer on the collision (DECISIONS.md 2026-08-20).
    *
@@ -2726,6 +2812,77 @@ export async function fetchCalibrationRealityCheck(params: {
 
 export async function fetchCalibrationAppliedRows(): Promise<CalibrationAppliedRows> {
   const r = await apiFetch("/api/calibration/applied-rows", { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** What `POST /api/calibration/parameter-search/start` answers.
+ *
+ * It answers 200 either way. `started` says which happened and `refusals`
+ * carries the named codes when it did not — those refusals ARE the product, and
+ * a UI should not have to translate a 4xx back into a sentence. Both families
+ * arrive in one list: the job's own start refusals (no session, no runner, a
+ * behaviour nobody picked) and the precondition gate's
+ * (`LADDER_NOT_EXHAUSTED`, `TABLE_5_6_NOT_APPLIED`, …). */
+export interface ParameterSearchStartResult {
+  started: boolean;
+  refusals: {
+    code: string;
+    why: { ko: string; en: string; ja: string };
+    opens_when?: { ko: string; en: string; ja: string };
+    detail?: unknown;
+  }[];
+  behaviours: ParameterSearchBehaviour[];
+  budget: { budget_s: number; clamped: boolean; min_s: number; max_s: number; default_s: number };
+  duration: { duration_s: number; clamped: boolean; min_s: number; max_s: number; default_s: number };
+  job: ParameterSearchJob | null;
+}
+
+/** Start one range-bounded parameter search (#51's live runner).
+ *
+ * SELECTORS ONLY. There is deliberately no way to send a gate verdict: the
+ * backend re-derives the whole precondition payload from evidence it read
+ * itself, and its request model forbids extra fields, so an invented
+ * `preconditions` is a 422 at the door rather than a field that quietly does
+ * nothing.
+ *
+ * `sessionId` is the agent conversation the finished search is remembered
+ * against — the browser learns it from the `vissim:agent-session` broadcast the
+ * drawer already publishes. Omitting it is not a client-side error to guard
+ * against: the server refuses by name (`NO_AGENT_SESSION`) with the sentence
+ * that says what to do, and this client renders it like any other refusal. */
+export async function startParameterSearch(params: {
+  scenarioId: string;
+  sessionId?: string | null;
+  behaviorNo?: string | null;
+  budgetS?: number | null;
+  durationS?: number | null;
+  period?: string | null;
+  observationSetId?: string | null;
+  observationPeriod?: string | null;
+}): Promise<ParameterSearchStartResult> {
+  const body: Record<string, unknown> = { scenario_id: params.scenarioId };
+  if (params.sessionId) body.session_id = params.sessionId;
+  if (params.behaviorNo) body.behavior_no = params.behaviorNo;
+  if (typeof params.budgetS === "number") body.budget_s = params.budgetS;
+  if (typeof params.durationS === "number") body.duration_s = params.durationS;
+  if (params.period) body.period = params.period;
+  if (params.observationSetId) body.observation_set_id = params.observationSetId;
+  if (params.observationPeriod) body.observation_period = params.observationPeriod;
+  const r = await apiMutationFetch("/api/calibration/parameter-search/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** Poll one running search. The job record is the ONLY source of its status. */
+export async function fetchParameterSearchJob(jobId: string): Promise<ParameterSearchJob> {
+  const r = await apiFetch(`/api/calibration/parameter-search/jobs/${encodeURIComponent(jobId)}`, {
+    cache: "no-store",
+  });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
 }

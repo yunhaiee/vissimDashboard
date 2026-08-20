@@ -321,13 +321,55 @@ def test_pending_approvals_is_empty_not_an_error_when_nothing_is_waiting(
 # ---------------------------------------------------------------------------
 
 
-def test_the_calibration_router_exposes_no_write_verb():
-    """Unit #50 adds no write path. Approval keeps going through the endpoint
-    that already owns it, with its own identity check."""
+#: The ONLY non-GET route this router is allowed to carry, and the unit that put
+#: it there. #50 shipped a strictly read-only surface; #51's live runner added
+#: one control, and this list is what stops a second one arriving unnoticed.
+_ALLOWED_MUTATIONS = {"/api/calibration/parameter-search/start": "#51 live runner"}
+
+
+def test_the_calibration_router_exposes_no_write_verb_but_the_one_named_control():
+    """Approval STILL goes through the endpoint that already owns it.
+
+    #50's rule was "no write path at all", and it held until 2026-08-21. #51's
+    live runner needed exactly one control — a POST that ENQUEUES A JOB and
+    writes to no network; the winner it eventually produces still goes through
+    ``POST /api/assistant/agent/approve`` with its own identity check. So the
+    rule becomes an ALLOWLIST rather than a blanket: a second mutating route on
+    this router, or an approval leg growing here, fails this test by name.
+    """
     for route in main.app.routes:
         path = getattr(route, "path", "")
         if not path.startswith("/api/calibration"):
             continue
-        assert set(getattr(route, "methods", set())) <= {"GET", "HEAD"}, (
-            f"{path} exposes a write verb; #50 is a read-only surface"
+        methods = set(getattr(route, "methods", set()))
+        if methods <= {"GET", "HEAD"}:
+            continue
+        assert path in _ALLOWED_MUTATIONS, (
+            f"{path} exposes a write verb this surface has not been granted; "
+            "the calibration screen approves through /api/assistant/agent/approve"
         )
+        assert methods <= {"POST"}, f"{path} may only be a POST"
+
+    # ...and the one that IS allowed is really registered, so the allowlist can
+    # never quietly outlive the route it describes.
+    registered = {
+        getattr(route, "path", "")
+        for route in main.app.routes
+        if "POST" in set(getattr(route, "methods", set()))
+    }
+    assert set(_ALLOWED_MUTATIONS) <= registered
+
+
+def test_the_start_route_refuses_a_body_that_carries_a_verdict(client: TestClient):
+    """The gate is server-derived; there is no way to send one in.
+
+    ``extra="forbid"`` on the request model turns an invented ``preconditions``
+    into a 422 at the door rather than a field that silently does nothing — a
+    caller must be able to tell the difference.
+    """
+    response = client.post(
+        "/api/calibration/parameter-search/start",
+        json={"scenario_id": "SIM_x", "preconditions": {"ok": True}},
+        headers=admin_headers(),
+    )
+    assert response.status_code == 422

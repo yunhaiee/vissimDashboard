@@ -242,6 +242,54 @@ function literalPattern(text: string): RegExp {
   return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 }
 
+/**
+ * `border-sky-300` -- the dark-remap fall-through, in ONE place.
+ *
+ * globals.css's dark `@theme` remaps sky 50/200/400/500/600 and nothing else, so
+ * a `border-sky-300` keeps Tailwind's stock #7dd3fc: a bright cyan hairline
+ * nothing else in this app draws. The genesis screens were swept for it first;
+ * the calibration surface followed on 2026-08-21 after the same class arrived on
+ * a new component (#51's start control).
+ *
+ * Anchored on a pair of quotes with no newline between them, so it fires on a
+ * class STRING -- a className attribute or a classes-returning helper -- and not
+ * on the doc comments that legitimately name the shade while explaining why it
+ * is banned. Both users of it pass `withoutComments`-free source for that reason.
+ *
+ * One definition, two tests: a sweep that "fixed" this by loosening the pattern
+ * would have to loosen it for both surfaces at once, which is visible here
+ * rather than buried in one test body.
+ */
+const UNMAPPED_SKY_BORDER = /"[^"\n]*border-sky-300[^"\n]*"/;
+
+/**
+ * The source of ONE exported top-level function, so a `doesNotMatch` can mean
+ * "not in THIS component" instead of "not in this file".
+ *
+ * Needed because "no start control unless the runner is wired" is a statement
+ * about `ParameterSearchTrack`, and the file it lives in legitimately contains
+ * other buttons (the rail's own station rows). A whole-file pin would either be
+ * vacuous or wrong.
+ *
+ * The slice runs from the declaration to the first line that is exactly `}` --
+ * this codebase's formatting for a top-level close, and Prettier's. Feed it
+ * `withoutComments(...)` when the pin is a `doesNotMatch`: a JSX comment inside
+ * the function collapses to an indented `{}`, never to a `}` at column 0, so the
+ * boundary survives stripping.
+ *
+ * CRLF-tolerant on purpose (measured 2026-08-21: a tool that rewrote one of
+ * these files with Windows line endings made the boundary unfindable and the
+ * whole pin failed with a message about formatting rather than about the thing
+ * it guards). A pin that a line-ending change can silence is not a pin.
+ */
+function topLevelFunction(source: string, name: string): string {
+  const start = source.indexOf(`export function ${name}(`);
+  assert.ok(start >= 0, `expected ${name} to be an exported top-level function`);
+  const close = /\r?\n\}\r?\n/.exec(source.slice(start));
+  assert.ok(close, `expected ${name} to close with a } at column 0`);
+  return source.slice(start, start + close.index + close[0].length);
+}
+
 type Pin = {
   match(source: string, pattern: RegExp, message: string): void;
   doesNotMatch(source: string, pattern: RegExp, message: string): void;
@@ -4458,10 +4506,11 @@ contractTest("U-1: three accent colours, tint in the fill, ink in the text", (pi
   // name the removed combinations while explaining them.
   const tintFamilyInk =
     /"[^"\n]*bg-(sky|emerald|blue|rose|amber)-(?:50|100)[^"\n]*text-\1-\d{2,3}[^"\n]*"|"[^"\n]*text-(sky|emerald|blue|rose|amber)-\d{2,3}[^"\n]*bg-\2-(?:50|100)[^"\n]*"/;
-  // `border-sky-300` is the same fall-through in a border -- sky-300 is not in
-  // the remap either, so it renders as stock #7dd3fc, a bright cyan hairline
-  // nothing else in this app draws.
-  const unmappedSkyBorder = /"[^"\n]*border-sky-300[^"\n]*"/;
+  // `border-sky-300` is the same fall-through in a border. HOISTED to module
+  // scope on 2026-08-21 so the calibration surface can be held to the identical
+  // pattern instead of a second copy of it (see UNMAPPED_SKY_BORDER); the regex
+  // itself is byte-for-byte what it always was.
+  const unmappedSkyBorder = UNMAPPED_SKY_BORDER;
 
   for (const [name, source] of files) {
     pin.doesNotMatch(
@@ -8801,6 +8850,7 @@ contractTest("unit #50: every new calibration string carries its own Japanese", 
     "components/calibration/NodeScoreTable.tsx",
     "components/calibration/BehaviourStation.tsx",
     "components/calibration/StationProposals.tsx",
+    "components/calibration/ParameterSearchStart.tsx",
   ]) {
     pin.doesNotMatch(
       read(file),
@@ -8864,22 +8914,44 @@ contractTest("unit #51: the search track renders the server's lock, and never de
 
 contractTest("unit #51: the trigger card asks, and offers no button it cannot honour", (pin) => {
   const rail = read("components/calibration/FlowRail.tsx");
-  const source = withoutComments(rail);
+  const track = topLevelFunction(withoutComments(rail), "ParameterSearchTrack");
 
-  // ask-first (the user's decision (2)): a question, never an auto-start and
-  // never a start control. The runner is not wired in this build, so a button
-  // would promise something no code here can do.
+  // ask-first (the user's decision (2)): a question, never an auto-start. The
+  // card asks; the control (when the runner is wired) is the ANSWER to it.
   pin.match(rail, /pick\(card\.question, lang\)/, "expected the ask-first question to be rendered");
   pin.match(rail, /pick\(card\.because, lang\)/, "expected the card to show WHY the ladder is exhausted");
+
+  // RE-SCOPED 2026-08-21 (#51's live runner). Until then this pinned "no start
+  // control anywhere", because `card.runner.wired` was a constant False and a
+  // button would have promised something no code could do. The flag is now a
+  // MEASUREMENT of the backend's machine, so the honest pin is no longer "no
+  // button" -- it is "no button REACHABLE FROM ANYWHERE BUT the wired branch".
+  //
+  // That is enforced structurally rather than by a proximity regex (the old
+  // `<button ...>[\s\S]{0,200}?card\.` would have been satisfied by moving the
+  // markup 201 characters away): the control lives in its own component, and
+  // `ParameterSearchTrack` -- BOTH branches of it, locked and open -- contains
+  // no `<button>` at all.
   pin.doesNotMatch(
-    source,
-    /<button[^>]*>[\s\S]{0,200}?card\./,
-    "expected NO start control on the trigger card -- the runner is not wired in this build",
+    track,
+    /<button/,
+    "expected NO button inside ParameterSearchTrack -- the start control is its own component, " +
+      "so a button in the locked branch or the unwired branch cannot hide here",
+  );
+  // MUTATION-CHECKED (2026-08-21): without the leading `{` this pin passed on
+  // `{!card.runner.wired ? (<ParameterSearchStart` -- the negation lives to the
+  // LEFT of the field name, so a pin that starts at `card.` reads the inverted
+  // branch as the true one and the control ends up on exactly the branch it must
+  // never be on. The brace is what makes the expression whole.
+  pin.match(
+    rail,
+    /\{card\.runner\.wired \? \(\s*<ParameterSearchStart/,
+    "expected the start control to sit on the TRUE branch of the server's wired flag and nowhere else",
   );
   pin.doesNotMatch(
-    source,
-    /startParameterSearch|runParameterSearch|POST[^\n]*parameter-search/,
-    "expected no client-side search kick-off -- a search needs COM and belongs to the job queue",
+    withoutComments(rail),
+    /<ParameterSearchStart[\s\S]*<ParameterSearchStart/,
+    "expected exactly ONE render site for the start control -- a second one is a second lock state",
   );
 
   // The honest half is rendered, not tucked behind a disclosure -- and not
@@ -8963,6 +9035,193 @@ contractTest("unit #51: the behaviour station shows the rail's track, not a seco
     page,
     /Not built yet|아직 만들어지지 않았습니다/,
     "expected no 'not built yet' placeholder -- #51 shipped, and the track states its real state",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #51's LIVE RUNNER (2026-08-21) — the ⑫ track finally has an action.
+//
+// The whole risk profile of this control is that it looks like a normal button
+// and is not: clicking it occupies the machine's only Vissim for its entire
+// budget, and what comes back has to be believable enough to authorise a write
+// to a shared driving behaviour. So the pins below are about the two ways the
+// client could quietly take over: deciding a search's STATE, and deciding
+// whether a search MAY start.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #51 runner: the start control renders the server and decides nothing", (pin) => {
+  const start = read("components/calibration/ParameterSearchStart.tsx");
+  const source = withoutComments(start);
+
+  // It really calls the API, and the API really POSTs the one route.
+  pin.match(start, /startParameterSearch\(\{/, "expected the control to call the start endpoint");
+  pin.match(
+    read("lib/api.ts"),
+    /export async function startParameterSearch\(/,
+    "expected a client for the start route in lib/api.ts",
+  );
+  pin.match(
+    read("lib/api.ts"),
+    /apiMutationFetch\("\/api\/calibration\/parameter-search\/start", \{\s*method: "POST"/,
+    "expected the start call to be a POST to the calibration router's one control",
+  );
+
+  // THE COST IS ON THE BUTTON. A search runs Vissim once per candidate for its
+  // whole budget; a label that said only "시작" would be asking for a click
+  // without saying what it spends.
+  pin.match(
+    start,
+    /탐색 시작 \(예산 \$\{budgetMinutes\}분, Vissim 실행\)/,
+    "expected the button to name the budget and that it runs Vissim, in Korean",
+  );
+  pin.match(
+    start,
+    /Start the search \(\$\{budgetMinutes\} min budget, runs Vissim\)/,
+    "expected the same cost statement in English",
+  );
+  pin.match(
+    start,
+    /探索開始 \(予算\$\{budgetMinutes\}分、Vissimを実行\)/,
+    "expected the same cost statement in Japanese",
+  );
+  pin.match(
+    start,
+    /card\.plan\.budget_s/,
+    "expected the budget on the button to be the SERVER's number, not a client default",
+  );
+
+  // The job's words are the server's, all of them.
+  pin.match(start, /pick\(job\.headline, lang\)/, "expected the job's sentence to come from the server");
+  pin.match(start, /pick\(job\.status_text, lang\)/, "expected the job's status word to come from the server");
+  pin.doesNotMatch(
+    source,
+    /=== "RUNNING"|=== "COMPLETE"|=== "PARTIAL"|=== "FAILED"|=== "QUEUED"/,
+    "expected NO client-side status vocabulary -- `job.live` is a server field for exactly this reason",
+  );
+  pin.match(
+    start,
+    /if \(payload\.live\) \{/,
+    "expected polling to continue on the server's own `live` field",
+  );
+
+  // ...and it decides nothing about whether a search may start.
+  pin.doesNotMatch(
+    source,
+    /exhaust|preconditions|geh\s*[<>]=?\s*\d/i,
+    "expected no client-side precondition logic -- the gate lives in search_job.evaluate_start",
+  );
+  pin.match(
+    start,
+    /outcome\.refusals\.map\(\(refusal\) => \(/,
+    "expected every named start refusal to be rendered, unconditionally",
+  );
+  pin.match(
+    start,
+    /pick\(refusal\.opens_when, lang\)/,
+    "expected a start refusal to say what would open it, like every other refusal on this screen",
+  );
+
+  // The behaviour choice is the modeller's, from the server's list. A client
+  // that defaulted to `behaviours[0]` would be making the choice the backend
+  // refuses to make (BEHAVIOUR_NOT_CHOSEN) and every candidate run would
+  // inherit it.
+  pin.match(
+    start,
+    /track\.default_behavior_no/,
+    "expected the preselection to be the server's, offered only when there is nothing to choose",
+  );
+  pin.doesNotMatch(
+    source,
+    /behaviours\[0\]\.no(?!\s*:\s*"")/,
+    "expected no client-side fallback to the first behaviour",
+  );
+});
+
+contractTest("unit #51 runner: the calibration components stay inside the dark remap", (pin) => {
+  // THE RIDER (2026-08-21). #51's start control arrived carrying
+  // `border-sky-300` -- the fall-through the genesis screens were already swept
+  // for -- and the sweep took FlowRail's five pre-existing occurrences with it,
+  // all of them hairlines around a tint and none of them a fill.
+  //
+  // The pattern is the genesis pin's own (UNMAPPED_SKY_BORDER), not a second
+  // copy: a future edit cannot loosen it for one surface without loosening it
+  // for both.
+  const files: [string, string][] = [
+    ["components/calibration/FlowRail.tsx", read("components/calibration/FlowRail.tsx")],
+    [
+      "components/calibration/ParameterSearchStart.tsx",
+      read("components/calibration/ParameterSearchStart.tsx"),
+    ],
+    ["components/calibration/BehaviourStation.tsx", read("components/calibration/BehaviourStation.tsx")],
+    ["components/calibration/StationProposals.tsx", read("components/calibration/StationProposals.tsx")],
+    ["components/calibration/NodeScoreTable.tsx", read("components/calibration/NodeScoreTable.tsx")],
+  ];
+
+  for (const [name, source] of files) {
+    pin.doesNotMatch(
+      source,
+      UNMAPPED_SKY_BORDER,
+      `${name}: sky-300 is outside the dark remap and renders as stock #7dd3fc -- use border-sky-200`,
+    );
+  }
+
+  // Fails in BOTH directions: a sweep that DELETED the sky borders instead of
+  // remapping them trips this, because the selection/proposal tint is the
+  // three-colour rule's own vocabulary and must survive.
+  pin.match(
+    files[0][1],
+    /"border-sky-200 bg-sky-50 text-sky-600"/,
+    "expected the rail's NEXT chip to keep its sky tint with a remapped border",
+  );
+  pin.match(
+    files[1][1],
+    /border-l border-sky-200/,
+    "expected the start control's left rule to be a remapped sky hairline",
+  );
+
+  // NOT IN THIS LIST, and said out loud rather than quietly omitted:
+  // `app/calibration/page.tsx` still carries `border-sky-300` at five places
+  // behind an explicit note (its own lines ~609-616) claiming stock #7dd3fc
+  // "reads as a light hairline on dark, which is the selected look". That
+  // contradicts the genesis rule this pin enforces, so ONE of the two is wrong
+  // and it is not a builder's call to settle by sweeping a file the refuter did
+  // not name. The disagreement is recorded here so the next reader finds it
+  // instead of discovering that this pin has a silent hole.
+  pin.match(
+    read("app/calibration/page.tsx"),
+    /The border stays sky-300 on purpose/,
+    "expected the page's deliberate exception to still STATE itself -- if that note is gone, " +
+      "the exception is gone with it and the page belongs in the list above",
+  );
+});
+
+contractTest("unit #51 runner: the session the winner lands in is the drawer's own", (pin) => {
+  const page = read("app/calibration/page.tsx");
+
+  // MEASURED: the only agent session id a browser holds is the drawer's, and
+  // FloatingAssistant already broadcasts it. Three pages mirror it exactly this
+  // way; this is the fourth, not a fourth MECHANISM.
+  pin.match(
+    page,
+    /window\.addEventListener\("vissim:agent-session", handleAgentSession\)/,
+    "expected the calibration page to mirror the drawer's session id from the existing broadcast",
+  );
+  pin.match(
+    page,
+    /sessionId=\{agentSessionId\}/,
+    "expected the session id to be threaded into the ⑫ track",
+  );
+  pin.match(
+    page,
+    /scenarioId=\{scenarioId\}/,
+    "expected the START to name the same run the rail's gate was derived from",
+  );
+  // No invented session. A client that minted one would be authorising a write
+  // against a conversation nobody had.
+  pin.doesNotMatch(
+    withoutComments(read("components/calibration/ParameterSearchStart.tsx")),
+    /crypto\.randomUUID|Math\.random|sessionId \?\?\s*"/,
+    "expected the control to pass the session through untouched -- never to invent or default one",
   );
 });
 
@@ -10234,9 +10493,14 @@ contractTest("unit #50-c: no fall-through family ink on the calibration surface"
   // thing on the screen, in the same navy fill and remapped sky ink. Anchoring
   // on only one of them would let the scan stay green over a screen that had
   // lost the other.
+  // The BORDER shade moved 300 -> 200 on 2026-08-21 (#51's rider): sky-300 is
+  // the same fall-through in a hairline that this scan bans in ink, and the
+  // genesis pin has always said so. The IDIOM is what this anchor guards -- navy
+  // fill, remapped sky ink, sky hairline -- and it is unchanged; only the shade
+  // that renders it correctly in dark mode is.
   pin.match(
     read("components/calibration/FlowRail.tsx"),
-    /NEXT: "border-sky-300 bg-sky-50 text-sky-600"/,
+    /NEXT: "border-sky-200 bg-sky-50 text-sky-600"/,
     "expected the NEXT chip to keep the app's navy-fill/sky-text idiom -- this scan bans fall-through shades, not the idiom",
   );
   pin.match(

@@ -931,8 +931,35 @@ def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
     nothing: no behaviour has been chosen here, so the approved path carries a
     CONDITION rather than a verdict (see that function). The per-behaviour verdict
     lives on the approval card, where a behaviour finally exists to read.
+
+    ``search_job`` (#51 live runner, 2026-08-21) rides on the track in BOTH states
+    for the same reason ``guardrail`` does, plus one of its own: a search that
+    SUCCEEDS closes the gate behind it. Every node's GEH now passes, so the next
+    rail read refuses with ``GEH_ALREADY_PASSES`` and ``card`` is ``None`` — and a
+    job block that lived only on the card would erase the completion the user is
+    waiting to see, at the exact moment it arrived. It is mirrored onto the card
+    as well when there is one, so a reader of either object sees the same state.
+    Its content is the CALLER's (``routers/calibration.py`` asks
+    ``services.agent.search_job``); this module composes none of it, and stays a
+    pure function of the evidence bundle it is handed.
     """
-    base = {**PARAMETER_SEARCH_TRACK, "guardrail": parameter_search.guardrail_policy()}
+    job = evidence.get("parameter_search_job")
+    job = dict(job) if isinstance(job, Mapping) else None
+    behaviours = evidence.get("parameter_search_behaviours")
+    behaviours = [dict(item) for item in behaviours if isinstance(item, Mapping)] if isinstance(
+        behaviours, (list, tuple)
+    ) else []
+    base = {
+        **PARAMETER_SEARCH_TRACK,
+        "guardrail": parameter_search.guardrail_policy(),
+        "search_job": job,
+        # Which driving behaviours a search could be run on, from the network the
+        # caller read. The screen offers the choice; nothing here picks one, and
+        # an empty list is the honest "no behaviour in this network carries all
+        # three searched parameters readably".
+        "behaviours": behaviours,
+        "default_behavior_no": behaviours[0]["no"] if len(behaviours) == 1 else None,
+    }
     reality = evidence.get("reality_check")
     if not isinstance(reality, Mapping):
         return base
@@ -962,7 +989,7 @@ def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
             "開始しません。",
         ),
         "refusals": [],
-        "card": parameter_search.trigger_card(preconditions),
+        "card": parameter_search.trigger_card(preconditions, search_job=job),
     }
 
 
@@ -987,6 +1014,10 @@ def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
         a ``saturation_flow.verify_applied_row`` result.
     ``reality_check``
         ``services.agent.tools_metrics.build_reality_check_report``.
+    ``parameter_search_job``
+        ``services.agent.search_job.job_card`` for the newest search THIS
+        workspace started (#51's live runner), or ``None``. Read only by
+        :func:`parameter_search_track`.
 
     An absent key is an absent EVIDENCE SOURCE, and it produces
     :data:`NO_EVIDENCE` — never a tick and never a failure.

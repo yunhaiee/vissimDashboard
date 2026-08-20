@@ -1,7 +1,8 @@
-"""``/api/calibration`` — the calibration workspace's READ side. Unit #50.
+"""``/api/calibration`` — the calibration workspace's read side (#50) and, since
+2026-08-21, the ONE control on it: ``POST /parameter-search/start`` (#51).
 
-Every route here is a GET, every one of them is pure with respect to this
-product's state, and not one of them decides anything about a network. They
+Every route here was a GET, every one of them pure with respect to this
+product's state, and not one of them decided anything about a network. They
 exist because four things a modeller must see were, until this unit, reachable
 only by talking to the agent in the drawer or by reading a terminal:
 
@@ -41,9 +42,31 @@ read the pending file without consuming it: deleting it is the approve leg's
 act, and a viewer that consumed an approval by looking at it would be a new
 failure mode, not a feature.
 
-**It runs no simulation and touches no COM.** A scoring request re-reads a run
-that already finished. If no run has finished, the honest answer is an empty
+**Its GETs run no simulation and touch no COM.** A scoring request re-reads a
+run that already finished. If no run has finished, the honest answer is an empty
 report with a reason code, which ``reality_check`` already produces.
+
+WHAT #51's LIVE RUNNER ADDED, and what it did NOT
+--------------------------------------------------
+:func:`start_parameter_search` is the first POST on this router. It still writes
+nothing to any network: it ENQUEUES a job (``services.agent.search_job``) that
+runs Vissim on CLONES, and the winner it eventually produces still has to go
+through the same approval endpoint as everything else. Three properties are
+worth stating because each of them is a way this route could have gone wrong:
+
+* **The gate is re-derived here, from evidence this process read.** The request
+  body carries selectors only — which scored run, which observation window,
+  which behaviour, how much budget, which conversation. No ``ok``, no
+  ``preconditions``, no ``force``, and nothing named on the body is treated as a
+  verdict. A client that invents a passing gate is sending a field nothing reads.
+* **A refusal is an ANSWER, not an HTTP error.** ``200`` with
+  ``started: false`` and the named codes, exactly as ``reality_check`` returns
+  its ``not_checkable`` reasons: those refusals are the product, and a UI should
+  not have to translate a 4xx back into a sentence. A malformed body is still a
+  422 — that is pydantic's job, not a refusal.
+* **No COM runs in this handler.** The handler validates and returns; the job
+  thread owns every Vissim call (CLAUDE.md: COM goes through the job queue,
+  never a request handler).
 """
 from __future__ import annotations
 
@@ -52,9 +75,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from services import calibration_rail, genesis_jobs, workspaces
-from services.agent import mrwa_reference, saturation_flow, tools_network
+from services.agent import mrwa_reference, saturation_flow, search_job, tools_network
 from services.datasets import get_active_dataset, get_active_inpx_path
 
 logger = logging.getLogger(__name__)
@@ -337,6 +361,16 @@ def get_flow_rail(
         "pt_line_count": len(pt_lines) if isinstance(pt_lines, list) else None,
         "applied_rows": _applied_rows(shadow),
         "reality_check": report,
+        # #51's live runner: the newest search THIS workspace started, as the ⑫
+        # track shows it. Gathered here rather than inside calibration_rail so
+        # that module stays a pure function of an evidence bundle — the job
+        # registry is per-process state, and a pure derivation must not reach
+        # into it. ``None`` when this workspace has never started one.
+        "parameter_search_job": search_job.job_card(search_job.latest_job()),
+        # The behaviours a search could target, so the ⑫ track can offer the
+        # CHOICE instead of the server picking one of several on the modeller's
+        # behalf (see search_job.resolve_target_behaviour).
+        "parameter_search_behaviours": search_job.searchable_behaviours(shadow),
     }
     rail = calibration_rail.derive_rail(evidence)
     rail["sources"] = {
@@ -348,6 +382,165 @@ def get_flow_rail(
         "scenario_id": scenario_id or None,
     }
     return rail
+
+
+class ParameterSearchStartRequest(BaseModel):
+    """Selectors, and NOT ONE VERDICT.
+
+    ``extra="forbid"`` is doing real work here rather than being tidy: it means a
+    body carrying ``preconditions``, ``ok``, ``force`` or ``wired`` is a 422 at
+    the door instead of a field that silently does nothing. The gate this route
+    honours is re-derived from server-read evidence in
+    ``search_job.evaluate_start``; there is no way to send one in.
+
+    Every field is the same selector the READ side already takes, plus the two
+    the job needs: which conversation the winner is remembered against, and how
+    much wall clock it may spend.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str = Field(..., description="The scored run the gate is evaluated against")
+    period: str | None = None
+    observation_set_id: str | None = None
+    observation_period: str | None = None
+    #: Which driving behaviour to search. Optional only because a network with
+    #: exactly one searchable behaviour has no choice to make; with several, the
+    #: gate refuses by name rather than picking one (BEHAVIOUR_NOT_CHOSEN).
+    behavior_no: str | None = None
+    #: Wall-clock ceiling. Clamped to [MIN_BUDGET_S, MAX_BUDGET_S]; absent or
+    #: unreadable means the card's own default.
+    budget_s: float | None = None
+    #: Simulated seconds per candidate run. Clamped the same way.
+    duration_s: int | None = None
+    #: The agent session the finished search is remembered against. Absent is a
+    #: named refusal (NO_AGENT_SESSION), not a silent no-op: a search with
+    #: nowhere to land is an hour of Vissim whose winner nothing can propose.
+    session_id: str | None = None
+
+
+@router.post("/parameter-search/start")
+def start_parameter_search(request: Request, body: ParameterSearchStartRequest):
+    """Start ONE range-bounded parameter search (#51), or refuse by name.
+
+    The whole gate runs before anything is enqueued and it runs on evidence THIS
+    process gathered — the same bundle :func:`get_flow_rail` builds, assembled
+    here again rather than cached from the last rail read, because the run the
+    caller names may have been re-scored since. ``search_job.evaluate_start``
+    then collects every refusal (its own start refusals AND
+    ``parameter_search.evaluate_preconditions``'s named gate refusals) instead of
+    stopping at the first, so a modeller three doors from a search learns about
+    all three now.
+
+    Returns 200 either way. ``started`` says which happened; ``refusals`` carries
+    the codes and the reader's-language sentences when it did not. See this
+    module's docstring for why a refusal is not an HTTP error here.
+    """
+    # Only the generation gate is language-bound (it renders V1-V9 prose); every
+    # refusal this route returns carries all three languages on the payload, so
+    # the reader's language is picked on the client, not here.
+    shadow = _shadow_model()
+    gate = _gate_for_active_dataset(_language(request))
+    health = None if gate else _health_report()
+    try:
+        report = _reality_check(
+            body.scenario_id,
+            period=body.period,
+            observation_set_id=body.observation_set_id,
+            observation_period=body.observation_period,
+        )
+    except Exception as exc:  # noqa: BLE001 — an unscorable run is missing evidence
+        logger.warning(
+            "calibration: reality check unavailable for a search start (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        report = None
+
+    applied = _applied_rows(shadow)
+    signals = shadow.get("signals") if isinstance(shadow, dict) else None
+    pt_lines = shadow.get("pt_lines") if isinstance(shadow, dict) else None
+    # The rail's own step 6 is what the gate reads for SIGNAL_STEP_UNVERIFIED —
+    # derived here from the same evidence the screen shows, so "the rail says
+    # signals are done" and "the gate says signals are done" cannot disagree
+    # between the page and the button on it.
+    rail = calibration_rail.derive_rail(
+        {
+            "gate": gate,
+            "health": health,
+            "phase_diagrams": _phase_diagram_index(),
+            "signal_controller_count": len(signals) if isinstance(signals, list) else None,
+            "pt_line_count": len(pt_lines) if isinstance(pt_lines, list) else None,
+            "applied_rows": applied,
+            "reality_check": report,
+        }
+    )
+
+    try:
+        source_inpx = Path(get_active_inpx_path())
+    except Exception:  # noqa: BLE001 — no dataset is a named refusal, not a 500
+        source_inpx = None
+
+    verdict = search_job.evaluate_start(
+        reality_check=report,
+        applied_rows=applied,
+        rail=rail,
+        shadow_model=shadow,
+        source_inpx=source_inpx,
+        workspace_id=workspaces.current_workspace_id(),
+        session_id=body.session_id,
+        behavior_no=body.behavior_no,
+        budget_s=body.budget_s,
+        duration_s=body.duration_s,
+        scenario_id=body.scenario_id,
+        period=body.period,
+        observation_set_id=body.observation_set_id,
+        observation_period=body.observation_period,
+    )
+
+    payload = {
+        "started": False,
+        "refusals": verdict["refusals"],
+        "behaviours": verdict["behaviours"],
+        "budget": verdict["budget"],
+        "duration": verdict["duration"],
+        "job": None,
+    }
+    if not verdict["ok"] or verdict["plan"] is None:
+        return payload
+
+    record = search_job.start(verdict["plan"])
+    if record is None:
+        # Lost the atomic claim to a POST that arrived at the same moment. The
+        # SAME named refusal ``evaluate_start`` would have produced a moment
+        # earlier, from the same builder — a race must not be a different answer
+        # than the check.
+        return {**payload, "refusals": [search_job.already_running_refusal()]}
+    if record.get("status") == search_job.FAILED:
+        # Claimed, but its thread never started (thread exhaustion). The record
+        # is already terminal, so nothing is wedged — and ``started: true`` here
+        # would be the worse half of that failure: a screen reporting a running
+        # search over a thread that does not exist.
+        return {
+            **payload,
+            "refusals": [search_job.job_not_started_refusal(record.get("error"))],
+            "job": search_job.job_card(record),
+        }
+    return {**payload, "started": True, "job": search_job.job_card(record)}
+
+
+@router.get("/parameter-search/jobs/{job_id}")
+def get_parameter_search_job(job_id: str):
+    """One search job, as the ⑫ track shows it — or 404.
+
+    Workspace-scoped by the same rule as everything else here: a job belonging to
+    another project must be indistinguishable from a job that does not exist, so
+    the ownership check comes BEFORE the existence answer.
+    """
+    record = search_job.get_job(job_id)
+    if record is None or str(record.get("workspace_id") or "") != workspaces.current_workspace_id():
+        raise HTTPException(status_code=404, detail="No such parameter-search job.")
+    return search_job.job_card(record)
 
 
 @router.get("/pending-approvals")

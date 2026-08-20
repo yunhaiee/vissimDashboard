@@ -777,10 +777,32 @@ def test_an_unreferenced_behaviour_forecasts_clear_and_an_unreadable_one_unknown
     assert ps.preflight_forecast(None)["verdict"] == ps.GUARDRAIL_UNKNOWN
 
 
-def test_the_runner_seam_says_plainly_that_nothing_live_is_wired():
-    requirement = ps.runner_requirement()
-    assert requirement["wired"] is False
-    assert requirement["requires"] and requirement["why_not_here"].strip()
+def test_the_runner_seam_states_the_spec_whichever_way_the_machine_answers(monkeypatch):
+    """``wired`` stopped being a constant when the live runner landed (2026-08-21).
+
+    It is now a MEASUREMENT of the box the backend runs on, so this asserts the two
+    things that must hold on EITHER box rather than a value that would make the
+    suite pass on a Mac and fail on the Windows dev machine (or the reverse):
+
+    * the ``requires`` spec is stated in full either way — an unwired card still
+      owes its reader what running a search would take;
+    * ``why_not_here`` is a real sentence exactly when ``wired`` is False, and
+      ``None`` when it is True (a "why not" beside a wired runner would be a
+      sentence contradicting the flag beside it).
+
+    ``test_agent_search_job.py`` pins both directions against a pinned probe.
+    """
+    from services.agent import search_runner
+
+    for available, reason in ((True, None), (False, "pywin32 is not available.")):
+        monkeypatch.setattr(search_runner, "runner_availability", lambda: (available, reason))
+        requirement = ps.runner_requirement()
+        assert requirement["wired"] is available
+        assert requirement["requires"] == list(ps.RUNNER_REQUIRES)
+        if available:
+            assert requirement["why_not_here"] is None
+        else:
+            assert reason in requirement["why_not_here"]
 
 
 # ===========================================================================
@@ -816,7 +838,13 @@ def test_the_card_says_what_was_exhausted_and_what_remains():
 def test_the_card_carries_the_guidelines_own_preference_for_observation():
     card = ps.trigger_card(_open_gate())
     assert mrwa_reference.MERGING_RANGE_OBSERVATION_NOTE in card["caveats"]
-    assert card["runner"]["wired"] is False
+    # The runner's state rides on the card and is the SAME object
+    # ``runner_requirement`` builds — never a second opinion composed here. Its
+    # value is the machine's answer (see that function's own test); what this
+    # pins is that the card carries the whole seam rather than a boolean.
+    assert card["runner"] == ps.runner_requirement()
+    # ...and the card still starts nothing by itself, wired or not.
+    assert card["auto_start"] is False and card["ask_first"] is True
 
 
 # ===========================================================================

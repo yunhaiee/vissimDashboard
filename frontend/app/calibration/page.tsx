@@ -254,6 +254,25 @@ export default function CalibrationWorkspacePage() {
   const parameterSearchTrack =
     rail?.steps.find((step) => step.number === 12)?.tracks?.[0] ?? null;
 
+  // #51's live runner: WHICH CONVERSATION a finished search is remembered
+  // against.
+  //
+  // MEASURED, 2026-08-21. The searched-parameter broker is keyed by agent
+  // session (backend/services/agent/searched_behaviour_broker.py), and the only
+  // session id a browser ever holds is the drawer's — minted by the backend on a
+  // turn and returned as `done.response.session_id`. FloatingAssistant already
+  // broadcasts every change of it on `vissim:agent-session`, and three pages
+  // (app/dashboard, app/network, app/downloads) already mirror it exactly this
+  // way. So this is that same listener, not a fourth mechanism.
+  //
+  // ITS ONE LIMIT, stated: the broadcast fires on CHANGE, so a page mounted
+  // after the drawer's last turn starts at `null` until the next one. That is
+  // not papered over here — with no session the start POST is refused BY NAME
+  // (NO_AGENT_SESSION) with the sentence that says to open the drawer first,
+  // which is strictly better than starting an hour of Vissim whose winner
+  // nothing could ever propose.
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [activeStep, setActiveStep] = useState<number | null>(null);
@@ -295,6 +314,21 @@ export default function CalibrationWorkspacePage() {
     fetchScenarios()
       .then((list) => setScenarios(list))
       .catch(() => setScenarios([]));
+  }, []);
+
+  // Mirror the floating assistant's current agent session id -- see
+  // `agentSessionId`'s own note above, and FloatingAssistant.tsx's
+  // "vissim:agent-session" dispatch effect.
+  useEffect(() => {
+    function handleAgentSession(event: Event) {
+      const detail = (event as CustomEvent<{ sessionId: string | null }>).detail;
+      setAgentSessionId(detail?.sessionId ?? null);
+    }
+
+    window.addEventListener("vissim:agent-session", handleAgentSession);
+    return () => {
+      window.removeEventListener("vissim:agent-session", handleAgentSession);
+    };
   }, []);
 
   useEffect(() => {
@@ -890,7 +924,17 @@ export default function CalibrationWorkspacePage() {
                   has not loaded there is simply nothing here to say. */}
               {parameterSearchTrack && (
                 <div className="mt-3">
-                  <ParameterSearchTrack track={parameterSearchTrack} lang={lang} t={t} />
+                  <ParameterSearchTrack
+                    track={parameterSearchTrack}
+                    lang={lang}
+                    t={t}
+                    scenarioId={scenarioId}
+                    sessionId={agentSessionId}
+                    // A finished search changes the gate underneath its own
+                    // card, so the rail is re-read the same way an approval
+                    // re-reads it: by bumping the request key.
+                    onSearchFinished={handleProposalResolved}
+                  />
                 </div>
               )}
             </div>
