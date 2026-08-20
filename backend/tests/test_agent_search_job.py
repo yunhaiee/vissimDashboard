@@ -780,13 +780,23 @@ class _FakeVissim:
     that is this repository's own logic.
     """
 
-    def __init__(self, *, readback=None, raises=None, num_runs=1, num_runs_raises=False):
+    def __init__(
+        self, *, readback=None, raises=None, num_runs=1, num_runs_raises=False, behaviour=None
+    ):
         self.readback = readback or (lambda parameter, value: {parameter: value})
         self.raises = raises
         self.num_runs = num_runs
         self.num_runs_raises = num_runs_raises
         self.calls: list[tuple[int, str, float]] = []
+        #: The model's CURRENT state, which the write ordering is derived from.
+        #: ``None`` means "unreadable", the fallback path.
+        self.behaviour = behaviour
         self.vissim = self
+
+    def get_driving_behavior(self, behavior_no):
+        if self.behaviour is None:
+            raise RuntimeError("no behaviour readable")
+        return dict(self.behaviour)
 
     # -- the two attributes _pin_single_run reaches through -----------------
     @property
@@ -826,6 +836,223 @@ def test_the_candidate_directory_layout_is_per_candidate_and_per_seed(tmp_path):
     assert run_inpx.read_text(encoding="utf-8") == "<network/>"
     # The SOURCE is untouched — the rule CLAUDE.md states for every clone.
     assert source.read_text(encoding="utf-8") == "<network/>"
+
+
+# ---------------------------------------------------------------------------
+# 6c. THE LIVE ACCEPTANCE'S OWN FINDING (2026-08-21)
+#
+# Every candidate of the first live run failed with
+# ``RUN_FAILED: ... 'The network file could not be loaded.'`` (Vissim 2026 COM,
+# -2147352567), and an isolation probe reproduced it with a bare copyfile and no
+# runner at all: the client export is SCENARIO-MANAGED
+# (``<netPara underScenMngm="true">``) and Vissim refuses LoadNet on such a file.
+#
+# The transform that fixes it is pure XML, so ALL of it is testable here. These
+# tests exist because the offline seam comparison could not see the failure: it
+# compared this runner's COM sequence against the agent job runner's and found
+# them identical, without noticing that the agent runner's ``source_inpx`` is
+# ALREADY materialized before it is called.
+# ---------------------------------------------------------------------------
+
+#: A scenario-managed export, in the shape the real client model has: the
+#: load-blocking flag, an export that would write five databases for one run, and
+#: an ``evalOutDir`` that names somewhere other than the run's own directory.
+#: Built on ``practice.inpx`` so ``ArtifactManager.clone()`` — which parses a
+#: shadow model — really runs against it.
+def _scenario_managed_network(tmp_path: Path) -> Path:
+    text = DEMO_INPX.read_text(encoding="utf-8")
+    assert "<netPara " in text, "fixture assumption changed: practice.inpx has no netPara"
+    assert "underScenMngm" not in text, "fixture assumption changed: practice.inpx is standalone"
+    assert "<simulation" not in text and "<evaluation" not in text, (
+        "fixture assumption changed: practice.inpx carries neither element, so this fixture "
+        "injects both to reproduce the client export's shape"
+    )
+    # The three things the real client export carries that a bare copy cannot
+    # survive, each written the way that export writes it.
+    text = text.replace("<netPara ", '<netPara underScenMngm="true" ', 1)
+    marker = "</netPara>"
+    assert marker in text, "fixture assumption changed: netPara is not a container element"
+    text = text.replace(
+        marker,
+        marker
+        + '<simulation numRuns="5" randSeed="42" randSeedIncr="123" simRes="10" simPeriod="5400"/>'
+        + '<evaluation evalOutDir="#examples#" keepPrevResults="KEEPCURRENT"/>',
+        1,
+    )
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "current.inpx"
+    path.write_text(text, encoding="utf-8")
+    written = path.read_text(encoding="utf-8")
+    for expected in ('underScenMngm="true"', 'numRuns="5"', 'evalOutDir="#examples#"'):
+        assert expected in written, f"fixture failed to inject {expected}"
+    return path
+
+
+def test_a_scenario_managed_export_is_materialized_standalone(tmp_path):
+    """THE FIX, at the XML level: the load-blocking state is provably gone.
+
+    MEASURED 2026-08-21: a bare ``shutil.copyfile`` of exactly this shape cannot
+    be ``LoadNet``-ed, and the first live acceptance spent every one of its
+    candidates finding that out over COM, one Vissim start-up at a time.
+    """
+    source = _scenario_managed_network(tmp_path / "src")
+    runner = _runner(tmp_path, source_inpx=source)
+
+    run_inpx, failure = runner._candidate_copy(1, 42, source)
+    assert failure is None, failure
+    materialized = run_inpx.read_text(encoding="utf-8")
+
+    # THE load blocker, gone — and flipped, not deleted.
+    assert 'underScenMngm="true"' not in materialized
+    assert 'underScenMngm="false"' in materialized
+    # ...asserted through the module's own predicate too, so a future change to
+    # what "loadable" means is caught in one place.
+    assert search_runner.VissimSearchRunner._standalone_blocker(run_inpx) is None
+
+    # The belt for the COM NumRuns pin: one requested run, one database.
+    assert 'numRuns="5"' not in materialized
+    assert 'numRuns="1"' in materialized
+
+    # THE SOURCE IS UNTOUCHED. CLAUDE.md's rule, and the reason the transform
+    # runs on the copy rather than in place.
+    assert 'underScenMngm="true"' in source.read_text(encoding="utf-8")
+
+
+def test_the_materialization_matches_artifactmanager_clone(tmp_path):
+    """The candidate is materialized by the SAME transform the scoring run was.
+
+    This is the property the whole design rests on: the search's baseline
+    candidate must reproduce the scoring run's GEH, and the scoring run's source
+    was an ``ArtifactManager`` working copy. If the two transforms ever diverge,
+    every candidate is measured against an observed side derived from a
+    differently-prepared network — a completed measurement with wrong numbers.
+
+    Pinned as BYTE EQUALITY rather than by re-listing the attributes, so a change
+    to ``clone()``'s normalization that this runner does not follow fails here
+    instead of silently in an hour of Vissim. (``_make_network_standalone``, the
+    seam NOT chosen, would fail this test by construction: it also rewrites
+    ``simRes``, which changes the simulation itself.)
+    """
+    source = _scenario_managed_network(tmp_path / "src")
+
+    from services.agent.state import ArtifactManager
+
+    clone_dir = tmp_path / "clone"
+    ArtifactManager(source_inpx=source, work_dir=clone_dir).clone()
+    cloned = (clone_dir / "working.inpx").read_bytes()
+
+    runner = _runner(tmp_path, source_inpx=source)
+    run_inpx, failure = runner._candidate_copy(1, 42, source)
+    assert failure is None, failure
+
+    assert run_inpx.read_bytes() == cloned, (
+        "the candidate materialization has drifted from ArtifactManager.clone(); the search "
+        "would be scoring a differently-prepared network than the run its workbook grades"
+    )
+    # The ONE deliberate difference, pinned so it stays deliberate: the candidate
+    # keeps the source's stem (a .layx sibling auto-loads on a same-stem match),
+    # where clone() renames to working.inpx.
+    assert run_inpx.name == source.name != "working.inpx"
+
+
+def test_sibling_assets_travel_with_the_candidate(tmp_path):
+    """An .inpx references .vap/.pua/.prbc siblings by exact relative filename,
+    so a network with external signal-controller programs does not merely look
+    different without them — it fails to init. The scoring run's working copy had
+    them; a candidate that did not would be a different network."""
+    source = _scenario_managed_network(tmp_path / "src")
+    (source.parent / "controller.vap").write_text("VAP", encoding="utf-8")
+    (source.parent / "current.layx").write_text("LAYOUT", encoding="utf-8")
+    (source.parent / "notes.txt").write_text("not an asset", encoding="utf-8")
+
+    runner = _runner(tmp_path, source_inpx=source)
+    run_inpx, failure = runner._candidate_copy(1, 42, source)
+    assert failure is None, failure
+
+    names = {p.name for p in run_inpx.parent.iterdir()}
+    assert {"controller.vap", "current.layx"} <= names
+    assert "notes.txt" not in names, "only the declared asset extensions travel"
+
+
+def test_a_candidate_that_is_still_scenario_managed_never_reaches_com(tmp_path, monkeypatch):
+    """THE REGRESSION, at the seam that failed: no unloadable file reaches Vissim.
+
+    Drives ``run()`` end to end with the ONE COM method stubbed, and asserts the
+    stub was never called — because the read-back caught the blocker first. The
+    normalizer is deliberately defeated here (it is best-effort by design: an
+    unreadable file leaves the copy as-is and returns False), which is exactly
+    the state the live acceptance ran fifty candidates in.
+    """
+    monkeypatch.setattr(search_runner, "runner_availability", lambda: (True, None))
+    source = _scenario_managed_network(tmp_path / "src")
+    runner = _runner(tmp_path, source_inpx=source)
+
+    import services.agent.state as state_module
+
+    monkeypatch.setattr(state_module, "_disable_scenario_management_flag", lambda path: False)
+
+    reached: list[Any] = []
+
+    def fake_drive(index, seed, run_inpx, vector):
+        reached.append(run_inpx)
+        return None
+
+    monkeypatch.setattr(runner, "_drive_vissim", fake_drive)
+    outcome = runner.run(BASELINE, 42, NODES)
+
+    assert reached == [], "an unloadable candidate was handed to the COM stage"
+    assert outcome.ok is False
+    assert outcome.reason.startswith(search_runner.CANDIDATE_NOT_STANDALONE)
+    assert "underScenMngm" in outcome.reason
+
+    # ...and with the normalizer working, the SAME path does reach COM.
+    monkeypatch.undo()
+    monkeypatch.setattr(search_runner, "runner_availability", lambda: (True, None))
+    monkeypatch.setattr(runner, "_drive_vissim", fake_drive)
+    runner.run(BASELINE, 42, NODES)
+    assert len(reached) == 1
+    assert 'underScenMngm="false"' in reached[0].read_text(encoding="utf-8")
+
+
+def test_the_result_database_is_found_where_vissim_writes_it(tmp_path):
+    """Where the .db lands, and that BOTH readers cover that location.
+
+    Vissim writes a run's database beside the loaded .inpx as
+    ``<stem>.results/``. PROVEN on the real client model, whose export declares
+    ``evaluation/@evalOutDir="#examples#"`` and whose baseline run nevertheless
+    landed at ``seed_00/working.results/1.db`` — a sibling of
+    ``seed_00/working.inpx``. The placeholder does not redirect, and
+    ``configure_network_performance_evaluation`` sets no output directory either,
+    so the chosen transform deliberately does NOT rewrite ``evalOutDir``
+    (``_make_network_standalone`` does, but only as part of a bundle that also
+    changes ``simRes`` — see ``_candidate_copy``).
+
+    What this pins is the consequence: a database at that sibling location is
+    found by ``_run_completed`` AND by the ``result_dir`` ``_score`` hands to
+    ``build_reality_check_report``.
+    """
+    from services import results_evidence
+
+    source = _scenario_managed_network(tmp_path / "src")
+    runner = _runner(tmp_path, source_inpx=source)
+    run_inpx, failure = runner._candidate_copy(1, 42, source)
+    assert failure is None, failure
+    candidate_dir = run_inpx.parent
+
+    # evalOutDir is carried through untouched -- stated, not assumed.
+    assert 'evalOutDir="#examples#"' in run_inpx.read_text(encoding="utf-8")
+
+    # Nothing there yet: the run has not happened.
+    empty = search_runner.VissimSearchRunner._run_completed(candidate_dir)
+    assert empty is not None and empty.startswith(search_runner.RUN_DID_NOT_COMPLETE)
+    assert "evalOutDir" in empty, "the no-database message must name the first suspect"
+
+    # Vissim's own default location, spelled from the candidate .inpx's stem.
+    _sqlite_with(candidate_dir / f"{run_inpx.stem}.results" / "1.db", ["SIMULATIONRUN"])
+    assert search_runner.VissimSearchRunner._run_completed(candidate_dir) is None
+    assert [p.name for p in results_evidence.result_db_paths(candidate_dir)] == ["1.db"], (
+        "the scorer's own discovery must reach the same file _run_completed proved"
+    )
 
 
 def test_the_clone_failure_is_named_not_raised(tmp_path):
@@ -947,6 +1174,297 @@ def test_a_finished_run_needs_a_simulationrun_row(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# 6d. LIVE ACCEPTANCE RUN 2's OWN FINDINGS (2026-08-21) — the coupling and the leak
+#
+# Run 2 got past LoadNet (candidate 1 ok=True, 63s) and then lost 12 of the next
+# 13 candidates to a constraint BETWEEN two fields:
+#
+#   "The default min. lateral distance while standing for driving behavior
+#    parameter set 1 ... must be less than or equal to the default min. lateral
+#    distance while driving."
+#
+# Two distinct defects hid behind that one message — a feasible target dying of
+# write ORDER, and an infeasible one costing a Vissim start-up to be refused —
+# and a third was found by counting processes afterwards.
+# ---------------------------------------------------------------------------
+
+#: ``(stand, driv)`` -> a full vector. The coupling is ``stand <= driv``.
+def _coupled(stand: float, driv: float, saf: float = 0.6) -> dict[str, float]:
+    return {
+        "lat_dist_stand_def": stand,
+        "lat_dist_driv_def": driv,
+        "saf_dist_fact_ln_chg": saf,
+    }
+
+
+def _replay(current: dict[str, float], target: dict[str, float]) -> list[tuple[float, float]]:
+    """Every state the model passes through, applying in the runner's own order."""
+    state = dict(current)
+    states = [(state["lat_dist_stand_def"], state["lat_dist_driv_def"])]
+    for parameter in search_runner.apply_order(target, current):
+        state[parameter] = target[parameter]
+        states.append((state["lat_dist_stand_def"], state["lat_dist_driv_def"]))
+    return states
+
+
+@pytest.mark.parametrize(
+    "current,target,label",
+    [
+        (_coupled(1.0, 1.0), _coupled(0.25, 0.45), "the live failure: lower both"),
+        (_coupled(0.1, 0.2), _coupled(0.5, 0.9), "raise both past the current upper"),
+        (_coupled(0.1, 0.2), _coupled(0.2, 0.2), "target lower equals current upper"),
+        (_coupled(0.4, 0.4), _coupled(0.4, 0.4), "no-op, equal values"),
+        (_coupled(0.1, 0.9), _coupled(0.9, 0.9), "raise lower to meet upper"),
+        (_coupled(0.9, 0.9), _coupled(0.1, 0.1), "lower both to equal"),
+        (_coupled(0.25, 0.45), _coupled(0.45, 0.45), "lower rises onto the upper"),
+    ],
+)
+def test_the_write_order_keeps_every_intermediate_state_legal(current, target, label):
+    """THE ALGEBRA, replayed rather than argued.
+
+    ``apply_order``'s proof says at least one of the two orders is always legal
+    when the model is legal now and the target is feasible. This applies the
+    chosen order one field at a time and asserts the coupling holds after EVERY
+    write — which is the thing Vissim actually checks.
+
+    Equality cases are here on purpose: the constraint is ``<=``, so a target
+    that lands exactly on the current upper must take the lower-first branch and
+    be accepted, not refused by an off-by-one.
+    """
+    assert search_runner.infeasible_coupling(target) is None, "fixture must be feasible"
+    for stand, driv in _replay(current, target):
+        assert stand <= driv, f"{label}: illegal intermediate state ({stand} > {driv})"
+
+
+def test_the_live_failure_order_is_the_one_that_was_wrong():
+    """The specific sequence run 2 died on, pinned by name.
+
+    MEASURED: behaviour 1 at (stand=1.0, driv=1.0), candidate asking for
+    (stand=0.25, driv=0.45). Writing ``driv`` first makes the model momentarily
+    (1.0, 0.45) and Vissim refuses. The fix must put ``stand`` first — and the
+    ALPHABETICAL order (which is what the runner used before) puts ``driv``
+    first, so this is a real reordering and not a coincidence.
+    """
+    current, target = _coupled(1.0, 1.0), _coupled(0.25, 0.45)
+    order = search_runner.apply_order(target, current)
+    assert order.index("lat_dist_stand_def") < order.index("lat_dist_driv_def")
+    assert sorted(target).index("lat_dist_driv_def") == 0, (
+        "the sorted order this replaced really does put the upper field first"
+    )
+    # ...and the other branch is genuinely reachable, so the rule is not "always
+    # lower first" wearing a proof.
+    raising = search_runner.apply_order(_coupled(0.5, 0.9), _coupled(0.1, 0.2))
+    assert raising.index("lat_dist_driv_def") < raising.index("lat_dist_stand_def")
+
+
+def test_an_unreadable_current_state_falls_back_to_the_deterministic_order():
+    """No model state, no reordering — and the write that then fails is caught by
+    the read-back and NAMED, never assumed to have landed."""
+    target = _coupled(0.25, 0.45)
+    assert search_runner.apply_order(target, None) == sorted(target)
+    assert search_runner.apply_order(target, {}) == sorted(target)
+
+
+def test_an_infeasible_vector_is_refused_by_name_before_any_com(tmp_path, monkeypatch):
+    """THE SECOND DEFECT: the LHS screen samples each dimension independently, so
+    about half its samples ask for ``stand > driv`` — a vector Vissim cannot hold
+    in ANY order. Each one used to cost a full start-up (~17 s) to be refused.
+
+    Asserts the stub COM seam is never reached, and that the reason quotes
+    Vissim's own sentence rather than paraphrasing it.
+    """
+    monkeypatch.setattr(search_runner, "runner_availability", lambda: (True, None))
+    source = _scenario_managed_network(tmp_path / "src")
+    runner = _runner(tmp_path, source_inpx=source)
+
+    reached: list[Any] = []
+    monkeypatch.setattr(
+        runner, "_drive_vissim", lambda *a, **k: reached.append(a) or None
+    )
+    outcome = runner.run(_coupled(0.9, 0.3), 42, NODES)
+
+    assert reached == [], "an infeasible vector reached the COM stage"
+    assert outcome.ok is False
+    assert outcome.reason.startswith(search_runner.VECTOR_INFEASIBLE_COUPLING)
+    assert "must be less than or equal to the default min. lateral distance while driving" in (
+        outcome.reason
+    )
+    assert "2026-08-21" in outcome.reason
+    # Not even a directory: the refusal happens before the copy.
+    assert not runner._candidate_dir(1, 42).exists()
+
+    # ...and a FEASIBLE vector passes straight through to the same seam.
+    runner.run(_coupled(0.2, 0.9), 42, NODES)
+    assert len(reached) == 1
+
+
+def test_the_coupling_is_declared_data_not_an_inline_rule():
+    """A future measured coupling must land as a ROW and change nothing else.
+
+    Both the pre-check and the ordering read this one table, so the pin is that
+    the table drives them — adding a row here must make both honour it.
+    """
+    coupling = search_runner.PARAMETER_COUPLINGS[0]
+    assert (coupling.lower, coupling.upper) == ("lat_dist_stand_def", "lat_dist_driv_def")
+    assert coupling.vissim_message.strip() and coupling.measured.strip()
+
+    extra = search_runner.FieldCoupling(
+        lower="saf_dist_fact_ln_chg",
+        upper="lat_dist_driv_def",
+        vissim_message="invented for this test",
+        measured="never — this row exists only inside this test",
+    )
+    original = search_runner.PARAMETER_COUPLINGS
+    try:
+        search_runner.PARAMETER_COUPLINGS = original + (extra,)
+        # The pre-check honours the new row...
+        assert search_runner.infeasible_coupling(_coupled(0.1, 0.2, saf=0.9)) is not None
+        # ...and so does the ordering, with no code change anywhere.
+        order = search_runner.apply_order(
+            _coupled(0.1, 0.2, saf=0.15), _coupled(0.1, 0.2, saf=0.6)
+        )
+        assert order.index("saf_dist_fact_ln_chg") < order.index("lat_dist_driv_def")
+    finally:
+        search_runner.PARAMETER_COUPLINGS = original
+
+
+def test_a_vector_moving_only_one_coupled_field_is_left_to_the_readback():
+    """A vector that moves ONE side of a coupling asks a question about the
+    MODEL's other value, not about itself — so the pre-check stays silent and the
+    apply-time read-back answers it (as PARAMETER_NOT_APPLIED). Stated as a test
+    so "silent" is a decision rather than an oversight."""
+    assert search_runner.infeasible_coupling({"lat_dist_stand_def": 9.0}) is None
+    assert search_runner.infeasible_coupling({"lat_dist_driv_def": 0.1}) is None
+    assert search_runner.infeasible_coupling({}) is None
+
+
+# ---- the instance leak ----------------------------------------------------
+
+
+def test_a_candidates_vissim_is_reaped_when_exit_does_not_take(monkeypatch):
+    """THE THIRD DEFECT: ``Exit()`` is a request, not a join.
+
+    MEASURED 2026-08-21: after ~13 candidates, THREE Vissim.exe processes were
+    still alive, started at candidate times. ``disconnect()`` does call ``Exit()``
+    — nothing waited for it to mean anything.
+    """
+    slept: list[float] = []
+    terminated: list[list[int]] = []
+    # 7 and 8 predate this candidate; 99 is the one it started and leaked.
+    pids = {7, 8, 99}
+    result = search_runner._reap_vissim(
+        {7, 8},
+        grace_s=1.0,
+        poll_s=0.25,
+        list_pids=lambda: set(pids),
+        terminate=lambda p: (terminated.append(list(p)), list(p))[1],
+        sleep=slept.append,
+    )
+    assert result["survivors"] == [99]
+    assert result["terminated"] == [99]
+    assert terminated == [[99]], "only the pid this candidate started"
+    assert slept, "the reap must WAIT before it terminates anything"
+
+
+def test_a_vissim_that_exits_on_its_own_is_waited_for_and_never_killed(monkeypatch):
+    """The normal path: the process goes away during the grace window, and
+    nothing is terminated. The wait is what makes 'gone' true rather than likely."""
+    states = [{7, 99}, {7, 99}, {7}]
+    terminated: list[Any] = []
+    result = search_runner._reap_vissim(
+        {7},
+        grace_s=10.0,
+        poll_s=0.0,
+        list_pids=lambda: states.pop(0) if states else {7},
+        terminate=lambda p: terminated.append(p) or [],
+        sleep=lambda _s: None,
+    )
+    assert result["survivors"] == [] and result["terminated"] == []
+    assert terminated == [], "a process that exited on its own must never be killed"
+
+
+def test_a_pre_existing_vissim_is_never_waited_on_or_killed():
+    """A modeller's own open Vissim is in ``owned_before`` and is untouchable by
+    construction — CLAUDE.md's COM safety rule, enforced by the set difference."""
+    terminated: list[Any] = []
+    result = search_runner._reap_vissim(
+        {7, 8, 9},
+        grace_s=0.0,
+        poll_s=0.0,
+        list_pids=lambda: {7, 8, 9},
+        terminate=lambda p: terminated.append(p) or [],
+        sleep=lambda _s: None,
+    )
+    assert result["survivors"] == [] and terminated == []
+
+
+def test_the_shutdown_discipline_runs_exactly_once_per_candidate(tmp_path, monkeypatch):
+    """Disconnect AND reap, once per candidate, on the success path and on the
+    failure path — because a candidate that died at LoadNet still started a Vissim.
+    """
+    monkeypatch.setattr(search_runner, "runner_availability", lambda: (True, None))
+    source = _scenario_managed_network(tmp_path / "src")
+    runner = _runner(tmp_path, source_inpx=source)
+
+    reaps: list[set[int]] = []
+    monkeypatch.setattr(
+        search_runner,
+        "_reap_vissim",
+        lambda owned_before, **kw: reaps.append(set(owned_before))
+        or {"survivors": [], "terminated": [], "waited": True},
+    )
+    monkeypatch.setattr(search_runner, "vissim_pids", lambda: {7})
+
+    class _Ctrl:
+        def __init__(self):
+            self.disconnects = 0
+
+        def disconnect(self):
+            self.disconnects += 1
+
+    ctrl = _Ctrl()
+    runner._shutdown(ctrl, {7})
+    assert ctrl.disconnects == 1 and reaps == [{7}]
+
+    # A controller that never connected still gets the reap: the process may
+    # have started even though this side never got a usable handle.
+    runner._shutdown(None, {7})
+    assert ctrl.disconnects == 1 and len(reaps) == 2
+
+    # And a disconnect that RAISES must not skip the reap.
+    class _Angry(_Ctrl):
+        def disconnect(self):
+            raise RuntimeError("COM is gone")
+
+    runner._shutdown(_Angry(), {7})
+    assert len(reaps) == 3, "a failed disconnect must not skip the reap"
+
+
+def test_a_reap_failure_never_fails_a_candidate(tmp_path, monkeypatch):
+    """Housekeeping must not decide the fate of a candidate the run could score."""
+    monkeypatch.setattr(
+        search_runner, "_reap_vissim", lambda *a, **k: (_ for _ in ()).throw(OSError("tasklist"))
+    )
+    runner = _runner(tmp_path)
+    runner._shutdown(None, set())  # must not raise
+    assert runner.reaped_pids == []
+
+
+def test_reaped_pids_are_recorded_for_diagnosis(tmp_path, monkeypatch):
+    """A long run that had to kill instances should be diagnosable afterwards,
+    not by watching Task Manager during it."""
+    monkeypatch.setattr(
+        search_runner,
+        "_reap_vissim",
+        lambda *a, **k: {"survivors": [99], "terminated": [99], "waited": True},
+    )
+    runner = _runner(tmp_path)
+    runner._shutdown(None, set())
+    runner._shutdown(None, set())
+    assert runner.reaped_pids == [99, 99]
+
+
 def test_the_readback_verdict_catches_a_silent_non_write(tmp_path):
     """Vissim accepts an out-of-range ``SetAttValue`` SILENTLY and leaves the old
     value in place. A candidate scored on the values it MEANT to set rather than
@@ -979,13 +1497,50 @@ def test_a_write_vissim_refuses_outright_is_the_same_named_verdict(tmp_path):
 
 def test_the_vector_is_written_one_field_at_a_time_and_every_one_is_read_back(tmp_path):
     """op §2.12.1's "change one parameter at a time" is a WRITE discipline here:
-    three fields, three calls, each verified before the next."""
+    three fields, three calls, each verified before the next.
+
+    This ``_FakeVissim`` carries no readable behaviour, so it also exercises the
+    FALLBACK order (see ``apply_order``): with no current state to reason about,
+    the sequence is the deterministic sorted one.
+    """
     runner = _runner(tmp_path, behavior_no=2)
     ctrl = _FakeVissim()
     assert runner._apply(ctrl, dict(BASELINE)) is None
     assert [call[1] for call in ctrl.calls] == sorted(BASELINE)
     assert all(call[0] == 2 for call in ctrl.calls)
     assert len(ctrl.calls) == len(BASELINE)
+
+
+def test_apply_writes_in_the_constraint_aware_order_when_the_model_is_readable(tmp_path):
+    """``_apply`` really uses ``apply_order`` — the live failure, end to end at
+    the write seam.
+
+    The fake enforces Vissim's own coupling at set time, so the ONLY way through
+    is the right order. Before this fix the alphabetical sequence put
+    ``lat_dist_driv_def`` first and this call refused.
+    """
+    runner = _runner(tmp_path, behavior_no=1)
+    state = {"lat_dist_stand_def": 1.0, "lat_dist_driv_def": 1.0, "saf_dist_fact_ln_chg": 0.6}
+
+    class _Coupled(_FakeVissim):
+        def set_driving_behavior_parameter(self, behavior_no, parameter, value):
+            candidate = {**state, parameter: value}
+            if candidate["lat_dist_stand_def"] > candidate["lat_dist_driv_def"]:
+                raise RuntimeError(
+                    "AttValue failed: The default min. lateral distance while standing for "
+                    "driving behavior parameter set 1 ... must be less than or equal to the "
+                    "default min. lateral distance while driving."
+                )
+            state[parameter] = value
+            self.behaviour = dict(state)
+            return super().set_driving_behavior_parameter(behavior_no, parameter, value)
+
+    ctrl = _Coupled(behaviour=dict(state))
+    target = _coupled(0.25, 0.45)
+    assert runner._apply(ctrl, target) is None, "the coupling-aware order must land every field"
+    written = [call[1] for call in ctrl.calls]
+    assert written.index("lat_dist_stand_def") < written.index("lat_dist_driv_def")
+    assert state["lat_dist_stand_def"] == 0.25 and state["lat_dist_driv_def"] == 0.45
 
 
 def test_the_readback_tolerates_a_unit_round_trip_but_not_a_stale_value(tmp_path):
