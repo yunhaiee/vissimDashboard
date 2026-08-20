@@ -47,12 +47,27 @@
 // station rather than a place below it: it is a screen-sized body of evidence,
 // and appending it to the node table reproduced the very stack this unit is
 // undoing.
+//
+// WHAT #50-c CHANGED: NUMBERS FIRST, PROSE FOLDED. The user drove #50-b's real
+// screen and reported the next thing wrong with it — "거의 모든 fine text는
+// 크게/직관적 대안/없애", and specifically, of the mono provenance lines
+// (`saturation_flow.verify_applied_row · op §5.2.5.1, Table 5-6, p.187` and its
+// kind): "이런것도 다 지워 — 화면을 포화시켜". Measured on that screen, every
+// station panel opened with two to four sentences of RULE before the first
+// number, and every step box closed with a mono line naming a source file and a
+// paragraph number. So the surface of each tab is now numbers, verdicts, and
+// ONE next-action line; every rule, citation and doctrine sentence lives in a
+// `<details>` or an ⓘ. ZERO INFORMATION LOSS is the constraint that makes this
+// a restructure rather than a cull: every sentence and every citation string
+// that left the surface is reachable, verbatim, one click away — the audit
+// trail is the product, and a folded citation is still a citation.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import BaseValidationMap, { type BaseValidationMapNode } from "@/components/BaseValidationMap";
+import { InfoTip } from "@/components/genesis/ui";
 import { useLanguage } from "@/components/LanguageProvider";
 import BaseModelStation from "@/components/calibration/BaseModelStation";
 import BehaviourStation from "@/components/calibration/BehaviourStation";
@@ -400,14 +415,18 @@ export default function CalibrationWorkspacePage() {
       <header>
         <h1 className="text-[22px] font-bold text-slate-900">
           {t("보정 워크스페이스", "Calibration workspace", "補正ワークスペース")}
+          {/* What this screen IS, verbatim, in the ⓘ — it is background a reader
+              needs once, and it was competing with the context bar's numbers
+              every time after that (#50-c). */}
+          <InfoTip
+            text={t(
+              "MRWA §2.12.1의 13단계 순서대로, 이 워크스페이스가 실제로 가진 증거만으로 어디까지 왔는지 보여줍니다.",
+              "Where this project stands in MRWA §2.12.1's thirteen steps, derived only from evidence this workspace actually holds.",
+              "MRWA §2.12.1の13段階の順に、このワークスペースが実際に持つ証拠だけで現在地を示します。",
+            )}
+            label={t("이 화면에 대하여", "About this screen", "この画面について")}
+          />
         </h1>
-        <p className="mt-1 text-[14px] leading-6 text-slate-600">
-          {t(
-            "MRWA §2.12.1의 13단계 순서대로, 이 워크스페이스가 실제로 가진 증거만으로 어디까지 왔는지 보여줍니다.",
-            "Where this project stands in MRWA §2.12.1's thirteen steps, derived only from evidence this workspace actually holds.",
-            "MRWA §2.12.1の13段階の順に、このワークスペースが実際に持つ証拠だけで現在地を示します。",
-          )}
-        </p>
       </header>
 
       {/* ---------------------------------------------------------------- */}
@@ -415,10 +434,13 @@ export default function CalibrationWorkspacePage() {
       {/* ---------------------------------------------------------------- */}
       <section className="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-surface px-4 py-3">
         <div className="flex flex-col gap-0.5">
-          <span className="text-[13px] font-semibold text-slate-600">
+          <span className="text-[14px] font-semibold text-slate-600">
             {t("데이터셋", "Dataset", "データセット")}
           </span>
-          <span className="font-mono text-[13px] text-slate-700">
+          {/* The dataset's NAME stays on the surface and got bigger: it is the
+              identity of everything below it, and #50-b's own pin exists so no
+              step can appear to own it. Mono, because a filename is one. */}
+          <span className="font-mono text-[14px] text-slate-700">
             {dataset
               ? dataset.filename
               : datasetError
@@ -427,7 +449,7 @@ export default function CalibrationWorkspacePage() {
           </span>
         </div>
 
-        <label className="flex flex-col gap-1 text-[13px] text-slate-600">
+        <label className="flex flex-col gap-1 text-[14px] text-slate-600">
           <span className="font-semibold">{t("채점할 실행", "Run to score", "採点する実行")}</span>
           <select
             value={scenarioId}
@@ -448,10 +470,10 @@ export default function CalibrationWorkspacePage() {
         </label>
 
         <div className="flex flex-col gap-0.5">
-          <span className="text-[13px] font-semibold text-slate-600">
+          <span className="text-[14px] font-semibold text-slate-600">
             {t("종합 판정", "Overall verdict", "総合判定")}
           </span>
-          <span className="text-[14px] leading-6 text-slate-800">
+          <span className="text-[15px] font-semibold leading-6 text-slate-800">
             {!scenarioId
               ? t("실행을 선택하세요.", "Pick a run.", "実行を選択してください。")
               : reportLoading
@@ -471,14 +493,14 @@ export default function CalibrationWorkspacePage() {
                             (ungradedCount > 0 ? ` · 評価不可${ungradedCount}` : ""),
                         )}
             {report?.status === "CHECKED" && typeof report.geh_threshold === "number" && (
-              <span className="ml-1.5 font-mono text-[13px] text-slate-500">
-                GEH {report.geh_threshold.toFixed(1)}
+              <span className="ml-1.5 rounded-full border border-slate-300 bg-surface px-2 py-0.5 text-[14px] font-normal text-slate-600">
+                GEH <span className="font-mono font-semibold text-slate-800">{report.geh_threshold.toFixed(1)}</span>
               </span>
             )}
           </span>
         </div>
 
-        <div className="flex flex-col gap-1 text-[13px] text-slate-600">
+        <div className="flex flex-col gap-1 text-[14px] text-slate-600">
           <span className="font-semibold">{t("전후 비교", "Before/after", "前後比較")}</span>
           <div className="flex items-center gap-2">
             {/* SELECTED chip: navy fill + sky TEXT. `text-sky-600`, never 700+ --
@@ -536,16 +558,34 @@ export default function CalibrationWorkspacePage() {
 
         <section className="min-w-0 rounded-xl border border-slate-200 bg-surface px-4 py-3.5">
           <header className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-[16px] font-bold text-slate-900">{stationLabel(activeStation, t)}</h2>
-            {stationSteps[0]?.citation && (
-              <span className="font-mono text-[13px] text-slate-500">{stationSteps[0].citation}</span>
-            )}
+            <h2 className="text-[17px] font-bold text-slate-900">
+              {stationLabel(activeStation, t)}
+              {/* 채점·진단 is not one of §2.12.1's thirteen — the caption that
+                  said so used to sit on the rail row, where an ⓘ cannot go
+                  without nesting a button in a button. It says the same thing
+                  here, beside the heading whose citation it qualifies. */}
+              {activeStation === "scoring" && (
+                <InfoTip
+                  text={t(
+                    "채점·진단은 MRWA 단계 아님 — §2.12.1의 13단계에 속하지 않습니다. 실행을 실측과 대조해 어느 단계로 가야 할지 정하는 자리입니다.",
+                    "Scoring & diagnosis is not an MRWA step — it is not one of §2.12.1's thirteen. It is where the run is compared with observed counts to decide which step to go to.",
+                    "採点・診断はMRWA段階ではありません — §2.12.1の13段階には含まれません。実行を実測と対照し、どの段階へ進むかを決める場所です。",
+                  )}
+                  label={t("이 스테이션에 대하여", "About this station", "このステーションについて")}
+                />
+              )}
+            </h2>
           </header>
 
           {/* Every step this station carries: the server's status, the server's
-              basis sentence, and the artifact that answered. This is the half
-              of the rail that moved here — a state belongs beside the evidence
-              that produced it, not on a navigation row. */}
+              basis sentence, and — since #50-c, in a fold — the artifact that
+              answered. This is the half of the rail that moved here; a state
+              belongs beside the evidence that produced it, not on a navigation
+              row. The BASIS stays on the surface because it is the verdict's
+              justification, which is what "no DONE from silence" is made of;
+              the `source · citation` line beneath it was provenance, and
+              provenance is what the user's 2026-08-20 decision moved one click
+              away. Both are still here, whole. */}
           {stationSteps.map((step) => (
             <div
               key={step.number}
@@ -554,26 +594,36 @@ export default function CalibrationWorkspacePage() {
               }`}
             >
               <p className="flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[13px] font-semibold text-slate-500">
+                <span className="font-mono text-[14px] font-semibold text-slate-500">
                   {circledStep(step.number)}
                 </span>
-                <span className="text-[14px] font-semibold text-slate-800">{stepLabel(step, lang)}</span>
+                <span className="text-[15px] font-semibold text-slate-800">{stepLabel(step, lang)}</span>
                 <span
-                  className={`rounded-full border px-1.5 py-0.5 text-[13px] font-semibold ${statusChipClass(step.status)}`}
+                  className={`rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${statusChipClass(step.status)}`}
                 >
                   {statusLabel(step.status, t)}
                 </span>
                 {step.manual_area && (
-                  <span className="text-[13px] text-slate-500">
-                    {t("수동 확인 영역", "manual-check area", "手動確認領域")}
-                  </span>
+                  <InfoTip
+                    text={t(
+                      "수동 확인 영역 — 이 단계에 대해 이 제품은 아무것도 측정하지 않습니다. Vissim에서 직접 확인하고 이 도구 밖에 기록하십시오.",
+                      "Manual-check area — this product measures nothing for this step. Check it in Vissim and record it outside this tool.",
+                      "手動確認領域 — この段階について本製品は何も測定しません。Vissimで直接確認し、本ツールの外に記録してください。",
+                    )}
+                    label={t("수동 확인 영역이란", "What a manual-check area is", "手動確認領域とは")}
+                  />
                 )}
               </p>
-              <p className="mt-1 text-[13px] leading-5 text-slate-700">{pick(step.basis, lang)}</p>
-              <p className="mt-0.5 font-mono text-[13px] text-slate-500">
-                {step.source}
-                {step.citation ? ` · ${step.citation}` : ""}
-              </p>
+              <p className="mt-1 text-[14px] leading-6 text-slate-700">{pick(step.basis, lang)}</p>
+              <details className="mt-1 text-[13px] leading-5 text-slate-500">
+                <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+                  {t("자세히 (근거 출처)", "More (which artifact answered)", "詳細（根拠の出典）")}
+                </summary>
+                <p className="mt-1 border-l border-slate-300 pl-3 font-mono text-[13px] text-slate-500">
+                  {step.source}
+                  {step.citation ? ` · ${step.citation}` : ""}
+                </p>
+              </details>
             </div>
           ))}
 
@@ -612,16 +662,25 @@ export default function CalibrationWorkspacePage() {
 
               {scoringView === "nodes" ? (
                 <div className="mt-3">
-                  <p className="text-[13px] leading-5 text-slate-600">
-                    {t(
-                      "모델 값은 선택한 실행의 결과에서 가져옵니다. 워크북에 붙여넣은 모델 열은 다른 실행의 것일 수 있어 사용하지 않습니다.",
-                      "Modelled values come from the selected run's own results. The workbook's pasted model column is not used — it may describe a different run.",
-                      "モデル値は選択した実行の結果から取得します。ワークブックに貼り付けられたモデル列は別の実行のものである可能性があるため使用しません。",
-                    )}
-                  </p>
+                  {/* WHICH MODEL COLUMN THIS SCREEN REFUSES TO READ. A rule, not
+                      a number, so #50-c folded it — verbatim, because it is the
+                      one sentence that explains why a reader's own workbook
+                      column does not appear anywhere on this tab. */}
+                  <details className="text-[13px] leading-5 text-slate-600">
+                    <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+                      {t("자세히 (모델 값의 출처)", "More (where the modelled values come from)", "詳細（モデル値の出典）")}
+                    </summary>
+                    <p className="mt-1 border-l border-slate-300 pl-3">
+                      {t(
+                        "모델 값은 선택한 실행의 결과에서 가져옵니다. 워크북에 붙여넣은 모델 열은 다른 실행의 것일 수 있어 사용하지 않습니다.",
+                        "Modelled values come from the selected run's own results. The workbook's pasted model column is not used — it may describe a different run.",
+                        "モデル値は選択した実行の結果から取得します。ワークブックに貼り付けられたモデル列は別の実行のものである可能性があるため使用しません。",
+                      )}
+                    </p>
+                  </details>
 
                   {reportError && (
-                    <p className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[13px] leading-5 text-rose-700">
+                    <p className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[14px] leading-6 text-rose-700">
                       {reportError}
                     </p>
                   )}
@@ -649,7 +708,7 @@ export default function CalibrationWorkspacePage() {
                         />
                         {activeNode && (
                           <div className="mt-3">
-                            <NodeScoreDetail node={activeNode} />
+                            <NodeScoreDetail node={activeNode} threshold={report.geh_threshold} />
                           </div>
                         )}
                       </div>
@@ -665,16 +724,23 @@ export default function CalibrationWorkspacePage() {
                             onNodeClick={(nodeId) => handleNodeClick(nodeId)}
                           />
                         </div>
-                        {/* Honest caption. The map places a node only when the
-                            network geometry carries that node; the TABLE is the
-                            complete list either way, so a node missing from the
-                            map is a missing placement, never a missing score. */}
-                        <p className="mt-1.5 text-[13px] leading-5 text-slate-500">
-                          {t(
-                            "노드 위치는 데이터셋의 좌표 정보에서 옵니다. 좌표가 없는 노드는 지도에 나타나지 않으며, 위 표가 전체 목록입니다.",
-                            "Node placement comes from the dataset's georeference. A node without coordinates does not appear on the map — the table above is the complete list.",
-                            "ノード位置はデータセットの座標情報に基づきます。座標のないノードは地図に表示されません。上の表が完全な一覧です。",
-                          )}
+                        {/* Honest caption, now an ⓘ on the map's own label. The
+                            map places a node only when the network geometry
+                            carries that node; the GRID is the complete list
+                            either way, so a node missing from the map is a
+                            missing placement, never a missing score. That claim
+                            has to stay reachable, which is exactly what the ⓘ
+                            guarantees — hover, focus, tap. */}
+                        <p className="mt-1.5 text-[14px] text-slate-500">
+                          {t("노드 위치", "Node placement", "ノード位置")}
+                          <InfoTip
+                            text={t(
+                              "노드 위치는 데이터셋의 좌표 정보에서 옵니다. 좌표가 없는 노드는 지도에 나타나지 않으며, 왼쪽 타일이 전체 목록입니다.",
+                              "Node placement comes from the dataset's georeference. A node without coordinates does not appear on the map — the tiles beside it are the complete list.",
+                              "ノード位置はデータセットの座標情報に基づきます。座標のないノードは地図に表示されません。左のタイルが完全な一覧です。",
+                            )}
+                            label={t("지도에 대하여", "About this map", "この地図について")}
+                          />
                         </p>
                       </div>
                     </div>
@@ -684,13 +750,13 @@ export default function CalibrationWorkspacePage() {
                       bar; shown here, where the GEH it compares is. */}
                   {compareId && (
                     <div className="mt-4 border-t border-slate-200 pt-3">
-                      <h3 className="text-[14px] font-bold text-slate-800">
+                      <h3 className="text-[15px] font-bold text-slate-800">
                         {t("전후 비교 — 노드별 GEH 변화", "Before/after — per-node GEH change", "前後比較 — ノード別GEHの変化")}
                       </h3>
                       {compareError ? (
-                        <p className="mt-1.5 text-[13px] text-rose-700">{compareError}</p>
+                        <p className="mt-1.5 text-[14px] text-rose-700">{compareError}</p>
                       ) : deltas.length === 0 ? (
-                        <p className="mt-1.5 text-[13px] leading-5 text-slate-600">
+                        <p className="mt-1.5 text-[14px] leading-6 text-slate-600">
                           {t(
                             "두 실행 모두에서 등급이 매겨진 노드가 없어 비교할 값이 없습니다.",
                             "No node was graded in both runs, so there is nothing to compare.",
@@ -698,7 +764,7 @@ export default function CalibrationWorkspacePage() {
                           )}
                         </p>
                       ) : (
-                        <table className="mt-1.5 w-full border-collapse text-[13px]">
+                        <table className="mt-1.5 w-full border-collapse text-[14px]">
                           <thead>
                             <tr className="border-b border-slate-200 text-left text-slate-500">
                               <th className="px-2 py-1.5 font-semibold">{t("노드", "Node", "ノード")}</th>
@@ -757,13 +823,14 @@ export default function CalibrationWorkspacePage() {
 
           {activeStation === "signals" && (
             <div className="mt-3 flex flex-col gap-2">
-              <p className="text-[13px] leading-5 text-slate-600">
-                {t(
+              <StationDoctrine
+                t={t}
+                text={t(
                   "⑥의 근거는 사람이 서명한 현시도 확인서입니다 — 확인되지 않은 현시도는 신호가 검증됐다는 증거가 아닙니다. ⑦의 근거는 Table 5-6 적용 판정이며, 표 전체는 ⑫ 행태 스테이션에 있습니다.",
                   "Step 6's evidence is a signed 현시도 (phase-diagram) attestation — an unattested diagram is not evidence that the signals were verified. Step 7's evidence is the Table 5-6 application verdict; the full table lives in the ⑫ behaviour station.",
                   "⑥の根拠は人が署名した現示図の確認書です — 未確認の現示図は信号が検証された証拠ではありません。⑦の根拠はTable 5-6の適用判定で、表全体は⑫挙動ステーションにあります。",
                 )}
-              </p>
+              />
               <div className="flex flex-wrap gap-2">
                 <Link href="/genesis" className="ui-button-ghost inline-flex h-9 items-center px-3 text-[14px]">
                   {t("현시도 검토 열기", "Open 현시도 review", "現示図レビューを開く")}
@@ -781,13 +848,14 @@ export default function CalibrationWorkspacePage() {
 
           {activeStation === "behaviour" && (
             <div className="mt-3">
-              <p className="text-[13px] leading-5 text-slate-600">
-                {t(
+              <StationDoctrine
+                t={t}
+                text={t(
                   "각 주행행태의 현재 ax·bx_add·bx_mult가 공표된 표의 한 행 위에 있는지 확인합니다 (단계 ⑦·⑫).",
                   "Whether each driving behaviour's current ax/bx_add/bx_mult sits on one published row of the table (steps 7 and 12).",
                   "各走行挙動の現在のax・bx_add・bx_multが公表された表の一行にあるかを確認します（段階⑦・⑫）。",
                 )}
-              </p>
+              />
               <div className="mt-2">
                 <BehaviourStation rows={appliedRows} loading={appliedLoading} error={appliedError} />
               </div>
@@ -806,47 +874,67 @@ export default function CalibrationWorkspacePage() {
             </div>
           )}
 
-          {/* ⑨, ⑩ and ⑪ each rest on ONE artifact, and the sentence below says
+          {/* ⑨, ⑩ and ⑪ each rest on ONE artifact, and the folded sentence says
               which — the RULE, never a second opinion about the verdict, which
-              is the step's own basis line above. */}
+              is the step's own basis line above. #50-c folded them all: a rule
+              is read once and then re-read only when it is challenged, while
+              the basis line above it changes with every run. */}
           {activeStation === "transit" && (
-            <p className="mt-3 text-[13px] leading-5 text-slate-600">
-              {t(
+            <StationDoctrine
+              t={t}
+              text={t(
                 "이 단계에 대해 이 제품이 가진 사실은 네트워크의 대중교통 노선 수 하나뿐입니다. 노선이 0개일 때만 '해당 없음'이 되고, 노선이 있으면 보정 여부를 알 방법이 없어 '증거 없음'으로 남습니다.",
                 "The only fact this product holds for this step is the network's public-transport line count. Zero lines earns \"not applicable\"; with lines present there is no way to tell a calibrated network from an untouched one, so it stays \"no evidence\".",
                 "この段階について本製品が持つ事実は、ネットワークの公共交通路線数だけです。路線が0件のときのみ「該当なし」となり、路線がある場合は較正の有無を判断できないため「証拠なし」のままです。",
               )}
-            </p>
+            />
           )}
 
           {activeStation === "demand" && (
-            <p className="mt-3 text-[13px] leading-5 text-slate-600">
-              {t(
+            <StationDoctrine
+              t={t}
+              text={t(
                 "근거는 실행–실측 대조가 낸 수요 제안과 입구 교통량의 실측 확인(D4)입니다. D4가 말하는 것은 '미실측'이 아니라 '확인되지 않음'입니다.",
                 "The evidence is the demand proposals the run-versus-observed check raised, plus the D4 entrance-measurement verdicts. D4 says \"unverified\", never \"unmeasured\".",
                 "根拠は実行と実測の対照が出した需要提案と、入口交通量の実測確認(D4)です。D4が示すのは「未実測」ではなく「未確認」です。",
               )}
-            </p>
+            />
           )}
 
           {activeStation === "assignment" && (
-            <p className="mt-3 text-[13px] leading-5 text-slate-600">
-              {t(
+            <StationDoctrine
+              t={t}
+              text={t(
                 "근거는 실행–실측 대조가 낸 배분 제안과 ROUTING_SPLIT 진단입니다. 제안도 진단도 없다는 것은 배분이 확인됐다는 증거가 아닙니다.",
                 "The evidence is the route-split proposals the run-versus-observed check raised and the ROUTING_SPLIT diagnoses. Neither a proposal nor a diagnosis is not evidence that route choice was confirmed.",
                 "根拠は実行と実測の対照が出した配分提案とROUTING_SPLIT診断です。提案も診断もないことは、配分が確認された証拠ではありません。",
               )}
-            </p>
+            />
           )}
 
+          {/* THE ONE THAT STAYS A HEADLINE. 수동 확인 영역's rule is not
+              background a reader may skip: it is the promise that this screen
+              will never mark these six steps done. So it keeps a one-line
+              verdict on the surface, at the type floor, with the full sentence
+              in the fold beneath it. */}
           {activeStation === "manual" && (
-            <p className="mt-3 text-[13px] leading-5 text-slate-600">
-              {t(
-                "위 단계들은 이 제품이 측정하지 않습니다. Vissim에서 직접 확인하고 이 도구 밖에 기록하십시오. 화면이 이 단계들을 완료로 표시하는 일은 없습니다.",
-                "This product measures nothing for the steps above. Check them in Vissim and record them outside this tool — the screen will never show them as done.",
-                "上記の段階について本製品は測定しません。Vissimで直接確認し、本ツールの外に記録してください。画面がこれらを完了と表示することはありません。",
-              )}
-            </p>
+            <div className="mt-3">
+              <p className="text-[15px] font-semibold leading-6 text-slate-800">
+                {t(
+                  "이 제품은 위 단계들을 측정하지 않습니다 — 완료로 표시하지 않습니다.",
+                  "This product measures nothing for the steps above — it never shows them as done.",
+                  "本製品は上記の段階を測定しません — 完了と表示することはありません。",
+                )}
+              </p>
+              <StationDoctrine
+                t={t}
+                text={t(
+                  "위 단계들은 이 제품이 측정하지 않습니다. Vissim에서 직접 확인하고 이 도구 밖에 기록하십시오. 화면이 이 단계들을 완료로 표시하는 일은 없습니다.",
+                  "This product measures nothing for the steps above. Check them in Vissim and record them outside this tool — the screen will never show them as done.",
+                  "上記の段階について本製品は測定しません。Vissimで直接確認し、本ツールの外に記録してください。画面がこれらを完了と表示することはありません。",
+                )}
+              />
+            </div>
           )}
 
           {/* Node context, for the stations that HAVE one. Measured, not
@@ -867,16 +955,20 @@ export default function CalibrationWorkspacePage() {
 
           {/* This station's own proposals — inline, where their evidence is. */}
           <div className="mt-4 border-t border-slate-200 pt-3">
-            <h3 className="text-[14px] font-bold text-slate-800">
+            <h3 className="text-[15px] font-bold text-slate-800">
               {t("이 단계의 제안 — 승인 대기", "This step's proposals — awaiting approval", "この段階の提案 — 承認待ち")}
+              {/* One approval path, shared with the drawer — a property of the
+                  machinery rather than of any one card, so it moved into the ⓘ
+                  on the heading it qualifies (#50-c). */}
+              <InfoTip
+                text={t(
+                  "승인 경로는 드로어와 같은 하나뿐입니다.",
+                  "There is exactly one approval path, shared with the drawer.",
+                  "承認経路はドロワーと同じ一つだけです。",
+                )}
+                label={t("승인 경로에 대하여", "About the approval path", "承認経路について")}
+              />
             </h3>
-            <p className="mt-0.5 text-[13px] leading-5 text-slate-600">
-              {t(
-                "승인 경로는 드로어와 같은 하나뿐입니다.",
-                "There is exactly one approval path, shared with the drawer.",
-                "承認経路はドロワーと同じ一つだけです。",
-              )}
-            </p>
             <div className="mt-2">
               <StationProposals
                 placed={stationProposals}
@@ -930,8 +1022,20 @@ function NodeContext({
 
   return (
     <div className="mt-3 border-t border-slate-200 pt-3">
-      <h3 className="text-[14px] font-bold text-slate-800">
+      <h3 className="text-[15px] font-bold text-slate-800">
         {t("이 단계가 가리키는 노드", "The nodes this step points at", "この段階が指すノード")}
+        {/* The caption under the map said two things: which nodes are
+            highlighted, and that an unplaced node is a missing placement rather
+            than a missing node. Both are RULES about the map, so #50-c put them
+            in the ⓘ on the heading — reachable by hover, focus and tap. */}
+        <InfoTip
+          text={t(
+            "강조된 노드는 이 단계의 다음 행동이 가리키는 노드입니다. 좌표가 없는 노드는 지도에 나타나지 않습니다.",
+            "The highlighted nodes are the ones this step's next action points at. A node without coordinates does not appear on the map.",
+            "強調されたノードは、この段階の次の行動が指すノードです。座標のないノードは地図に表示されません。",
+          )}
+          label={t("이 지도에 대하여", "About this map", "この地図について")}
+        />
       </h3>
       <ul className="mt-1.5 flex flex-wrap gap-1.5">
         {ids.map((id) => {
@@ -941,7 +1045,7 @@ function NodeContext({
               <button
                 type="button"
                 onClick={() => onNodeClick(id)}
-                className={`rounded-full border px-2 py-0.5 text-[13px] transition ${
+                className={`rounded-full border px-2 py-0.5 text-[14px] transition ${
                   activeNodeId === id
                     ? "border-sky-300 bg-sky-50 text-sky-600"
                     : "border-slate-300 bg-surface text-slate-700 hover:bg-slate-50"
@@ -963,21 +1067,43 @@ function NodeContext({
           onNodeClick={(nodeId) => onNodeClick(nodeId)}
         />
       </div>
-      <p className="mt-1.5 text-[13px] leading-5 text-slate-500">
-        {t(
-          "강조된 노드는 이 단계의 다음 행동이 가리키는 노드입니다. 좌표가 없는 노드는 지도에 나타나지 않습니다.",
-          "The highlighted nodes are the ones this step's next action points at. A node without coordinates does not appear on the map.",
-          "強調されたノードは、この段階の次の行動が指すノードです。座標のないノードは地図に表示されません。",
-        )}
-      </p>
 
-      {/* The SAME detail pane the scoring table opens — one component, so a
-          node reads identically wherever a reader reaches it. */}
+      {/* The SAME detail pane the scoring grid opens — one component, so a
+          node reads identically wherever a reader reaches it, AND the same bar:
+          this station holds the very report the scoring grid scored, so it
+          threads that report's own `geh_threshold` rather than leaving the pane
+          verdictless beside a grid that has one. `?.` because the report may
+          not have loaded yet — and with no bar `nodeGehPasses` returns null, so
+          the GEH prints as a number with no verdict colour, which is the honest
+          rendering of "this pane has not been told what the bar is". */}
       {activeNode && ids.includes(activeNode.node_id) && (
         <div className="mt-2">
-          <NodeScoreDetail node={activeNode} />
+          <NodeScoreDetail node={activeNode} threshold={report?.geh_threshold} />
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * ONE folded rule, in the app's existing disclosure vocabulary (#50-c).
+ *
+ * The stations each opened with two to four sentences of RULE — what step ⑨
+ * rests on, what D4 means, why an unattested 현시도 is not evidence — sitting at
+ * full weight above the numbers they govern. The user's 2026-08-20 decision was
+ * that this is what saturates the screen. NOTHING IS DELETED: the sentence goes
+ * in here verbatim, in all three languages, one click from where it was.
+ *
+ * A `<details>` rather than an `InfoTip` on purpose: these are paragraphs a
+ * reader settles down with, and a hover panel is for a phrase.
+ */
+function StationDoctrine({ text, t }: { text: string; t: (ko: string, en: string, ja?: string) => string }) {
+  return (
+    <details className="mt-1 text-[13px] leading-5 text-slate-600">
+      <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+        {t("자세히 (이 단계의 근거 규칙)", "More (the rule this step rests on)", "詳細（この段階の根拠規則）")}
+      </summary>
+      <p className="mt-1 border-l border-slate-300 pl-3">{text}</p>
+    </details>
   );
 }

@@ -46,9 +46,29 @@
 // NOT_APPLICABLE and NO_EVIDENCE are told apart by WEIGHT and hairline on the
 // neutral ramp, never by a fourth hue. The proposal badge is sky for the same
 // reason the NEXT chip is.
+//
+// WHAT #50-c CHANGED, and why (the user, 2026-08-20, driving the real screen):
+// "거의 모든 fine text는 크게/직관적 대안/없애" and, on the mono provenance
+// lines specifically, "이런것도 다 지워 — 화면을 포화시켜". So this rail is now
+// NUMBERS FIRST, PROSE FOLDED:
+//
+//   * the status tally was a mono SENTENCE ("완료 1 · 진행 2 · …") and is now
+//     COUNT CHIPS in the same three-colour vocabulary the step chips use — the
+//     tally is a set of numbers, and a number reads as a number;
+//   * the honest headline (a step with no evidence is never shown as done) is
+//     doctrine, so it moved into the header's ⓘ, verbatim and keyboard-reachable
+//     — the rule the app already follows for a doctrine sentence beside the
+//     control it explains (components/genesis/ui.tsx's InfoTip);
+//   * §2.12.1's citation and the refusal CODES moved inside the folds that
+//     already carry the ordering principles. Nothing is deleted: a fold keeps
+//     the citation string verbatim, because it is audit evidence.
+//
+// The type floor is 14px on the surface; 13px survives only INSIDE a fold.
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
+
+import { InfoTip } from "@/components/genesis/ui";
 
 // Unit #51-c: the guardrail's two-path line and the decision chips are the SAME
 // components the approval card uses. Imported rather than re-written for the
@@ -162,7 +182,7 @@ function ProposalBadge({ count, t }: { count: number; t: Translate }) {
   if (count <= 0) return null;
   return (
     <span
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[13px] font-semibold text-sky-600"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[14px] font-semibold text-sky-600"
       title={t("승인 대기 중인 제안", "Proposals awaiting approval", "承認待ちの提案")}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden="true" />
@@ -206,47 +226,60 @@ export function ParameterSearchTrack({
   const refusals = track.refusals ?? [];
   if (track.locked || !card) {
     return (
-      <span className="mt-1 block rounded-md border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-[13px] leading-5 text-slate-500">
-        <span className="font-semibold">
+      <div className="mt-1 rounded-md border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2 text-[14px] leading-6 text-slate-600">
+        <p className="font-semibold text-slate-700">
           {pick(track.label, lang)}
-          <span className="ml-1 font-mono font-normal">{track.unit}</span>
+          <span className="ml-1 font-mono text-[14px] font-normal text-slate-500">{track.unit}</span>
           <span className="ml-1.5 font-normal">{t("잠김", "locked", "ロック中")}</span>
-        </span>
-        <span className="mt-0.5 block">{pick(track.why, lang)}</span>
-        <span className="mt-1 block border-l border-slate-300 pl-2">
+        </p>
+        <p className="mt-0.5">{pick(track.why, lang)}</p>
+        {/* Every named refusal, in the reader's language. #50-c moved the CODE
+            beside it into the fold below: a reader acts on "what is wrong and
+            what would open it", and the machine code saturated the line without
+            adding a single actionable word. It is still on the screen, one
+            click away, because it is what an auditor greps for. */}
+        <ul className="mt-1 flex flex-col gap-1 border-l border-slate-300 pl-2">
           {refusals.map((refusal) => (
-            <span key={refusal.code} className="mt-0.5 block">
-              <span className="font-mono text-[13px] text-slate-400">{refusal.code}</span>{" "}
-              {pick(refusal.why, lang)}{" "}
-              <span className="text-slate-600">{pick(refusal.opens_when, lang)}</span>
-            </span>
+            <li key={refusal.code}>
+              {pick(refusal.why, lang)} <span className="text-slate-500">{pick(refusal.opens_when, lang)}</span>
+            </li>
           ))}
-        </span>
+        </ul>
+        {refusals.length > 0 && (
+          <details className="mt-1 text-[13px] leading-5 text-slate-500">
+            <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+              {t("자세히 (거부 코드)", "More (the refusal codes)", "詳細（拒否コード）")}
+            </summary>
+            <p className="mt-1 border-l border-slate-300 pl-2 font-mono text-[13px] text-slate-500">
+              {refusals.map((refusal) => refusal.code).join(" · ")}
+            </p>
+          </details>
+        )}
         <TrackGuardrail guardrail={track.guardrail} lang={lang} t={t} />
-      </span>
+      </div>
     );
   }
   return (
-    <span className="mt-1 block rounded-md border border-sky-300 bg-sky-50/60 px-2 py-1 text-[13px] leading-5 text-slate-700">
-      <span className="font-semibold text-slate-800">
+    <div className="mt-1 rounded-md border border-sky-300 bg-sky-50/60 px-2.5 py-2 text-[14px] leading-6 text-slate-700">
+      <p className="font-semibold text-slate-800">
         {pick(track.label, lang)}
-        <span className="ml-1 font-mono font-normal text-slate-500">{track.unit}</span>
-      </span>
-      <span className="mt-0.5 block font-semibold">{pick(card.question, lang)}</span>
-      <span className="mt-0.5 block">{pick(card.because, lang)}</span>
-      <span className="mt-1 block font-mono text-[13px] text-slate-500">
+        <span className="ml-1 font-mono text-[14px] font-normal text-slate-500">{track.unit}</span>
+      </p>
+      <p className="mt-0.5 font-semibold">{pick(card.question, lang)}</p>
+      <p className="mt-0.5">{pick(card.because, lang)}</p>
+      {/* NUMBERS on the surface: the searched bands, the split, the budget. */}
+      <p className="mt-1 text-[14px] text-slate-700">
         {card.plan.space.map((band) => `${band.parameter} ${band.low}–${band.high}`).join(" · ")}
-        {card.plan.space[0] ? ` · ${card.plan.space[0].citation}` : ""}
-      </span>
-      <span className="mt-0.5 block font-mono text-[13px] text-slate-500">
+      </p>
+      <p className="mt-0.5 text-[14px] text-slate-700">
         {t("보정", "calibrate", "補正")} {card.plan.calibration_nodes.join(",")} ·{" "}
         {t("홀드아웃", "holdout", "ホールドアウト")} {card.plan.holdout_nodes.join(",")} ·{" "}
         {Math.round(card.plan.budget_s / 60)}
         {t("분", "min", "分")}
         {card.plan.resumable ? t(" (이어하기 가능)", " (resumable)", " (再開可)") : ""}
-      </span>
+      </p>
       {/* The honest half. Never hidden behind a disclosure. */}
-      <span className="mt-1 block border-l border-sky-300 pl-2 text-slate-600">
+      <p className="mt-1 border-l border-sky-300 pl-2 text-slate-600">
         {card.runner.wired
           ? t(
               "실행기가 연결되어 있습니다.",
@@ -258,9 +291,20 @@ export function ParameterSearchTrack({
               "No runner is wired in this build — running a search needs Vissim COM and belongs to the job queue on your own machine. This card only asks whether to start one.",
               "このビルドには実行機が接続されていません — 探索の実行にはVissim COMが必要で、ジョブキュー(ユーザーの実行環境)の担当です。このカードは開始の可否を尋ねるだけです。",
             )}
-      </span>
+      </p>
+      {/* The band's PAGE. The range is a number and stays above; the citation is
+          provenance, and the user's 2026-08-20 decision put provenance one click
+          away. It travels with the band it authorises, verbatim. */}
+      <details className="mt-1 text-[13px] leading-5 text-slate-600">
+        <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (탐색 범위의 출처)", "More (where the bands are published)", "詳細（探索範囲の出典）")}
+        </summary>
+        <p className="mt-1 border-l border-slate-300 pl-2 font-mono text-[13px] text-slate-500">
+          {card.plan.space[0] ? card.plan.space[0].citation : ""}
+        </p>
+      </details>
       <TrackGuardrail guardrail={track.guardrail} lang={lang} t={t} />
-    </span>
+    </div>
   );
 }
 
@@ -290,18 +334,27 @@ function TrackGuardrail({
 }) {
   if (!guardrail) return null;
   return (
-    <span className="mt-1.5 block border-t border-slate-200 pt-1.5">
-      <span className="block text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
+    <div className="mt-1.5 border-t border-slate-200 pt-1.5">
+      <p className="text-[14px] font-bold uppercase tracking-[0.08em] text-slate-500">
         {t("탐색 산출물의 가드레일", "The guardrail on a searched value", "探索産出物のガードレール")}
-        {guardrail.decision && (
-          <span className="ml-1.5 font-mono text-[13px] font-normal normal-case tracking-normal text-slate-500">
-            {guardrail.decision}
-          </span>
-        )}
-      </span>
+      </p>
       <GuardrailPathLines paths={guardrail.paths} t={t} />
       <GuardrailResolutionChips resolutions={guardrail.resolutions} lang={lang} t={t} />
-    </span>
+      {/* #50-c: the DECISION's machine code moved off the surface (the user,
+          2026-08-20) — the decision itself is the chips above, in the server's
+          own sentence, and the code beside the heading was a second, unreadable
+          copy of it. Folded, never dropped: it is the id an auditor cites. */}
+      {guardrail.decision && (
+        <details className="mt-1 text-[13px] leading-5 text-slate-500">
+          <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+            {t("자세히 (결정 코드)", "More (the decision code)", "詳細（決定コード）")}
+          </summary>
+          <p className="mt-1 border-l border-slate-300 pl-2 font-mono text-[13px] text-slate-500">
+            {guardrail.decision}
+          </p>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -313,7 +366,7 @@ function TrackGuardrail({
  * the two it is, and on what basis the cards below were placed. */
 function StepsUnreadNote({ t }: { t: Translate }) {
   return (
-    <span className="mt-0.5 block text-[13px] leading-5 text-slate-600">
+    <span className="mt-0.5 block text-[14px] leading-6 text-slate-600">
       {t(
         "이 단계의 상태는 아직 읽지 못했습니다. 아래 제안은 편집 도구가 다루는 대상으로 배치했습니다.",
         "This station's step status has not been read yet. The proposals here were placed by what their edit tools act on.",
@@ -328,10 +381,10 @@ function StepsUnreadNote({ t }: { t: Translate }) {
 function StepLine({ step, lang, t }: { step: CalibrationRailStep; lang: string; t: Translate }) {
   return (
     <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
-      <span className="font-mono text-[13px] font-semibold text-slate-500">{circledStep(step.number)}</span>
-      <span className="text-[13px] leading-5 text-slate-700">{stepLabel(step, lang)}</span>
+      <span className="font-mono text-[14px] font-semibold text-slate-500">{circledStep(step.number)}</span>
+      <span className="text-[14px] leading-6 text-slate-700">{stepLabel(step, lang)}</span>
       <span
-        className={`rounded-full border px-1.5 py-0.5 text-[13px] font-semibold ${statusChipClass(step.status)}`}
+        className={`rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${statusChipClass(step.status)}`}
       >
         {statusLabel(step.status, t)}
       </span>
@@ -387,34 +440,46 @@ export default function FlowRail({
       className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-surface px-3 py-3 lg:sticky lg:top-4 lg:self-start"
     >
       <header>
-        <h2 className="text-[14px] font-bold text-slate-900">
+        <h2 className="text-[15px] font-bold text-slate-900">
           {t("보정 13단계", "The 13 calibration steps", "補正13段階")}
+          {/* The honest headline is DOCTRINE, so it goes where this app already
+              puts doctrine beside the control it governs: a reachable ⓘ (hover,
+              focus, tap; Escape closes). It used to sit at full weight under the
+              heading, competing with the thirteen rows it describes. Verbatim —
+              a tooltip is a promotion for a sentence worth keeping. */}
+          <InfoTip
+            text={t(
+              "각 단계의 상태는 이 워크스페이스에 실제로 있는 증거에서만 유도합니다. 증거가 없는 단계는 완료로 표시하지 않고 '증거 없음 — 수동 확인 영역'으로 둡니다.",
+              "Each step's status is derived only from evidence this workspace actually holds. A step with no evidence is never shown as done — it stays a manual-check area.",
+              "各段階の状態は、このワークスペースに実在する証拠からのみ導出します。証拠のない段階は完了とせず「証拠なし — 手動確認領域」とします。",
+            )}
+            label={t("상태 유도 규칙 보기", "Show how a status is derived", "状態の導出規則を表示")}
+          />
         </h2>
-        <p className="font-mono text-[13px] text-slate-500">{rail?.citation}</p>
+        {/* THE TALLY IS NUMBERS, so it reads as numbers. It was one mono
+            sentence ("완료 1 · 진행 2 · 다음 할 일 1 · 증거 없음 9") that a
+            reader had to parse; the counts now wear the SAME chip vocabulary as
+            the step rows, so the rail's state is legible without reading. Same
+            three-colour rule, same server words, same order. */}
         {rail && (
-          <p className="mt-0.5 font-mono text-[13px] text-slate-500">
-            {STATUS_ORDER.filter((status) => (rail.counts[status] ?? 0) > 0)
-              .map((status) => `${statusLabel(status, t)} ${rail.counts[status]}`)
-              .join(" · ")}
-          </p>
+          <ul className="mt-1 flex flex-wrap gap-1">
+            {STATUS_ORDER.filter((status) => (rail.counts[status] ?? 0) > 0).map((status) => (
+              <li
+                key={status}
+                className={`rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${statusChipClass(status)}`}
+              >
+                {statusLabel(status, t)} {rail.counts[status]}
+              </li>
+            ))}
+          </ul>
         )}
       </header>
-
-      {/* The honest headline. A reader must not have to count chips to learn
-          that this product measures nothing for six of the thirteen steps. */}
-      <p className="text-[13px] leading-5 text-slate-600">
-        {t(
-          "각 단계의 상태는 이 워크스페이스에 실제로 있는 증거에서만 유도합니다. 증거가 없는 단계는 완료로 표시하지 않고 '증거 없음 — 수동 확인 영역'으로 둡니다.",
-          "Each step's status is derived only from evidence this workspace actually holds. A step with no evidence is never shown as done — it stays a manual-check area.",
-          "各段階の状態は、このワークスペースに実在する証拠からのみ導出します。証拠のない段階は完了とせず「証拠なし — 手動確認領域」とします。",
-        )}
-      </p>
 
       {/* A failed rail must not strand the reader: the scoring station is where
           the run is scored and it needs nothing from this payload, so the rows
           below degrade to a stated failure while navigation keeps working. */}
       {error && (
-        <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[13px] leading-5 text-rose-700">
+        <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[14px] leading-6 text-rose-700">
           {t("보정 흐름을 불러오지 못했습니다:", "The calibration flow could not be loaded:", "補正フローを読み込めませんでした:")}{" "}
           {error}
         </p>
@@ -444,13 +509,13 @@ export default function FlowRail({
                       <ProposalBadge count={proposalCounts[station] ?? 0} t={t} />
                     </span>
                     <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                      <span className="font-mono text-[13px] text-slate-500">
+                      <span className="font-mono text-[14px] text-slate-500">
                         {steps.map((step) => circledStep(step.number)).join("")}
                       </span>
                       {statusTally(steps).map((entry) => (
                         <span
                           key={entry.status}
-                          className={`rounded-full border px-1.5 py-0.5 text-[13px] font-semibold ${statusChipClass(entry.status)}`}
+                          className={`rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${statusChipClass(entry.status)}`}
                         >
                           {statusLabel(entry.status, t)} {entry.count}
                         </span>
@@ -462,7 +527,7 @@ export default function FlowRail({
                     type="button"
                     onClick={() => setManualOpen((open) => !open)}
                     aria-expanded={manualOpen}
-                    className="ui-button-ghost shrink-0 rounded-lg px-2 text-[13px] text-slate-600"
+                    className="ui-button-ghost shrink-0 rounded-lg px-2 text-[14px] text-slate-600"
                   >
                     {manualOpen ? t("접기", "Collapse", "折りたたむ") : t("펼치기", "Expand", "展開")}
                   </button>
@@ -489,13 +554,13 @@ export default function FlowRail({
           return (
             <li key={station}>
               <button type="button" onClick={() => onSelectStation(station)} className={rowClass(station)}>
+                {/* #50-c: the "MRWA 단계 아님" caption left this row for a
+                    tooltip on the station's own header (app/calibration/page.tsx)
+                    — a row cannot hold an ⓘ without nesting a button inside a
+                    button, and the claim belongs beside the station's citation
+                    line, which is the thing it qualifies. */}
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[14px] font-semibold text-slate-800">{stationLabel(station, t)}</span>
-                  {isScoring && (
-                    <span className="text-[13px] text-slate-500">
-                      {t("MRWA 단계 아님", "not an MRWA step", "MRWA段階ではない")}
-                    </span>
-                  )}
                   <ProposalBadge count={proposalCounts[station] ?? 0} t={t} />
                 </span>
                 {steps.map((step) => (
@@ -503,7 +568,7 @@ export default function FlowRail({
                 ))}
                 {stepsUnread && <StepsUnreadNote t={t} />}
                 {isScoring && steps.length === 0 && (
-                  <span className="mt-0.5 block text-[13px] leading-5 text-slate-600">
+                  <span className="mt-0.5 block text-[14px] leading-6 text-slate-600">
                     {t(
                       "실행을 실측과 대조하고 노드별로 진단합니다.",
                       "Score the run against observed counts and diagnose it node by node.",
@@ -524,7 +589,7 @@ export default function FlowRail({
         {grouped.unplaced.length > 0 && (
           <li>
             <span className="block rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
-              <span className="text-[13px] font-semibold text-slate-700">
+              <span className="text-[14px] font-semibold text-slate-700">
                 {t("단계 미배치", "Steps with no station yet", "配置未定の段階")}
               </span>
               {grouped.unplaced.map((step) => (
@@ -535,7 +600,7 @@ export default function FlowRail({
         )}
 
         {!rail && (
-          <li className="px-1 text-[13px] text-slate-500">
+          <li className="px-1 text-[14px] text-slate-500">
             {loading
               ? t("보정 흐름을 읽는 중...", "Reading the calibration flow...", "補正フローを読み込み中...")
               : t("보정 흐름 정보가 없습니다.", "No calibration flow information.", "補正フロー情報がありません。")}
@@ -543,22 +608,32 @@ export default function FlowRail({
         )}
       </ol>
 
-      {/* §2.12.1's own ordering principles. They bind anyone who cites the step
-          order, so the rail that cites it shows them rather than leaving a
-          reader to assume the order is the whole rule. */}
+      {/* §2.12.1's own ordering principles, and — since #50-c — the rail's own
+          citation with them. The citation used to be a mono line under the
+          heading, one of the provenance lines the user ordered off the surface
+          on 2026-08-20. It is not deleted: it sits at the top of the fold that
+          already carried this guideline's other words, which is exactly where a
+          reader who wants the source goes looking. */}
       {rail && (
         <details className="text-[13px] leading-5 text-slate-600">
-          <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
-            {t("자세히 (지침의 순서 원칙)", "More (the guideline's ordering principles)", "詳細（指針の順序原則）")}
+          <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+            {t(
+              "자세히 (출처·지침의 순서 원칙)",
+              "More (the source, and the guideline's ordering principles)",
+              "詳細（出典・指針の順序原則）",
+            )}
           </summary>
-          <ul className="mt-1.5 flex flex-col gap-1 border-l border-slate-300 pl-3">
-            {rail.principles.map((principle) => (
-              <li key={principle.citation + principle.text}>
-                {principle.text}
-                <span className="ml-1.5 font-mono text-[13px] text-slate-400">{principle.citation}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="mt-1.5 flex flex-col gap-1 border-l border-slate-300 pl-3">
+            <p className="font-mono text-[13px] text-slate-500">{rail?.citation}</p>
+            <ul className="flex flex-col gap-1">
+              {rail.principles.map((principle) => (
+                <li key={principle.citation + principle.text}>
+                  {principle.text}
+                  <span className="ml-1.5 font-mono text-[13px] text-slate-400">{principle.citation}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </details>
       )}
     </nav>

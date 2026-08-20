@@ -16,6 +16,14 @@
 // §5.2.5.1 states 2.5 m and Vissim's default is 2.0 m. So the table shows the
 // standstill column as its own verdict, and the summary says out loud when a
 // row match is indistinguishable from the default.
+//
+// #50-c: the summary was ONE mono 13px line ending in Table 5-6's citation —
+// four counts and a paragraph number, in the size this app reserves for folded
+// raw material. The counts are now chips at reading size and the CITATION moved
+// into the per-table fold: the user's 2026-08-20 decision was that provenance
+// lines saturate the screen, and a citation nobody can read is not evidence
+// anyone can check. It travels with the numbers still — one click away, and
+// verbatim, because it is what a reviewer quotes.
 // ---------------------------------------------------------------------------
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -66,19 +74,29 @@ export default function BehaviourStation({
 
   return (
     <div>
-      <p className="font-mono text-[13px] text-slate-500">
-        {t("읽음", "readable", "読み取り")} {summary.readable} ·{" "}
-        {t("공표 행 위", "on a published row", "公表行上")} {summary.on_published_row} ·{" "}
-        {t("공표 행 밖", "off any published row", "公表行外")} {summary.off_published_row} ·{" "}
-        {t("지침 정지 시 거리", "guideline standstill", "指針の停止時距離")} {summary.guideline_standstill} ·{" "}
-        {rows.citation}
-      </p>
+      {/* Counts as chips: four numbers a reader compares, not a sentence they
+          parse. Same words the server's summary uses. */}
+      <ul className="flex flex-wrap gap-1.5">
+        {[
+          [t("읽음", "readable", "読み取り"), summary.readable],
+          [t("공표 행 위", "on a published row", "公表行上"), summary.on_published_row],
+          [t("공표 행 밖", "off any published row", "公表行外"), summary.off_published_row],
+          [t("지침 정지 시 거리", "guideline standstill", "指針の停止時距離"), summary.guideline_standstill],
+        ].map(([label, value]) => (
+          <li
+            key={String(label)}
+            className="rounded-full border border-slate-300 bg-surface px-2 py-0.5 text-[14px] text-slate-600"
+          >
+            {label} <span className="font-mono font-semibold text-slate-800">{value}</span>
+          </li>
+        ))}
+      </ul>
 
       {/* The honest sentence, shown whenever the only row matches are the ones
           Vissim ships with. Neutral ink + heavier hairline is this app's WARN
           treatment — never a fourth hue. */}
       {summary.default_coincident > 0 && summary.guideline_standstill === 0 && (
-        <p className="mt-1.5 rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[13px] leading-5 text-slate-800">
+        <p className="mt-1.5 rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[14px] leading-6 text-slate-800">
           {t(
             `주행행태 ${summary.default_coincident}개가 공표 행과 일치하지만 정지 시 거리가 지침값(2.5 m)이 아닙니다. Vissim 기본값이 마침 ${defaultRow} pcu 행과 같으므로, 이 일치는 측정이 제출됐다는 증거가 아닙니다.`,
             `${summary.default_coincident} behaviour(s) match a published row but do not carry the guideline standstill distance (2.5 m). Vissim's default happens to equal the ${defaultRow} pcu row, so this match is not evidence that a measurement was submitted.`,
@@ -88,7 +106,7 @@ export default function BehaviourStation({
       )}
 
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full min-w-[600px] border-collapse text-[13px]">
+        <table className="w-full min-w-[600px] border-collapse text-[14px]">
           <thead>
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="px-2 py-1.5 font-semibold">{t("주행행태", "Behaviour", "走行挙動")}</th>
@@ -111,17 +129,22 @@ export default function BehaviourStation({
                     <span className="font-mono text-slate-700">{entry.behavior_no}</span>
                     {entry.behavior_name && <span className="ml-1.5 text-slate-600">{entry.behavior_name}</span>}
                     {/* Driving behaviours are SHARED objects — how many things
-                        an edit here would move is part of reading the row. */}
+                        an edit here would move is part of reading the row, so
+                        #50-c raised it to the type floor instead of folding it
+                        away: it is a COUNT, and counts stay on the surface. */}
                     {typeof entry.reference_count === "number" && entry.reference_count > 0 && (
-                      <span className="ml-1.5 font-mono text-[13px] text-slate-400">
-                        ×{entry.reference_count}
+                      <span className="ml-1.5 text-[14px] text-slate-500">
+                        {t("참조", "used by", "参照")} <span className="font-mono">{entry.reference_count}</span>
                       </span>
                     )}
                     <details className="mt-1 text-[13px] leading-5 text-slate-600">
-                      <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
-                        {t("자세히 (판정 근거)", "More (the verdict)", "詳細（判定の根拠）")}
+                      <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+                        {t("자세히 (판정 근거·출처)", "More (the verdict, and its source)", "詳細（判定の根拠・出典）")}
                       </summary>
-                      <p className="mt-1 border-l border-slate-300 pl-3">{verdict.why}</p>
+                      <div className="mt-1 flex flex-col gap-1 border-l border-slate-300 pl-3">
+                        <p>{verdict.why}</p>
+                        <p className="font-mono text-[13px] text-slate-500">{verdict.citation}</p>
+                      </div>
                     </details>
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono text-slate-600">{verdict.applied.ax ?? "-"}</td>
@@ -167,6 +190,17 @@ export default function BehaviourStation({
           </tbody>
         </table>
       </div>
+
+      {/* Table 5-6's own citation, which used to close the mono summary line at
+          the top of this station. Folded rather than deleted: these numbers are
+          only meaningful as "the published table says so", and the page that
+          says it has to remain quotable. */}
+      <details className="mt-2 text-[13px] leading-5 text-slate-600">
+        <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (이 표의 출처)", "More (where this table is published)", "詳細（この表の出典）")}
+        </summary>
+        <p className="mt-1 border-l border-slate-300 pl-3 font-mono text-[13px] text-slate-500">{rows.citation}</p>
+      </details>
     </div>
   );
 }

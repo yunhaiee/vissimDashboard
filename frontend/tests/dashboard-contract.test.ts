@@ -8448,16 +8448,32 @@ contractTest("unit #50: the flow rail renders the guideline's thirteen steps and
     pin.match(rail, literalPattern(`${status}:`), `expected the rail to label the ${status} status`);
   }
 
-  // The step's own basis sentence is the backend's, picked by language.
+  // The step's own basis sentence is the backend's, picked by language. It is
+  // the one sentence #50-c left ON the surface of a step box, and deliberately:
+  // it is the justification of the status chip beside it, which is what "no DONE
+  // from silence" is made of. The `source · citation` line under it moved into
+  // that step's fold -- see the #50-c citation ledger test.
   pin.match(page, /pick\(step\.basis, lang\)/, "expected the station to print the server's basis sentence, never its own");
-  pin.match(rail, /\{rail\?\.citation\}/, "expected the rail to carry §2.12.1's citation");
+  // RE-AIMED by #50-c (2026-08-20): §2.12.1's citation was a mono line under the
+  // rail's heading and is now the first line INSIDE the fold that already
+  // carried this guideline's ordering principles. Same claim -- the rail cites
+  // the guideline it renders -- pinned where the citation now lives, so a sweep
+  // that dropped it on the way into the fold fails here.
+  pin.match(
+    rail.slice(rail.indexOf("<details")),
+    /\{rail\?\.citation\}/,
+    "expected the rail to carry §2.12.1's citation, inside its own fold",
+  );
   pin.match(rail, /rail\.principles\.map/, "expected the guideline's ordering principles to be shown, not just the order");
 
   // NO_EVIDENCE must read as a real state a human acts on, not as a disabled
-  // row -- that is the whole honesty claim of this screen.
+  // row -- that is the whole honesty claim of this screen. RE-AIMED by #50-c:
+  // the caption became a reachable ⓘ on the step chip (hover, focus, tap), so
+  // the pin now says the step still NAMES its manual-check status rather than
+  // going silently blank, and says it through the tooltip primitive.
   pin.match(
     page,
-    /step\.manual_area && \(/,
+    /step\.manual_area && \(\s*\n\s*<InfoTip/,
     "expected a manual-check area to be named on the step, not silently blank",
   );
   pin.match(rail, /수동 확인 영역/, "expected the Korean manual-check wording on the rail");
@@ -8557,8 +8573,20 @@ contractTest("unit #50: the scoring station scores the RUN, and says what it wil
 
   // #43's rung, next action and its MRWA step -- the three things a modeller
   // acts on -- and the raw codes behind a fold (#41's doctrine).
-  pin.match(table, /node\.diagnosis\.rung/, "expected the diagnosis rung on the node row");
-  pin.match(table, /nextAction\.mrwa_step/, "expected the next action to name its MRWA step");
+  //
+  // RE-AIMED by #50-c (2026-08-20). The rung now rides the FAIL tile itself
+  // (`rungLabel(node.diagnosis.rung, t)` beside a "→"), which is a stronger
+  // claim than the old row chip: it is on the tile a reader is already looking
+  // at when they learn the node failed. The MRWA step and its citation moved
+  // into the node detail's fold with the rest of the provenance, so that pin is
+  // aimed there -- both are proved by the #50-c ledger test as well, which
+  // checks the fold is where they render and NOT the surface.
+  pin.match(table, /node\.diagnosis\.rung/, "expected the diagnosis rung on the node tile");
+  pin.match(
+    table.slice(table.indexOf("<details", table.indexOf("export function NodeScoreDetail"))),
+    /nextAction\.mrwa_step/,
+    "expected the next action to name its MRWA step, inside the node's own fold",
+  );
   pin.match(table, /<details/, "expected the raw evidence to sit behind a fold");
 
   // A refusal is an ANSWER: the report's own tri-lingual sentence, not ours.
@@ -8567,7 +8595,13 @@ contractTest("unit #50: the scoring station scores the RUN, and says what it wil
 
   // The workbook's pasted model column is the thing reality_check refuses to
   // read; the page says so rather than quietly using a second source.
-  pin.match(page, /워크북에 붙여넣은 모델 열/, "expected the page to state that the workbook's model column is not used");
+  // RE-AIMED by #50-c: it is a RULE, so it says so from inside the scoring
+  // tab's own fold rather than above the tiles. Still said, still verbatim.
+  pin.match(
+    page.slice(page.indexOf("<details")),
+    /워크북에 붙여넣은 모델 열/,
+    "expected the page to state that the workbook's model column is not used",
+  );
 });
 
 contractTest("unit #50: the Table 5-6 station cannot mistake the Vissim default for a calibration", (pin) => {
@@ -8587,7 +8621,16 @@ contractTest("unit #50: the Table 5-6 station cannot mistake the Vissim default 
   // #44's own `why` sentence, quoted -- it is the one that names a partially
   // applied set, and the UI must not paraphrase it.
   pin.match(station, /\{verdict\.why\}/, "expected verify_applied_row's own sentence, verbatim");
-  pin.match(station, /\{rows\.citation\}/, "expected Table 5-6's citation to travel with its numbers");
+  // RE-AIMED by #50-c (2026-08-20): Table 5-6's citation closed a mono summary
+  // line that the user ordered off the surface, and now closes the station's own
+  // fold. "Travels with its numbers" still holds -- it is one click from them,
+  // in the same component -- and this pin is aimed at the fold so a sweep that
+  // deleted it instead of moving it fails here.
+  pin.match(
+    station.slice(station.indexOf("<details")),
+    /\{rows\.citation\}/,
+    "expected Table 5-6's citation to travel with its numbers, inside the station's fold",
+  );
 });
 
 contractTest("unit #50: a bookmarked /base-model still lands on the work", (pin) => {
@@ -9547,6 +9590,610 @@ contractTest("unit #50-b: the proposal collection panel is gone, and nothing imp
     read("components/calibration/StationProposals.tsx"),
     /fetchCalibrationPendingApprovals\(\)/,
     "expected the pending listing to stay in the module that renders it",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #50-c — NUMBERS FIRST, PROSE FOLDED.
+//
+// The user drove #50-b's real screen and reported what was still wrong with it:
+// "거의 모든 fine text는 크게/직관적 대안/없애", and of the mono provenance lines
+// in particular ("saturation_flow.verify_applied_row · op §5.2.5.1, Table 5-6,
+// p.187" and its kind): "이런것도 다 지워 — 화면을 포화시켜". Measured on that
+// screen: every station panel opened with two to four sentences of RULE before
+// the first number, and every step box closed with a mono line naming a source
+// file and a paragraph number.
+//
+// So the surface of every tab is now numbers, verdicts and ONE next-action line,
+// and every rule, citation and machine code lives inside a fold or an ⓘ.
+//
+// THE CONSTRAINT THAT MAKES THIS A RESTRUCTURE RATHER THAN A CULL, and the
+// reason these tests are shaped the way they are: ZERO INFORMATION LOSS. A pin
+// that only asked "is the citation off the surface" would pass just as happily
+// over a deletion, and deleting an audit trail to tidy a screen is the one thing
+// this codebase must not do. So the ledger test below asserts BOTH directions
+// for every moved string: it still exists in the file, and it does not render on
+// the surface. `withoutFolds` is what lets a source-regex suite tell those two
+// apart at all.
+// ---------------------------------------------------------------------------
+
+/**
+ * The source with every FOLD's contents removed — what a reader sees BEFORE
+ * opening anything.
+ *
+ * Two openers, because this workspace has two fold spellings: the `<details>`
+ * every calibration component uses directly, and `<BaseModelSection>`, the
+ * absorbed base-model tab's own wrapper (which renders one -- see its doc
+ * comment). `InfoTip` is not stripped: it takes its sentence as a `text` prop,
+ * so a tooltip's contents never look like surface markup to begin with.
+ *
+ * FAILS CLOSED, and that is the whole design. When this helper cannot account
+ * for a file's folds the WHOLE FILE IS KEPT rather than a region dropped: a
+ * shrinking haystack makes every `doesNotMatch` pin over it pass vacuously,
+ * which is the failure mode `withoutComments` above carries its own scars from.
+ * Keeping the source means a malformed fold surfaces as a named pin failure
+ * instead of as a green run over a citation that is still on the screen.
+ *
+ * TWO GUARDS, and the first draft had neither. Measured by mutation 2026-08-20
+ * (refuter): the fail-closed promise above covered only an UNTERMINATED opener,
+ * and a spurious opener that PAIRS with a real closer far below is the same
+ * disease arriving through the front door. Planting one string literal —
+ * `const FOLD_HINT = "<details";` — at the top of app/calibration/page.tsx made
+ * this helper swallow 15,542 characters, 43% of that file's surface, and a
+ * `text-[13px]` planted inside the swallowed region went unseen by the floor
+ * pin while all 168 tests stayed green. So:
+ *
+ *   1. an opener is a TAG, not a substring — a real one is followed by
+ *      whitespace or `>`, and `"<details"` in a string literal is followed by a
+ *      quote;
+ *   2. openers and closers must BALANCE, and any mismatch keeps the file whole.
+ */
+function withoutFolds(source: string): string {
+  let current = source;
+  for (const [opener, closer] of [
+    ["<details", "</details>"],
+    ["<BaseModelSection", "</BaseModelSection>"],
+  ] as const) {
+    const opens: number[] = [];
+    for (let at = current.indexOf(opener); at !== -1; at = current.indexOf(opener, at + 1)) {
+      if (/[\s>]/.test(current[at + opener.length] ?? "")) opens.push(at);
+    }
+    // Guard 2. A file this helper cannot account for is a file it must not
+    // shrink -- including the unterminated case, which lands here as 1-vs-0.
+    if (opens.length !== current.split(closer).length - 1) continue;
+
+    let out = "";
+    let index = 0;
+    for (const start of opens) {
+      if (start < index) continue; // already inside a stripped block
+      const end = current.indexOf(closer, start);
+      if (end === -1) break;
+      out += current.slice(index, start);
+      index = end + closer.length;
+    }
+    out += current.slice(index);
+    current = out;
+  }
+  return current;
+}
+
+contractTest("contract helper: withoutFolds removes fold CONTENTS and keeps the surface", (pin) => {
+  const sample = '<p className="a">surface</p>\n<details><summary>s</summary><p>FOLDED</p></details>\n<p>tail</p>';
+  pin.doesNotMatch(withoutFolds(sample), /FOLDED/, "a fold's contents must not count as surface");
+  pin.match(withoutFolds(sample), /surface/, "text before the fold must survive");
+  pin.match(withoutFolds(sample), /tail/, "text after the fold must survive");
+
+  // The BaseModelSection spelling is a fold too.
+  pin.doesNotMatch(
+    withoutFolds('<BaseModelSection title="x">\n<p>INSIDE</p>\n</BaseModelSection>'),
+    /INSIDE/,
+    "the base-model tab's own section wrapper must count as a fold",
+  );
+
+  // THE FAIL-CLOSED CASE. An opener with no closer must NOT swallow the file --
+  // if it did, every doesNotMatch pin over this haystack would pass on nothing.
+  pin.match(
+    withoutFolds('<details>\n<p>UNCLOSED</p>\nconst c = "text-[13px]";'),
+    /UNCLOSED[\s\S]*text-\[13px\]/,
+    "an unterminated fold must keep the rest of the file, so the pin fails rather than passes vacuously",
+  );
+
+  // THE SAME FAILURE THROUGH THE FRONT DOOR (found by mutation 2026-08-20). A
+  // `<details` inside a STRING LITERAL is not a fold, but it pairs with the next
+  // real closer and deletes everything between -- and `withoutComments` cannot
+  // help, because it copies string literals verbatim by design. Measured on the
+  // real file before this guard existed: one such literal hid 43% of
+  // app/calibration/page.tsx's surface, including a planted 13px violation,
+  // with every pin green.
+  pin.match(
+    withoutFolds('const s = "<details";\nSURFACE text-[13px]\n<details>\n<p>FOLDED</p>\n</details>\nTAIL'),
+    /SURFACE text-\[13px\][\s\S]*TAIL/,
+    "a `<details` inside a string literal is not a fold -- pairing it with a real closer silently empties the haystack every surface pin scans",
+  );
+  pin.doesNotMatch(
+    withoutFolds('const s = "<details";\nSURFACE\n<details>\n<p>FOLDED</p>\n</details>\nTAIL'),
+    /FOLDED/,
+    "and the REAL fold beside it must still be stripped -- guarding the haystack must not stop the helper working",
+  );
+
+  // Balance is the second guard: a stray closer is as unaccountable as a stray
+  // opener, and an unaccountable file is one this helper must hand back whole.
+  pin.match(
+    withoutFolds("HEAD\n</details>\n<details>\n<p>X</p>\n</details>\nTAIL"),
+    /HEAD[\s\S]*X[\s\S]*TAIL/,
+    "an unbalanced fold count must keep the file whole rather than drop a region",
+  );
+});
+
+/** The five files whose whole body IS the calibration surface.
+ *
+ * `BaseModelStation.tsx` is deliberately absent from the type-floor sweep and
+ * present in the colour sweep, which is not an oversight: it is a 2,600-line
+ * screen this project ABSORBED rather than rewrote (#50), its helper components
+ * are declared at module top level while being rendered only from inside
+ * folded sections, and a file-wide "nothing under 14px" claim over it would be
+ * a claim the scan cannot actually make. What #50-c owed that tab was
+ * STRUCTURE -- verdict first, every other section an accordion -- and that is
+ * what its own test below checks. */
+const CALIBRATION_SURFACE_FILES = [
+  "app/calibration/page.tsx",
+  "components/calibration/FlowRail.tsx",
+  "components/calibration/NodeScoreTable.tsx",
+  "components/calibration/BehaviourStation.tsx",
+  "components/calibration/StationProposals.tsx",
+];
+
+contractTest("unit #50-c: every citation and machine code is INSIDE a fold, and none of them was deleted", (pin) => {
+  // BOTH DIRECTIONS, per moved string. The second pin is the one the user asked
+  // for; the first is the one that stops it from being satisfied by a deletion.
+  const moved = (file: string, pattern: RegExp, what: string) => {
+    const source = withoutComments(read(file));
+    pin.match(source, pattern, `${what} must still exist in ${file} -- #50-c moved provenance, it deleted none`);
+    pin.doesNotMatch(
+      withoutFolds(source),
+      pattern,
+      `${what} must not render on the surface of ${file} -- the user's 2026-08-20 decision put it one click away`,
+    );
+  };
+
+  const rail = "components/calibration/FlowRail.tsx";
+  moved(rail, /\{rail\?\.citation\}/, "§2.12.1's own citation");
+  moved(rail, /refusals\.map\(\(refusal\) => refusal\.code\)/, "the precondition gate's refusal CODES");
+  moved(rail, /\{guardrail\.decision\}/, "the guardrail decision code");
+  moved(rail, /card\.plan\.space\[0\]\.citation/, "the page the searched bands are published on");
+
+  const page = "app/calibration/page.tsx";
+  moved(page, /\{step\.source\}/, "which artifact answered a step");
+  moved(page, /워크북에 붙여넣은 모델 열/, "the rule about the workbook column reality_check refuses");
+
+  const table = "components/calibration/NodeScoreTable.tsx";
+  moved(table, /\{report\.reason_code\}/, "reality_check's own refusal code");
+  moved(table, /nextAction\.mrwa_step != null/, "the next action's MRWA step and citation");
+
+  const behaviour = "components/calibration/BehaviourStation.tsx";
+  moved(behaviour, /\{rows\.citation\}/, "Table 5-6's citation");
+  moved(behaviour, /\{verdict\.citation\}/, "each behaviour verdict's own citation");
+
+  moved("components/calibration/StationProposals.tsx", /\.\.\.placed\.unmappedTools,/, "a placement note's tool ids");
+
+  // AND THE HALF THAT MAY NEVER FOLD. #50-c shortened the empty state to one
+  // line and folded the explanation, but the count of proposals waiting at
+  // OTHER stations is not prose: without it every station's empty state reads
+  // identically, and a reader concludes there is no work anywhere -- which is
+  // the orphan-proposal failure #50-b was built to close, re-arriving as a
+  // typography decision. The component's own comment claims this ("the
+  // `otherCount` half is NOT prose and never folds") and nothing held it to it:
+  // measured by mutation 2026-08-20, collapsing both arms of the ternary to the
+  // bare sentence left all 168 tests green.
+  pin.match(
+    withoutFolds(withoutComments(read("components/calibration/StationProposals.tsx"))),
+    /다른 단계 \$\{otherCount\}건/,
+    "the count waiting at OTHER stations must stay on the surface -- folded, every station's empty state reads as 'no work anywhere'",
+  );
+
+  // AND NO NEW ONE MAY APPEAR. The shape the user named is a mono line at the
+  // fold type size; on the surface there is now no such thing anywhere, so the
+  // ban can be stated over the whole surface rather than site by site.
+  for (const file of CALIBRATION_SURFACE_FILES) {
+    pin.doesNotMatch(
+      withoutFolds(withoutComments(read(file))),
+      /font-mono text-\[13px\]/,
+      `${file}: a mono 13px provenance line is exactly the shape that saturated this screen -- fold it`,
+    );
+  }
+});
+
+// Style/layout pins, in their own test per this file's own rule about keeping
+// brittle restyle pins away from behavioural ones.
+contractTest("unit #50-c: the calibration surface has a 14px floor, and 13px lives only inside a fold", (pin) => {
+  for (const file of CALIBRATION_SURFACE_FILES) {
+    const surface = withoutFolds(withoutComments(read(file)));
+    pin.doesNotMatch(
+      surface,
+      /text-\[(?:[1-9]|1[0-3])(?:\.\d+)?px\]/,
+      `${file}: nothing on the surface may be under 14px -- 13px is fold type`,
+    );
+    pin.doesNotMatch(surface, /\btext-xs\b/, `${file}: text-xs is 12px -- under this screen's floor`);
+    // A `<summary>` is the fold's own TRIGGER: it is always visible, so it is
+    // surface even though `withoutFolds` strips it with the block it opens.
+    pin.doesNotMatch(
+      withoutComments(read(file)),
+      /<summary[^>]*text-\[13px\]/,
+      `${file}: a fold's trigger is always on the screen -- it takes the surface floor, not the fold's`,
+    );
+  }
+
+  // BOTH DIRECTIONS: the floor must have been raised, not the small type
+  // deleted. 13px is still what fold CONTENT is set in.
+  pin.match(
+    read("components/calibration/NodeScoreTable.tsx"),
+    /<details[\s\S]{0,600}?font-mono text-\[13px\]/,
+    "expected 13px to survive as fold type -- the floor applies to the surface, not to raw evidence",
+  );
+
+  // KEY NUMBERS, at the size the question deserves: the node-total GEH on its
+  // tile, and the totals in the node's own detail.
+  pin.match(
+    read("components/calibration/NodeScoreTable.tsx"),
+    /font-mono text-\[24px\] font-bold/,
+    "expected the node-total GEH to be the biggest thing on its tile",
+  );
+  pin.match(
+    read("components/calibration/NodeScoreTable.tsx"),
+    /font-mono text-\[20px\] font-bold/,
+    "expected the detail's observed/modelled/GEH numbers to be read at a glance",
+  );
+});
+
+contractTest("unit #50-c: the scoring surface is a TILE GRID, and the movement columns moved into the node's detail", (pin) => {
+  const table = read("components/calibration/NodeScoreTable.tsx");
+  const detailAt = table.indexOf("export function NodeScoreDetail");
+  const grid = table.slice(table.indexOf("export default function NodeScoreTable"), detailAt);
+  const detail = table.slice(detailAt);
+
+  // Slice sanity, for the reason #51-c's guardrail slices carry one: a missed
+  // anchor makes `slice` hand back the whole file and the pins below then pass
+  // on the OTHER half of the component.
+  pin.match(grid, /report\.status !== "CHECKED"/, "slice sanity: the grid slice must start at the grid component");
+  pin.doesNotMatch(grid, /export function NodeScoreDetail/, "slice sanity: the grid slice must end before the detail");
+
+  // THE TABLE IS GONE from the scoring surface -- it is a grid of tiles now.
+  pin.doesNotMatch(withoutComments(table), /<table/, "expected no node TABLE -- the scoring surface is a tile grid");
+  pin.match(grid, /<ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">/, "expected one tile per node in a grid");
+
+  // The tile speaks the SAME cross-highlight contract the rows did, so the map
+  // beside it keeps working: click carries (id, name), and the map's own click
+  // comes back through `activeNodeId`/`selectedNodeIds`.
+  pin.match(
+    grid,
+    /onClick=\{\(\) => onNodeClick\(node\.node_id, String\(node\.node_name \?\? node\.node_id\)\)\}/,
+    "expected a tile click to speak the map's own (nodeId, nodeName) contract",
+  );
+  pin.match(grid, /const active = activeNodeId === node\.node_id;/, "expected the map's active node to light a tile");
+  pin.match(grid, /const selected = selectedNodeIds\.includes\(node\.node_id\);/, "expected the map's selection to reach the tiles");
+
+  // TWO CHANNELS, and this is the honesty pin of the restyle: the FILL is the
+  // report's verdict and the RING is selection. One channel carrying both would
+  // make a selected ungradable node look like a pass.
+  pin.match(grid, /active \? "ring-2 ring-sky-400" : selected \? "ring-1 ring-sky-400"/, "expected selection to be a sky RING, never the tile's fill");
+  // EACH BRANCH TO ITS OWN FILL, and the tightness is the point. This pin used
+  // to read `passes === null[\s\S]{0,200}?bg-emerald-50[\s\S]{0,80}?bg-rose-50`,
+  // which asked only that three tokens appear in that order -- so painting the
+  // UNGRADABLE branch `bg-emerald-50` left it green (measured by mutation
+  // 2026-08-20, refuter). A node this run could not grade reading as a pass is
+  // the single thing the fill/ring split exists to prevent, and the pin that
+  // named it could not fail for it.
+  pin.match(
+    grid,
+    /passes === null\s+\? "border-slate-300 bg-surface[^"]*"\s+: passes\s+\? "border-emerald-200 bg-emerald-50"\s+: "border-rose-200 bg-rose-50"/,
+    "expected the tile FILL to be neutral when ungradable, emerald on pass and rose on fail -- an ungradable node must never wear the pass colour",
+  );
+  // ...and never a fabricated number under it. `node_total_geh` is `None` on
+  // the wire for a node reality_check could not grade, and `fmt` prints a dash
+  // for it; a `?? 0` here would put a perfect GEH on an ungraded node's tile.
+  pin.match(
+    table,
+    /return typeof value === "number" && Number\.isFinite\(value\) \? value\.toFixed\(digits\) : "-";/,
+    "expected an ungradable GEH to print a dash",
+  );
+  pin.doesNotMatch(grid, /node_total_geh \?\?/, "expected no default to be substituted for a GEH this run could not compute");
+
+  // A FAIL tile names its next rung; a passing one says nothing extra, because
+  // there is nothing to climb.
+  pin.match(grid, /passes === false && node\.diagnosis && \(/, "expected the rung link only where the node FAILED");
+  pin.match(grid, /rungLabel\(node\.diagnosis\.rung, t\)\} →/, "expected the fail tile to name the diagnosis rung as a way onward");
+  // ...and the label is geh_ladder.py's own word or the RAW RUNG, never a
+  // sentence this file invented for a rung it does not recognise. A new backend
+  // rung must arrive on screen as its own code, so it is obviously untranslated
+  // rather than quietly filed under a word that means something else.
+  pin.match(
+    table,
+    /function rungLabel\(rung: string, t: Translate\): string \{\s*\n\s*const entry = RUNG_LABELS\[rung\];\s*\n\s*return entry \? t\(entry\[0\], entry\[1\], entry\[2\]\) : rung;/,
+    "expected an unknown rung to fall back to the backend's own code, never to an invented label",
+  );
+
+  // DEMOTED, NOT DELETED: the five old columns render in the node's detail, and
+  // NOT on the grid -- which is what makes the grid a summary rather than a
+  // second, disagreeing copy of the table.
+  pin.match(detail, /node\.observed_total/, "expected the observed total in the node's own detail");
+  pin.match(detail, /node\.modelled_total/, "expected the modelled total in the node's own detail");
+  pin.match(detail, /rungLabel\(node\.diagnosis\.rung, t\)/, "expected the diagnosis to be readable in the detail too");
+  pin.doesNotMatch(grid, /node\.observed_total/, "expected the observed/modelled columns to be OFF the grid -- a tile carries the verdict");
+
+  // The verdict in the detail is still the REPORT's threshold, threaded in
+  // rather than recomputed -- and optional, because the per-station node
+  // context has no report to hand and must not invent a bar.
+  pin.match(detail, /const passes = nodeGehPasses\(node, threshold\);/, "expected the detail to reuse the one pass rule");
+  // AND THE RULE ITSELF, not only the call. `reality_check` fails a node at
+  // `total_geh >= geh_threshold` (backend/services/agent/fixes.py) — a `<=`
+  // here would paint a node sitting exactly ON the bar emerald while the report
+  // beside it raised a proposal against that node. Unpinned until a mutation
+  // 2026-08-20 flipped the operator and left all 168 tests green.
+  pin.match(
+    table,
+    /return node\.node_total_geh < threshold;/,
+    "expected the screen's pass rule to be the report's: reality_check fails a node at GEH >= threshold, so passing is strictly below it",
+  );
+  pin.match(
+    read("app/calibration/page.tsx"),
+    /<NodeScoreDetail node=\{activeNode\} threshold=\{report\.geh_threshold\} \/>/,
+    "expected the scoring station to hand the detail the report's own threshold",
+  );
+  // BOTH CALL SITES. The per-station node context holds the same report and
+  // must thread the same bar: two panes rendering one node with two different
+  // verdicts is the disagreement this whole shared component exists to stop.
+  // (`?.` because the report may not have loaded — a missing bar prints the GEH
+  // with no verdict colour, which `nodeGehPasses` returns `null` for.)
+  pin.match(
+    read("app/calibration/page.tsx"),
+    /<NodeScoreDetail node=\{activeNode\} threshold=\{report\?\.geh_threshold\} \/>/,
+    "expected the per-station node context to hand the detail the same report's threshold",
+  );
+
+  // The report's coverage survives the loss of its mono line, as chips.
+  pin.match(grid, /movements_ungradable \?\? 0/, "expected the ungradable count to stay beside the compared count");
+});
+
+contractTest("unit #50-c: the rail states its tally in chips, and its doctrine stays reachable", (pin) => {
+  const rail = read("components/calibration/FlowRail.tsx");
+  const page = read("app/calibration/page.tsx");
+
+  // The tally was a mono SENTENCE. It is chips now, in the SAME vocabulary the
+  // step rows use -- which is what keeps the three-colour rule from acquiring a
+  // second, differently-coloured statement of the same five statuses.
+  pin.match(
+    rail,
+    /STATUS_ORDER\.filter\(\(status\) => \(rail\.counts\[status\] \?\? 0\) > 0\)\.map\(\(status\) => \(/,
+    "expected every non-zero status count to be its own chip",
+  );
+  pin.match(
+    rail,
+    /rounded-full border px-1\.5 py-0\.5 text-\[14px\] font-semibold \$\{statusChipClass\(status\)\}/,
+    "expected the tally chips to reuse the step chip's own class, not a second palette",
+  );
+  pin.doesNotMatch(
+    withoutComments(rail),
+    /`\$\{statusLabel\(status, t\)\} \$\{rail\.counts\[status\]\}`/,
+    "expected the tally never to go back to being a sentence a reader has to parse",
+  );
+
+  // A GAP THIS UNIT FOUND, and closed here rather than leaving named-only.
+  // "A zero proposal badge renders NOTHING" has been a stated property of this
+  // component since #50-b — a "0" badge reads as a state rather than as an
+  // absence — and it had no pin at all: the #50-b tests execute the badge
+  // ARITHMETIC in lib/calibrationStations.ts and never asked what the component
+  // does with the number. Measured by mutation 2026-08-20: relaxing the guard
+  // to `count < 0` left every existing test green. #50-c re-typed this badge, so
+  // the property gets its pin on the way past.
+  pin.match(
+    rail,
+    /function ProposalBadge\(\{ count, t \}: \{ count: number; t: Translate \}\) \{\s*\n\s*if \(count <= 0\) return null;/,
+    "expected a zero proposal badge to render nothing at all -- a '0' badge reads as a state, not as an absence",
+  );
+
+  // DOCTRINE IS REACHABLE, not deleted. The honest headline -- a step with no
+  // evidence is never shown as done -- is the claim this whole screen rests on,
+  // so it goes in an ⓘ (hover, focus, tap, Escape) rather than a `title`, which
+  // no keyboard can summon.
+  pin.match(rail, /<InfoTip[\s\S]{0,400}?각 단계의 상태는 이 워크스페이스에 실제로 있는 증거/, "expected the honest headline to live in a reachable ⓘ");
+  pin.match(rail, /증거가 없는 단계는 완료로 표시하지 않고/, "expected the no-DONE-from-silence promise to survive verbatim");
+  pin.doesNotMatch(
+    withoutFolds(withoutComments(rail)),
+    /<p className="text-\[1[34]px\] leading-[56] text-slate-600">\s*\n\s*\{t\(\s*\n\s*"각 단계의 상태는/,
+    "expected the headline paragraph itself to be off the surface -- it is in the ⓘ now",
+  );
+
+  // 채점·진단 is not one of the thirteen. That caption could not stay on a rail
+  // row (an ⓘ is a button, and the row is one), so it moved to the station
+  // header it qualifies -- and it must still be SAID somewhere.
+  pin.match(page, /<InfoTip[\s\S]{0,300}?채점·진단은 MRWA 단계 아님/, "expected the not-an-MRWA-step caption to survive as a tooltip");
+  pin.doesNotMatch(withoutComments(rail), /MRWA 단계 아님/, "expected the caption to have LEFT the rail row, not been duplicated");
+});
+
+contractTest("unit #50-c: the base-model tab leads with its verdict and folds every other section", (pin) => {
+  const station = read("components/calibration/BaseModelStation.tsx");
+
+  // THE ORDER IS THE POINT. The tab used to answer its own question last: a
+  // reader scrolled a workbook card, a map, four donuts, an R² scatter and a
+  // page of travel-time charts before reaching the sentence that says whether
+  // this base model may be used.
+  const verdictAt = station.indexOf("{buildAnalysisText({ countStats");
+  const criteriaAt = station.indexOf("<CriteriaCoverageCard");
+  const firstFoldAt = station.indexOf("<BaseModelSection");
+  assert.ok(verdictAt > 0 && criteriaAt > 0 && firstFoldAt > 0, "expected a verdict, a criteria card and at least one folded section");
+  assert.ok(verdictAt < firstFoldAt, "the overall verdict must render BEFORE the first folded section");
+  assert.ok(criteriaAt < firstFoldAt, "the §5.6.3 criteria coverage must render before the first folded section");
+
+  // ...and it must be on the SURFACE, not merely early.
+  const surface = withoutFolds(withoutComments(station));
+  pin.match(surface, /buildAnalysisText\(\{ countStats/, "expected the verdict sentence to render unfolded");
+  pin.match(surface, /<CriteriaCoverageCard/, "expected the criteria/threshold table to render unfolded");
+  pin.match(
+    surface,
+    /<ValidationCategorySelector category=\{category\} onChange=\{handleCategoryChange\} t=\{t\} \/>/,
+    "expected the Category selector beside the verdict it is measured against, not inside a fold",
+  );
+  // The §5.6.3.1 override still flips the whole verdict -- the move must not
+  // have quietly detached the panel from the evaluation that colours it.
+  pin.match(
+    surface,
+    /analysisPanelClass\(countStats, travelStats, criticalEvaluation\)/,
+    "expected the moved verdict panel to keep reading the critical-intersection evaluation",
+  );
+
+  // THREE sections, each folded, each stating its OWN numbers in the summary --
+  // a fold whose summary is prose is a fold nobody can decide whether to open.
+  assert.equal(
+    (station.match(/<BaseModelSection\b/g) ?? []).length,
+    3,
+    "expected exactly three folded sections: setup, counts, travel time",
+  );
+  pin.match(station, /function BaseModelSection\(\{/, "expected one fold component, not three hand-rolled ones");
+  pin.match(station, /summary=\{[\s\S]{0,400}?formatPct\(countStats\.under5Pct\)/, "expected the counts fold to state its own GEH share");
+  pin.match(station, /summary=\{[\s\S]{0,300}?formatPct\(travelStats\.inBandPct\)/, "expected the travel-time fold to state its own in-band share");
+  pin.match(station, /summary=\{[\s\S]{0,300}?workbook\.counts\.length/, "expected the setup fold to state what the workbook holds");
+
+  // AND THE PROMOTED SURFACE OBEYS THE THREE-COLOUR RULE. Promoting the verdict
+  // brought two amber boxes to the top of the tab with it -- the "not enough
+  // data to judge" panel and the workbook-warnings notice -- and amber is not
+  // one of this workspace's three accents (rose/emerald/sky). Both render MONO
+  // now, distinct by a heavier hairline, exactly as the ⑫ station's own
+  // default-coincidence sentence and the genesis screens do. WHAT IS DROPPED IS
+  // A HUE, NEVER A CLAIM: both sentences are untouched.
+  //
+  // Scoped to the TAB'S OWN RENDER BODY, and the scope is the honest part. The
+  // amber still inside this tab's folded sections -- route in-band badges, the
+  // metric tones, the selection cap -- lives in helper components declared at
+  // module top level while being rendered only from inside a fold, so a
+  // file-wide `withoutFolds` cannot tell them from surface markup. That is
+  // legacy from the absorbed screen and named debt, not this unit's work. What
+  // #50-c owns is what its own return statement paints, which is what this
+  // slice is: the component body, up to the first helper after it.
+  const renderBody = station.slice(
+    station.indexOf("export default function BaseModelStation("),
+    station.indexOf("function BaseModelSection({"),
+  );
+  pin.match(renderBody, /<CriteriaCoverageCard/, "slice sanity: the render-body slice must contain the tab's own markup");
+  pin.doesNotMatch(renderBody, /function ValidationMetricCard/, "slice sanity: the slice must end before the shared helpers");
+  pin.doesNotMatch(
+    withoutFolds(withoutComments(renderBody)),
+    /(?:border|bg|text|ring)-amber-/,
+    "amber is not one of this workspace's three accents -- a promoted warn state renders mono, distinct by weight",
+  );
+  pin.match(
+    station,
+    /return "border-slate-400 bg-slate-100 text-slate-800";/,
+    "expected the insufficient-data verdict to keep a real WARN treatment, not to be flattened into the page",
+  );
+});
+
+contractTest("unit #50-c: amber is not a verdict colour on any calibration surface", (pin) => {
+  // THE THREE-COLOUR RULE, over the five files whose whole body IS the surface
+  // -- rose = fail, emerald = pass, sky = selection/proposal, and every other
+  // state told apart by WEIGHT and hairline on the neutral ramp. #50-c re-typed
+  // this whole workspace and de-ambered the two boxes its restructure promoted
+  // in the base-model tab, but the rule it was applying had a pin only inside
+  // that one tab's render body: measured by mutation 2026-08-20, painting the
+  // station heading in app/calibration/page.tsx `text-amber-700` left all 168
+  // tests green. Amber survives ONLY in the absorbed screen's folded legacy
+  // helpers, which is why BaseModelStation is scoped by its own test rather
+  // than swept here.
+  for (const file of CALIBRATION_SURFACE_FILES) {
+    pin.doesNotMatch(
+      withoutFolds(withoutComments(read(file))),
+      /(?:border|bg|text|ring|from|to|via|divide|outline|decoration)-amber-\d{2,3}/,
+      `${file}: a warn state on this screen renders on the neutral ramp with a heavier hairline -- amber would be a fourth verdict hue beside rose/emerald/sky`,
+    );
+  }
+
+  // BOTH DIRECTIONS: the neutral WARN treatment those boxes moved to must still
+  // exist, or "no amber" would be satisfiable by deleting the warning.
+  pin.match(
+    read("components/calibration/BehaviourStation.tsx"),
+    /border-slate-400 bg-slate-100 px-2 py-1\.5 text-\[14px\] leading-6 text-slate-800/,
+    "expected the default-coincidence warning to keep a real WARN treatment on the neutral ramp",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// THE FALL-THROUGH SCAN (orchestrator decision, 2026-08-20, after #51-c's
+// blue-on-blue fix).
+//
+// SCOPE, and why it is NOT U-1 RULE 1. The genesis screens ban same-family ink
+// over a same-family tint outright, family-wide, because an allow-list means
+// re-reading globals.css every time a box is added. The calibration workspace
+// cannot take that rule: `bg-sky-50 + text-sky-600` is this app's own deliberate
+// "navy fill, sky text" badge idiom here (measured 6.51:1), worn by the NEXT
+// chip, the proposal badge, every selected chip and the ⑫ track. Banning it
+// would delete the selection language of the whole screen.
+//
+// So the disease is named precisely instead: a `text-<family>-<shade>` over a
+// `bg-<family>-50/100` fill where THAT SHADE IS OUTSIDE THE DARK REMAP. Those
+// are the ones that fall through to Tailwind's stock light-mode value and land
+// dark-on-dark -- `text-sky-700` (#0369a1) on a navy `bg-sky-50` (#032042) is
+// exactly the bug #51-c had to fix.
+//
+// The remap table is READ OUT OF globals.css rather than copied here, so this
+// scan cannot go stale: adding `--color-sky-700` to the theme legalises
+// `text-sky-700` in the same commit, and removing one outlaws it.
+// ---------------------------------------------------------------------------
+contractTest("unit #50-c: no fall-through family ink on the calibration surface", (pin) => {
+  const globals = read("app/globals.css");
+  const themeBlock = sliceBetween(globals, "@theme {", "\n}");
+  pin.match(themeBlock, /--color-sky-600:/, "slice sanity: the @theme dark remap block must have been found");
+
+  const remapped = new Map<string, Set<number>>();
+  for (const match of themeBlock.matchAll(/--color-([a-z]+)-(\d{2,3}):/g)) {
+    const family = match[1];
+    if (!remapped.has(family)) remapped.set(family, new Set());
+    remapped.get(family)!.add(Number(match[2]));
+  }
+
+  // The parse is load-bearing, so it is checked against three shades this repo
+  // knows the answer for: sky-600 IS remapped, sky-700 is NOT (that is the
+  // whole bug), and the slate text ramp runs to 950.
+  assert.ok(remapped.get("sky")?.has(600), "expected sky-600 in the dark remap");
+  assert.ok(!remapped.get("sky")?.has(700), "expected sky-700 to be OUTSIDE the remap -- it is the blue-on-blue trap");
+  assert.ok(remapped.get("slate")?.has(950), "expected the slate ramp to reach 950");
+
+  const families = ["sky", "emerald", "blue", "rose", "amber", "slate"];
+  const violations: string[] = [];
+  for (const file of [
+    ...CALIBRATION_SURFACE_FILES,
+    "components/calibration/BaseModelStation.tsx",
+    "components/agent/ApprovalCards.tsx",
+  ]) {
+    // Class STRINGS only -- anchored on a pair of quotes with no newline
+    // between them, so the doc comments that legitimately name a bad pairing
+    // while explaining it cannot trip this.
+    for (const literal of read(file).match(/"[^"\n]*"/g) ?? []) {
+      for (const family of families) {
+        if (!new RegExp(`bg-${family}-(?:50|100)\\b`).test(literal)) continue;
+        for (const shade of literal.match(new RegExp(`text-${family}-(\\d{2,3})\\b`, "g")) ?? []) {
+          const value = Number(shade.split("-")[2]);
+          if (remapped.get(family)?.has(value)) continue;
+          violations.push(`${file}: ${shade} over a bg-${family}-50/100 fill`);
+        }
+      }
+    }
+  }
+
+  // ANCHORED, for the reason the microtask-deferral pin above carries: an
+  // unanchored compare passes on a prefix, which here would mean passing while
+  // a violation sat in the list.
+  pin.match(
+    `violations=${violations.join(" | ")}`,
+    /^violations=$/,
+    "a same-family text shade outside globals.css's dark remap keeps Tailwind's stock LIGHT value and renders dark-on-dark over its own tint",
+  );
+
+  // BOTH DIRECTIONS: the deliberate idiom must still be there. A sweep that
+  // "fixed" this by deleting the sky selection language would pass the scan
+  // above and break the screen.
+  pin.match(
+    read("components/calibration/FlowRail.tsx"),
+    /NEXT: "border-sky-300 bg-sky-50 text-sky-600"/,
+    "expected the NEXT chip to keep the app's navy-fill/sky-text idiom -- this scan bans fall-through shades, not the idiom",
   );
 });
 

@@ -211,7 +211,7 @@ function PlacementNote({
   const unmapped = placed.step === null;
   if (!placed.fallback && placed.alsoSteps.length === 0 && placed.unmappedTools.length === 0) return null;
   return (
-    <p className="rounded-t-lg border border-b-0 border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[13px] leading-5 text-slate-700">
+    <div className="rounded-t-lg border border-b-0 border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[14px] leading-6 text-slate-700">
       {unmapped
         ? t(
             "이 제안의 편집 도구는 §2.12.1의 어느 단계에도 매핑되어 있지 않아 여기(채점·진단)에 둡니다 — 단계를 지어내지 않습니다.",
@@ -229,16 +229,25 @@ function PlacementNote({
             "This proposal also carries actions belonging to other steps.",
             "この提案には他の段階の操作も含まれます。",
           )}
-      <span className="mt-0.5 block font-mono text-[13px] text-slate-500">
-        {[
-          placed.tool,
-          ...placed.alsoSteps.map((step) => `${t("단계", "step", "段階")} ${step}`),
-          ...placed.unmappedTools,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </span>
-    </p>
+      {/* WHICH tool, and which other steps — the machine names behind the
+          sentence above. #50-c folded them (the user, 2026-08-20): the sentence
+          is what a reviewer decides on, the tool ids are what they check when
+          the placement itself looks wrong. Nothing is dropped. */}
+      <details className="mt-0.5 text-[13px] leading-5 text-slate-500">
+        <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (편집 도구·단계)", "More (the edit tools, and the steps)", "詳細（編集ツール・段階）")}
+        </summary>
+        <p className="mt-1 border-l border-slate-300 pl-3 font-mono text-[13px] text-slate-500">
+          {[
+            placed.tool,
+            ...placed.alsoSteps.map((step) => `${t("단계", "step", "段階")} ${step}`),
+            ...placed.unmappedTools,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      </details>
+    </div>
   );
 }
 
@@ -273,22 +282,44 @@ export default function StationProposals({
   }
 
   if (placed.length === 0) {
+    // ONE short line on the surface, the explanation folded (#50-c). The
+    // `otherCount` half is NOT prose and never folds: "없습니다" here would read
+    // as "없습니다" everywhere without it, which is the one thing this empty
+    // state exists to prevent.
     return (
-      <p className="text-[14px] leading-6 text-slate-600">
-        {loading
-          ? t("대기 중인 제안을 확인하는 중...", "Checking for pending proposals...", "保留中の提案を確認中...")
-          : otherCount > 0
-            ? t(
-                `이 단계에는 승인을 기다리는 제안이 없습니다. 다른 단계에 ${otherCount}건이 대기 중입니다 — 왼쪽 레일의 파란 배지를 보세요.`,
-                `No proposal awaits approval at this step. ${otherCount} are waiting at other steps — see the blue badges on the left rail.`,
-                `この段階では承認待ちの提案はありません。他の段階で${otherCount}件が待機中です — 左レールの青いバッジをご覧ください。`,
-              )
-            : t(
-                "승인을 기다리는 제안이 없습니다. 제안은 어시스턴트가 만들며, 만들어지면 해당 단계에 나타납니다.",
-                "No proposal is waiting for approval. Proposals are produced by the assistant, and appear at their own step when they are.",
-                "承認待ちの提案はありません。提案はアシスタントが作成し、作成されると該当する段階に表示されます。",
-              )}
-      </p>
+      <div className="text-[14px] leading-6 text-slate-600">
+        <p>
+          {loading
+            ? t("대기 중인 제안을 확인하는 중...", "Checking for pending proposals...", "保留中の提案を確認中...")
+            : otherCount > 0
+              ? t(
+                  `이 단계에는 승인 대기 제안 없음 · 다른 단계 ${otherCount}건`,
+                  `Nothing awaits approval at this step · ${otherCount} at other steps`,
+                  `この段階には承認待ちなし · 他の段階に${otherCount}件`,
+                )
+              : t("승인 대기 제안 없음", "Nothing awaits approval", "承認待ちの提案なし")}
+        </p>
+        {!loading && (
+          <details className="mt-0.5 text-[13px] leading-5 text-slate-500">
+            <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+              {t("자세히", "More", "詳細")}
+            </summary>
+            <p className="mt-1 border-l border-slate-300 pl-3">
+              {otherCount > 0
+                ? t(
+                    `이 단계에는 승인을 기다리는 제안이 없습니다. 다른 단계에 ${otherCount}건이 대기 중입니다 — 왼쪽 레일의 파란 배지를 보세요.`,
+                    `No proposal awaits approval at this step. ${otherCount} are waiting at other steps — see the blue badges on the left rail.`,
+                    `この段階では承認待ちの提案はありません。他の段階で${otherCount}件が待機中です — 左レールの青いバッジをご覧ください。`,
+                  )
+                : t(
+                    "승인을 기다리는 제안이 없습니다. 제안은 어시스턴트가 만들며, 만들어지면 해당 단계에 나타납니다.",
+                    "No proposal is waiting for approval. Proposals are produced by the assistant, and appear at their own step when they are.",
+                    "承認待ちの提案はありません。提案はアシスタントが作成し、作成されると該当する段階に表示されます。",
+                  )}
+            </p>
+          </details>
+        )}
+      </div>
     );
   }
 

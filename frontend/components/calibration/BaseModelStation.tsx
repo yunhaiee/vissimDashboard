@@ -15,6 +15,24 @@
 // bands and the §5.6.3 criteria-coverage card — is validated work with pins on
 // it, and re-implementing a subset of it inside a new page would have quietly
 // deleted the rest. The only edits here are the file's name and its export's.
+//
+// #50-c REORDERED IT, and reordering is ALL it did. The user drove the tab and
+// found it answered its own question last: a reader scrolled a workbook card, a
+// map, four donuts, an R² scatter and a page of travel-time charts before
+// reaching the sentence that says whether this base model may be used. So:
+//
+//   * THE VERDICT IS FIRST. `buildAnalysisText`'s sentence and the §5.6.3
+//     criteria coverage — the two things that answer "may I use this model" —
+//     open the tab, with the Category selector beside them because it is what
+//     they are measured against.
+//   * EVERY OTHER SECTION IS AN ACCORDION. 데이터 연결·분석 설정, 교통량 검증
+//     and 통행시간 분석 each keep their whole contents, behind a summary that
+//     states that section's own numbers. Nothing is deleted and nothing is
+//     re-implemented — the JSX moved inside a `<details>`, which is why the
+//     layout pins on those sections still describe them exactly.
+//
+// The 12-13px type inside those sections is left as it is on purpose: it is now
+// FOLD content, which is the one place this workspace's type floor allows it.
 // ---------------------------------------------------------------------------
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,6 +67,7 @@ import {
   toneTextClass,
 } from "@/lib/validationThresholds";
 import BaseValidationMap, { type BaseValidationMapNode } from "@/components/BaseValidationMap";
+import { InfoTip } from "@/components/genesis/ui";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import WorkbookMappingModal from "@/components/WorkbookMappingModal";
 import {
@@ -659,10 +678,15 @@ export default function BaseModelStation() {
           <div>
             <h1 className="text-[22px] font-semibold tracking-tight text-white">
               {t("베이스모델 검증", "Base Model Validation")}
+              <InfoTip
+                text={t(
+                  "AM/PM 기본 시나리오의 교통량, GEH, 통행시간 검증 결과를 확인합니다.",
+                  "Validate AM/PM base scenarios with traffic volume, GEH, and travel time checks.",
+                  "AM/PM基本シナリオの交通量・GEH・旅行時間の検証結果を確認します。",
+                )}
+                label={t("이 탭에 대하여", "About this tab", "このタブについて")}
+              />
             </h1>
-            <p className="mt-1 text-[15px] text-slate-600">
-              {t("AM/PM 기본 시나리오의 교통량, GEH, 통행시간 검증 결과를 확인합니다.", "Validate AM/PM base scenarios with traffic volume, GEH, and travel time checks.")}
-            </p>
           </div>
           <div className="flex flex-wrap items-start justify-end gap-3">
             <div className="flex min-h-[32px] flex-wrap items-center gap-2">
@@ -681,6 +705,42 @@ export default function BaseModelStation() {
           </div>
         </div>
 
+        {/* ------------------------------------------------------------------ */}
+        {/* THE VERDICT, FIRST (#50-c). Same sentence, same panel class, same    */}
+        {/* §5.6.3.1 override that flips it — only its POSITION changed, from    */}
+        {/* the bottom of a long scroll to the top of the tab. The Category      */}
+        {/* selector sits beside it because it is the criteria set this verdict  */}
+        {/* is measured against, and a threshold control a reader has to open a  */}
+        {/* fold to reach is a threshold nobody checks.                          */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
+          <h2 className="text-[15px] font-semibold text-white">
+            {t("종합 판정", "Overall verdict", "総合判定")}
+          </h2>
+          <ValidationCategorySelector category={category} onChange={handleCategoryChange} t={t} />
+        </div>
+        <div className={`mt-2 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats, criticalEvaluation)}`}>
+          <p className="text-[15px] leading-relaxed">
+            {buildAnalysisText({ countStats, travelStats, profile: activeProfile, critical: criticalEvaluation, t })}
+          </p>
+        </div>
+        <CriteriaCoverageCard
+          profile={activeProfile}
+          criticalNodeIdsInput={criticalNodeIdsInput}
+          onCriticalNodeIdsChange={setCriticalNodeIdsInput}
+          evaluation={criticalEvaluation}
+          t={t}
+        />
+
+        <BaseModelSection
+          t={t}
+          title={t("데이터 연결 · 분석 설정", "Data & analysis setup", "データ接続・分析設定")}
+          summary={
+            workbook.exists
+              ? `${workbook.filename} · ${t("교통량 행", "count rows", "交通量行")} ${workbook.counts.length} · ${t("통행시간 행", "travel rows", "旅行時間行")} ${workbook.travel_times.length}`
+              : t("워크북 미연결", "no workbook connected", "ワークブック未接続")
+          }
+        >
         <div className="mt-4 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
           <div className="grid gap-3 sm:grid-cols-2">
             <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
@@ -780,6 +840,7 @@ export default function BaseModelStation() {
             </div>
           </div>
         </div>
+        </BaseModelSection>
       </section>
 
       {error && (
@@ -788,17 +849,28 @@ export default function BaseModelStation() {
         </div>
       )}
 
+      {/* The workbook's own warnings, on the surface beside the verdict. Mono
+          with a heavier hairline for the same reason the panel above is (#50-c):
+          on this screen a warning is told apart by WEIGHT, never by a fourth
+          hue. The warnings themselves are the backend's, joined and printed. */}
       {workbook.warnings.length > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-[15px] text-amber-700">
+        <div className="rounded-xl border border-slate-400 bg-slate-100 px-5 py-4 text-[15px] text-slate-800 ring-1 ring-slate-400">
           {workbook.warnings.join(" ")}
         </div>
       )}
 
+      <BaseModelSection
+        t={t}
+        title={t("1. 교통량 검증", "1. Traffic Count Validation", "1. 交通量検証")}
+        summary={
+          countStats.hasData
+            ? `${t("비교 지점", "points compared", "比較地点")} ${countStats.validCount} · GEH<5 ${formatPct(countStats.under5Pct)} · ${
+                countVisualSummary.trafficPass ? t("기준 충족", "criteria met", "基準充足") : t("기준 미충족", "criteria not met", "基準未充足")
+              }`
+            : t("비교할 교통량 데이터 없음", "no count data to compare", "比較する交通量データなし")
+        }
+      >
       <section>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <SectionHeader title={t("1. 교통량 검증", "1. Traffic Count Validation")} />
-          <ValidationCategorySelector category={category} onChange={handleCategoryChange} t={t} />
-        </div>
         <CountComparisonOverview
           groups={countGroups}
           mapNodes={validationMapNodes}
@@ -921,7 +993,17 @@ export default function BaseModelStation() {
           {t("VISSIM 통행시간 측정 구간이 관측 지체 구간과 일치하는지 확인하세요.", "Please check the travel time measurement sections defined in VISSIM are consistent with the observed delay.")}
         </p>
       </section>
+      </BaseModelSection>
 
+      <BaseModelSection
+        t={t}
+        title={t("2. 통행시간 분석", "2. Travel Time Validation", "2. 旅行時間分析")}
+        summary={
+          travelStats.hasData
+            ? `${t("허용 범위 내", "within tolerance", "許容範囲内")} ${formatPct(travelStats.inBandPct)} · ${t("루트", "routes", "ルート")} ${travelRoutes.length}`
+            : t("통행시간 데이터 없음", "no travel-time data", "旅行時間データなし")
+        }
+      >
       <section>
         <SectionHeader
           title={t("2. 통행시간 분석", "2. Travel Time Validation")}
@@ -982,26 +1064,46 @@ export default function BaseModelStation() {
           ))}
         </div>
       </section>
-
-      <section>
-        <SectionHeader
-          title={t("3. 결과 분석", "3. Result Analysis")}
-          subtitle={t("교통량, GEH, 통행시간 검증 결과를 종합합니다.", "Summarize traffic volume, GEH, and travel time validation outcomes.")}
-        />
-        <CriteriaCoverageCard
-          profile={activeProfile}
-          criticalNodeIdsInput={criticalNodeIdsInput}
-          onCriticalNodeIdsChange={setCriticalNodeIdsInput}
-          evaluation={criticalEvaluation}
-          t={t}
-        />
-        <div className={`mt-4 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats, criticalEvaluation)}`}>
-          <p className="text-[15px] leading-relaxed">
-            {buildAnalysisText({ countStats, travelStats, profile: activeProfile, critical: criticalEvaluation, t })}
-          </p>
-        </div>
-      </section>
+      </BaseModelSection>
     </div>
+  );
+}
+
+/**
+ * ONE section of this tab, folded (#50-c).
+ *
+ * `summary` is NOT decoration and never prose: it is the section's own numbers,
+ * so a reader knows what is inside without opening it — which is the only thing
+ * that makes folding a section honest rather than a way of hiding it. The
+ * contents are unchanged and unabridged; a `<details>` renders its children into
+ * the DOM either way, so nothing here is conditionally built or dropped.
+ */
+function BaseModelSection({
+  title,
+  summary,
+  children,
+  t,
+}: {
+  title: string;
+  summary: string;
+  children: React.ReactNode;
+  t: (ko: string, en: string, ja?: string) => string;
+}) {
+  return (
+    <details className="rounded-xl border border-slate-200 px-4 py-3">
+      <summary className="cursor-pointer list-none">
+        <span className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="text-[15px] font-semibold text-slate-900 underline decoration-dotted underline-offset-4">
+            {title}
+          </span>
+          <span className="text-[14px] text-slate-600">{summary}</span>
+        </span>
+        <span className="mt-0.5 block text-[14px] text-slate-500">
+          {t("펼쳐서 보기", "Open to see it", "展開して表示")}
+        </span>
+      </summary>
+      {children}
+    </details>
   );
 }
 
@@ -1041,7 +1143,7 @@ function ValidationCategorySelector({
   const activeProfile = getActiveProfile(category);
   return (
     <div className="flex flex-col items-start gap-1 sm:items-end">
-      <span className="text-[13px] font-semibold text-slate-500">
+      <span className="text-[14px] font-semibold text-slate-500">
         {t("검증 기준 (MRWA)", "Validation Category (MRWA)")}
       </span>
       <div
@@ -1108,15 +1210,16 @@ function CriteriaCoverageCard({
     <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[14px] font-bold text-slate-800">
+          <p className="text-[15px] font-bold text-slate-800">
             {t("MRWA §5.6.3 검증 항목 커버리지", "MRWA §5.6.3 criteria coverage", "MRWA §5.6.3 検証項目カバレッジ")}
-          </p>
-          <p className="mt-0.5 text-[13px] text-slate-500">
-            {t(
-              "이 페이지가 실제로 평가한 항목과 평가할 수 없는 항목을 구분해 표시합니다.",
-              "Which criteria this page actually evaluated, and which it cannot.",
-              "このページが実際に評価した項目と評価できない項目を区別して表示します。",
-            )}
+            <InfoTip
+              text={t(
+                "이 페이지가 실제로 평가한 항목과 평가할 수 없는 항목을 구분해 표시합니다.",
+                "Which criteria this page actually evaluated, and which it cannot.",
+                "このページが実際に評価した項目と評価できない項目を区別して表示します。",
+              )}
+              label={t("이 카드에 대하여", "About this card", "このカードについて")}
+            />
           </p>
         </div>
       </div>
@@ -1134,12 +1237,20 @@ function CriteriaCoverageCard({
             placeholder={t("예: 12, 15, 7 (쉼표 또는 공백으로 구분)", "e.g. 12, 15, 7 (comma or space separated)", "例: 12, 15, 7 (カンマまたはスペース区切り)")}
           />
         </label>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
-          {t(
-            `네트워크 전체 기준(${profile.nameKo})을 만족하더라도, 지정한 critical 교차로는 개별적으로 GEH < ${profile.criticalIntersectionGehMax} 를 만족해야 합니다. 통과율 ${profile.gehUnder5Pct}% 로는 이 조건이 충족되지 않습니다.`,
-            `Even when the network-wide ${profile.nameEn} criteria are met, each designated critical intersection must individually achieve GEH < ${profile.criticalIntersectionGehMax}. The ${profile.gehUnder5Pct}% pass rate does not satisfy this.`,
-          )}
-        </p>
+        {/* THE RULE the input exists for — folded (#50-c), because it is a
+            paragraph of doctrine sitting above the criteria rows it governs,
+            and the rows already print their own verdict. Verbatim. */}
+        <details className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+          <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+            {t("자세히 (이 조건이 왜 별도인가)", "More (why this criterion is separate)", "詳細（この条件が別である理由）")}
+          </summary>
+          <p className="mt-1 border-l border-slate-300 pl-3">
+            {t(
+              `네트워크 전체 기준(${profile.nameKo})을 만족하더라도, 지정한 critical 교차로는 개별적으로 GEH < ${profile.criticalIntersectionGehMax} 를 만족해야 합니다. 통과율 ${profile.gehUnder5Pct}% 로는 이 조건이 충족되지 않습니다.`,
+              `Even when the network-wide ${profile.nameEn} criteria are met, each designated critical intersection must individually achieve GEH < ${profile.criticalIntersectionGehMax}. The ${profile.gehUnder5Pct}% pass rate does not satisfy this.`,
+            )}
+          </p>
+        </details>
       </div>
 
       <div className="mt-4 space-y-2">
@@ -1200,13 +1311,13 @@ function CriterionCoverageRow({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-[14px] font-semibold text-slate-800">{label}</div>
-          {detail && <div className="mt-0.5 text-[13px] text-slate-500">{detail}</div>}
+          {detail && <div className="mt-0.5 text-[14px] text-slate-500">{detail}</div>}
         </div>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[12px] font-bold ${badge}`}>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[14px] font-bold ${badge}`}>
           {tone === "pass" ? t("통과", "PASS") : tone === "fail" ? t("실패", "FAIL") : t("평가 불가", "N/A")}
         </span>
       </div>
-      <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">{state}</p>
+      <p className="mt-1.5 text-[14px] leading-relaxed text-slate-600">{state}</p>
     </div>
   );
 }
@@ -2544,7 +2655,16 @@ function analysisPanelClass(
   critical: CriticalIntersectionEvaluation,
 ): string {
   if (!countStats.hasData || !travelStats.hasData) {
-    return "border-amber-200 bg-amber-50 text-amber-800";
+    // MONO, not amber (#50-c). This panel used to close a long scroll; #50-c
+    // made it the first thing on the tab, and the calibration workspace has
+    // exactly three accents -- rose = fail, emerald = pass, sky =
+    // selection/proposal -- with everything else on the neutral ramp told apart
+    // by WEIGHT and hairline. "Not enough data to judge" is precisely the state
+    // that must not read as a fourth verdict colour beside them. The heavier
+    // `border-slate-400` is the same WARN treatment the ⑫ station's
+    // default-coincidence sentence and the genesis screens already use. The
+    // SENTENCE is untouched: what is dropped is a hue, never a claim.
+    return "border-slate-400 bg-slate-100 text-slate-800";
   }
   // A failing critical intersection is a FAIL even when both network-wide
   // legs pass (MRWA §5.6.3.1, doc p.213).

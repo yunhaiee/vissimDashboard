@@ -1,16 +1,28 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// The scoring table (unit #50): one row per node of a run-vs-observed check.
+// The scoring surface (unit #50, restructured by #50-c): one TILE per node of a
+// run-vs-observed check.
 //
 // Source: `GET /api/calibration/reality-check`, which is `reality_check`'s own
 // report — the same object the agent gets. Pass/fail is the report's own
 // `geh_threshold`, never a number this file chose, and the per-node rung chip
 // is unit #43's `diagnosis.rung` as the backend classified it.
 //
-// Rows cross-highlight with the map beside them: the same `selectedNodeIds` /
-// `activeNodeId` / `onNodeClick` contract `BaseValidationMap` already speaks,
-// so clicking a row moves the map and clicking a marker moves the table.
+// WHY A GRID AND NOT A TABLE (the user, 2026-08-20, on the real screen). The
+// list was five 13px columns down one narrow column beside the map: to answer
+// "which nodes fail", a reader had to read every row's GEH and compare it to a
+// threshold printed in a mono line under the table. The question a scoring
+// screen exists for is answered by SHAPE — one tile per node, the node-total
+// GEH as the biggest thing on it, and the tile's own colour carrying the
+// report's verdict. The five columns are not deleted: they moved into the
+// node's detail, which a click on its tile opens.
+//
+// Tiles cross-highlight with the map beside them through the SAME
+// `selectedNodeIds` / `activeNodeId` / `onNodeClick` contract the rows spoke
+// (`BaseValidationMap` speaks it too), so clicking a tile moves the map and
+// clicking a marker moves the grid. Verdict is the FILL; selection is a sky
+// RING, because a tile cannot carry two meanings in one channel.
 //
 // WHAT THE DETAIL PANE SHOWS, AND WHAT IT REFUSES TO SHOW. It shows the
 // evidence the report itself carries: the totals and their GEH, the D4
@@ -20,7 +32,7 @@
 // per-movement GEH from the workbook's own model column: `reality_check`
 // explicitly ignores that column (a pasted export that may describe a
 // different run), and a movement table built from it would contradict the node
-// row printed directly above it.
+// totals printed directly above it.
 // ---------------------------------------------------------------------------
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -84,11 +96,24 @@ export default function NodeScoreTable({
     // A refusal is an ANSWER here — reality_check wrote the sentence in three
     // languages and carries a machine code. Printing our own would be a second
     // opinion about a fact we did not establish.
+    //
+    // #50-c: the machine code moved into the fold. A bare `reason_code` echoed
+    // under the sentence told a modeller nothing the sentence had not already
+    // said, and it is one of the mono lines the user ordered off the surface
+    // (2026-08-20). It is still here, verbatim, one click away — it is the
+    // string a bug report quotes.
     return (
       <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-[14px] leading-6 text-slate-700">
         <p>{pick(report.message, lang)}</p>
         {report.reason_code && (
-          <p className="mt-1 font-mono text-[13px] text-slate-500">{report.reason_code}</p>
+          <details className="mt-1 text-[13px] leading-5 text-slate-500">
+            <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+              {t("자세히 (판정 코드)", "More (the refusal code)", "詳細（判定コード）")}
+            </summary>
+            <p className="mt-1 border-l border-slate-300 pl-3 font-mono text-[13px] text-slate-500">
+              {report.reason_code}
+            </p>
+          </details>
         )}
       </div>
     );
@@ -107,87 +132,111 @@ export default function NodeScoreTable({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] border-collapse text-[13px]">
-        <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
-            <th className="px-2 py-1.5 font-semibold">{t("노드", "Node", "ノード")}</th>
-            <th className="px-2 py-1.5 text-right font-semibold">{t("실측", "Observed", "実測")}</th>
-            <th className="px-2 py-1.5 text-right font-semibold">{t("모델", "Modelled", "モデル")}</th>
-            <th className="px-2 py-1.5 text-right font-semibold">GEH</th>
-            <th className="px-2 py-1.5 font-semibold">{t("진단", "Diagnosis", "診断")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {nodes.map((node) => {
-            const passes = nodeGehPasses(node, threshold);
-            const active = activeNodeId === node.node_id;
-            const selected = selectedNodeIds.includes(node.node_id);
-            return (
-              <tr
-                key={node.node_id}
+    <div>
+      {/* THE GRID. One tile, one node, one number a reader can see from across
+          a desk. The tile's FILL is the report's verdict (emerald pass, rose
+          fail, neutral ungradable) and the sky RING is selection — two
+          channels, because a tile that painted selection in its fill would
+          have to lie about one of the two. */}
+      <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {nodes.map((node) => {
+          const passes = nodeGehPasses(node, threshold);
+          const active = activeNodeId === node.node_id;
+          const selected = selectedNodeIds.includes(node.node_id);
+          return (
+            <li key={node.node_id}>
+              <button
+                type="button"
                 onClick={() => onNodeClick(node.node_id, String(node.node_name ?? node.node_id))}
-                className={`cursor-pointer border-b border-slate-100 ${
-                  active ? "bg-sky-50" : selected ? "bg-sky-50/40" : "hover:bg-slate-50"
-                }`}
+                aria-pressed={active}
+                className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
+                  passes === null
+                    ? "border-slate-300 bg-surface hover:bg-slate-50"
+                    : passes
+                      ? "border-emerald-200 bg-emerald-50"
+                      : "border-rose-200 bg-rose-50"
+                } ${active ? "ring-2 ring-sky-400" : selected ? "ring-1 ring-sky-400" : ""}`}
               >
-                <td className="px-2 py-1.5">
-                  <span className="font-mono text-slate-700">{node.node_id}</span>
-                  {node.node_name && <span className="ml-1.5 text-slate-600">{node.node_name}</span>}
-                </td>
-                <td className="px-2 py-1.5 text-right font-mono text-slate-600">{fmt(node.observed_total, 0)}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-slate-600">{fmt(node.modelled_total, 0)}</td>
-                <td className="px-2 py-1.5 text-right">
-                  {/* Pass emerald, fail rose — the report's own threshold
-                      decides which, and an undefined GEH is neither. */}
+                <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                  <span className="font-mono text-[14px] font-semibold text-slate-700">{node.node_id}</span>
+                  {node.node_name && <span className="text-[14px] text-slate-600">{node.node_name}</span>}
+                </span>
+                <span className="mt-1 flex items-end justify-between gap-2">
+                  {/* The node-total GEH, at the size the question deserves. */}
                   <span
-                    className={`rounded-full border px-1.5 py-0.5 font-mono font-semibold ${
-                      passes === null
-                        ? "border-slate-300 bg-surface text-slate-500"
-                        : passes
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                          : "border-rose-200 bg-rose-50 text-rose-700"
+                    className={`font-mono text-[24px] font-bold leading-none ${
+                      passes === null ? "text-slate-500" : passes ? "text-emerald-700" : "text-rose-700"
                     }`}
                   >
                     {fmt(node.node_total_geh)}
                   </span>
-                </td>
-                <td className="px-2 py-1.5">
-                  {node.diagnosis ? (
-                    <span
-                      className={`rounded-full border px-1.5 py-0.5 text-[13px] font-bold uppercase tracking-[0.04em] ${
-                        node.diagnosis.rung === "UNCLASSIFIABLE"
-                          ? "border-slate-400 bg-slate-100 text-slate-800"
-                          : "border-rose-200 bg-rose-50 text-rose-700"
-                      }`}
-                    >
-                      {rungLabel(node.diagnosis.rung, t)}
-                    </span>
-                  ) : (
-                    <span className="text-slate-500">
-                      {t("진단 없음 (재현)", "no diagnosis (reproduced)", "診断なし（再現）")}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                  <span className="text-[14px] font-semibold text-slate-500">GEH</span>
+                </span>
+                {/* A FAILING tile carries its own next rung — #43's own
+                    classification, so the tile answers "and then what" without
+                    being opened. A passing tile says nothing extra: there is
+                    nothing to climb. */}
+                {passes === false && node.diagnosis && (
+                  <span className="mt-1.5 block text-[14px] font-semibold text-slate-700">
+                    {rungLabel(node.diagnosis.rung, t)} →
+                  </span>
+                )}
+                {passes === null && (
+                  <span className="mt-1.5 block text-[14px] text-slate-500">
+                    {t("등급 불가", "ungradable", "評価不可")}
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
 
-      <p className="mt-1.5 font-mono text-[13px] text-slate-500">
-        {t("GEH 기준", "GEH threshold", "GEH閾値")} {fmt(threshold)} ·{" "}
-        {t("비교 노드", "nodes compared", "比較ノード")} {report.coverage?.counts?.compared ?? nodes.length} ·{" "}
-        {t("등급 불가 이동류", "ungradable movements", "評価不可の移動流")}{" "}
-        {report.coverage?.counts?.movements_ungradable ?? 0}
-      </p>
+      {/* The report's own coverage, as NUMBERS rather than as a mono sentence
+          under a table (#50-c). The ungradable count is stated beside the
+          compared count on purpose: a node this run could not grade is not a
+          node that passed. */}
+      <ul className="mt-2 flex flex-wrap gap-1.5">
+        {[
+          [t("GEH 기준", "GEH threshold", "GEH閾値"), fmt(threshold)],
+          [t("비교 노드", "nodes compared", "比較ノード"), String(report.coverage?.counts?.compared ?? nodes.length)],
+          [
+            t("등급 불가 이동류", "ungradable movements", "評価不可の移動流"),
+            String(report.coverage?.counts?.movements_ungradable ?? 0),
+          ],
+        ].map(([label, value]) => (
+          <li
+            key={label}
+            className="rounded-full border border-slate-300 bg-surface px-2 py-0.5 text-[14px] text-slate-600"
+          >
+            {label} <span className="font-mono font-semibold text-slate-800">{value}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
 
-/** The detail pane for ONE node — the evidence behind its row. */
-export function NodeScoreDetail({ node }: { node: CalibrationRealityNode }) {
+/** The detail pane for ONE node — the evidence behind its tile.
+ *
+ * #50-c moved the grid's five old COLUMNS in here (observed, modelled, GEH,
+ * diagnosis): the tile answers "does this node pass and what rung is next", and
+ * everything a reader needs only once they have picked a node belongs to the
+ * node they picked. Both call sites thread the SAME report's `geh_threshold`,
+ * because two panes rendering one node with two different verdicts is exactly
+ * what one shared component exists to prevent. `threshold` is optional because
+ * a report may not have loaded yet; without it the GEH is printed as a number
+ * with no verdict, which is the honest rendering of "this pane was not told
+ * what the bar is" — never a bar this file chose. */
+export function NodeScoreDetail({
+  node,
+  threshold,
+}: {
+  node: CalibrationRealityNode;
+  threshold?: number | null;
+}) {
   const { t, lang } = useLanguage();
+  const passes = nodeGehPasses(node, threshold);
   const evidence = (node.outcome?.evidence ?? {}) as Record<string, unknown>;
   const target = (evidence.target ?? {}) as Record<string, unknown>;
   const entrance = (target.entrance_measurement ?? null) as Record<string, unknown> | null;
@@ -198,31 +247,70 @@ export function NodeScoreDetail({ node }: { node: CalibrationRealityNode }) {
 
   return (
     <div className="rounded-lg border border-slate-200 bg-surface px-3 py-2.5">
-      <p className="text-[14px] font-bold text-slate-900">
+      <p className="text-[15px] font-bold text-slate-900">
         {t("노드", "Node", "ノード")} {node.node_id}
         {node.node_name ? ` · ${node.node_name}` : ""}
       </p>
 
-      {/* The one sentence a modeller acts on, in the app's proposal accent. */}
+      {/* THE OLD GRID'S COLUMNS, now here — observed, modelled, the graded GEH
+          and the rung. Numbers at reading size, each under the word that names
+          it, so the comparison a reader came for is one glance rather than five
+          columns of 13px. */}
+      <dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {[
+          [t("실측", "Observed", "実測"), fmt(node.observed_total, 0), "text-slate-900"],
+          [t("모델", "Modelled", "モデル"), fmt(node.modelled_total, 0), "text-slate-900"],
+          [
+            "GEH",
+            fmt(node.node_total_geh),
+            passes === null ? "text-slate-500" : passes ? "text-emerald-700" : "text-rose-700",
+          ],
+        ].map(([label, value, tone]) => (
+          <div key={label} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+            <dt className="text-[14px] text-slate-500">{label}</dt>
+            <dd className={`mt-0.5 font-mono text-[20px] font-bold leading-none ${tone}`}>{value}</dd>
+          </div>
+        ))}
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+          <dt className="text-[14px] text-slate-500">{t("진단", "Diagnosis", "診断")}</dt>
+          <dd className="mt-1">
+            {node.diagnosis ? (
+              <span
+                className={`inline-block rounded-full border px-1.5 py-0.5 text-[14px] font-bold ${
+                  node.diagnosis.rung === "UNCLASSIFIABLE"
+                    ? "border-slate-400 bg-slate-100 text-slate-800"
+                    : "border-rose-200 bg-rose-50 text-rose-700"
+                }`}
+              >
+                {rungLabel(node.diagnosis.rung, t)}
+              </span>
+            ) : (
+              <span className="text-[14px] text-slate-500">
+                {t("진단 없음 (재현)", "no diagnosis (reproduced)", "診断なし（再現）")}
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
+
+      {/* The one sentence a modeller acts on, in the app's proposal accent. Its
+          MRWA step and citation moved into the fold below (#50-c, the user's
+          2026-08-20 decision on mono provenance lines): the action is what a
+          reader acts on, the paragraph number is what an auditor checks. */}
       {nextAction && (
-        <p className="mt-1.5 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-[13px] leading-5 text-slate-800">
+        <p className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-[14px] leading-6 text-slate-800">
           {pick(nextAction.text, lang)}
-          <span className="mt-0.5 block font-mono text-[13px] text-slate-500">
-            {nextAction.mrwa_step != null
-              ? `${t("단계", "step", "段階")} ${nextAction.mrwa_step} · ${nextAction.citation}`
-              : nextAction.citation}
-          </span>
         </p>
       )}
 
       {node.diagnosis && (
-        <p className="mt-1.5 text-[13px] leading-5 text-slate-700">{pick(node.diagnosis.why, lang)}</p>
+        <p className="mt-1.5 text-[14px] leading-6 text-slate-700">{pick(node.diagnosis.why, lang)}</p>
       )}
 
       {/* D4: "unverified" is not "unmeasured", and the card must not blur the
           two — the verdict's own status word is printed, never a paraphrase. */}
       {entrance && (
-        <p className="mt-1.5 text-[13px] leading-5 text-slate-700">
+        <p className="mt-1.5 text-[14px] leading-6 text-slate-700">
           <span className="font-semibold">{t("입구 실측 확인", "Entrance measurement", "流入部の実測確認")}: </span>
           <span className="font-mono">{String(entrance.status ?? "-")}</span>
           {entrance.basis ? <span className="block text-slate-600">{String(entrance.basis)}</span> : null}
@@ -233,7 +321,7 @@ export function NodeScoreDetail({ node }: { node: CalibrationRealityNode }) {
           COVERAGE is stated alongside the worst value, because "no delay row"
           is not "no delay" (a starved approach is graded not at all). */}
       {Object.keys(congestion).length > 0 && (
-        <p className="mt-1.5 text-[13px] leading-5 text-slate-700">
+        <p className="mt-1.5 text-[14px] leading-6 text-slate-700">
           <span className="font-semibold">{t("지체 증거", "Delay evidence", "遅延の根拠")}: </span>
           <span className="font-mono">{String(congestion.availability ?? "-")}</span>
           {typeof congestion.worst_delay_s === "number" && (
@@ -254,10 +342,17 @@ export function NodeScoreDetail({ node }: { node: CalibrationRealityNode }) {
 
       {/* #41 doctrine: raw material behind a fold, never in the reader's face. */}
       <details className="mt-2 text-[13px] leading-5 text-slate-600">
-        <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
-          {t("자세히 (원자료·코드)", "More (raw evidence, codes)", "詳細（原資料・コード）")}
+        <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+          {t("자세히 (근거·출처·코드)", "More (evidence, citation, codes)", "詳細（根拠・出典・コード）")}
         </summary>
         <div className="mt-1.5 flex flex-col gap-1.5 border-l border-slate-300 pl-3">
+          {nextAction && (
+            <p className="font-mono text-[13px] text-slate-500">
+              {nextAction.mrwa_step != null
+                ? `${t("단계", "step", "段階")} ${nextAction.mrwa_step} · ${nextAction.citation}`
+                : nextAction.citation}
+            </p>
+          )}
           <p className="font-mono text-[13px] text-slate-500">
             {node.outcome?.outcome} · {node.outcome?.scope}
             {node.outcome?.reason_code ? ` · ${node.outcome.reason_code}` : ""}
