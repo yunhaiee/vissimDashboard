@@ -202,6 +202,279 @@ export function observationsHelpEntries(t: Translate): HelpEntry[] {
 }
 
 /**
+ * /calibration -- the calibration workspace's DOCTRINE, evicted from the screen
+ * (#50-d, user-confirmed 2026-08-20).
+ *
+ * WHY IT IS HERE. Driving #50-c's real screen the user's decision was that a
+ * calibration screen owes the reader an ACTION, not an education: "얘넨 다 숨겨".
+ * Seven ⓘ tooltips, six per-station folded rules and a developer-grade guardrail
+ * section were background a reader needs once and was made to step over on every
+ * visit. NOTHING IS DELETED. Every sentence below is the sentence that used to
+ * render on that screen, verbatim, and it now has exactly one home per reader:
+ * this module renders it at /docs, docs/product/calibration-doctrine.md carries
+ * the same text for the contract suite and the assistant's RAG corpus, and
+ * frontend/tests/dashboard-contract.test.ts pins all three copies together --
+ * so a sentence cannot be softened here without the same edit landing there.
+ *
+ * WHAT STAYED ON THE SCREEN, and it is a short list: verdicts and actions. The
+ * per-step basis line, every status chip, the locked ⑫ track's named refusals,
+ * the 수동 확인 영역 station's one-line promise (D9 below, which is here as the
+ * RULE's original and there as the station's verdict), the searched value's
+ * evidence-rank sentence, and the count of proposals waiting elsewhere. A
+ * sentence that tells the reader what the product WILL NOT DO is a verdict; a
+ * sentence that teaches them how the product works is this file's.
+ *
+ * `{N}`, `{step}`, `{profile}`, `{X}`, `{Y}` are the runtime values the screen
+ * filled in. They are written here as placeholders because this module is
+ * STATIC and states no measurement -- the same rule the entries above obey.
+ */
+export function calibrationHelpEntries(t: Translate): HelpEntry[] {
+  return [
+    {
+      title: t("이 화면에 대하여", "What this screen is", "この画面について"),
+      body: t(
+        "MRWA §2.12.1의 13단계 순서대로, 이 워크스페이스가 실제로 가진 증거만으로 어디까지 왔는지 보여줍니다.",
+        "Where this project stands in MRWA §2.12.1's thirteen steps, derived only from evidence this workspace actually holds.",
+        "MRWA §2.12.1の13段階の順に、このワークスペースが実際に持つ証拠だけで現在地を示します。",
+      ),
+    },
+    {
+      title: t("상태 유도 규칙", "How a step's status is derived", "状態の導出規則"),
+      body: t(
+        "각 단계의 상태는 이 워크스페이스에 실제로 있는 증거에서만 유도합니다. 증거가 없는 단계는 완료로 표시하지 않고 '증거 없음 — 수동 확인 영역'으로 둡니다.",
+        "Each step's status is derived only from evidence this workspace actually holds. A step with no evidence is never shown as done — it stays a manual-check area.",
+        "各段階の状態は、このワークスペースに実在する証拠からのみ導出します。証拠のない段階は完了とせず「証拠なし — 手動確認領域」とします。",
+      ),
+    },
+    {
+      title: t("채점·진단은 MRWA 단계가 아니다", "Scoring & diagnosis is not a step", "採点・診断はMRWA段階ではない"),
+      body: t(
+        "채점·진단은 MRWA 단계 아님 — §2.12.1의 13단계에 속하지 않습니다. 실행을 실측과 대조해 어느 단계로 가야 할지 정하는 자리입니다.",
+        "Scoring & diagnosis is not an MRWA step — it is not one of §2.12.1's thirteen. It is where the run is compared with observed counts to decide which step to go to.",
+        "採点・診断はMRWA段階ではありません — §2.12.1の13段階には含まれません。実行を実測と対照し、どの段階へ進むかを決める場所です。",
+      ),
+    },
+    {
+      title: t("수동 확인 영역이란", "What a manual-check area is", "手動確認領域とは"),
+      body: t(
+        "수동 확인 영역 — 이 단계에 대해 이 제품은 아무것도 측정하지 않습니다. Vissim에서 직접 확인하고 이 도구 밖에 기록하십시오.",
+        "Manual-check area — this product measures nothing for this step. Check it in Vissim and record it outside this tool.",
+        "手動確認領域 — この段階について本製品は何も測定しません。Vissimで直接確認し、本ツールの外に記録してください。",
+      ),
+    },
+    {
+      title: t("모델 값의 출처 규칙", "Where modelled values come from", "モデル値の出典規則"),
+      body: t(
+        "모델 값은 선택한 실행의 결과에서 가져옵니다. 워크북에 붙여넣은 모델 열은 다른 실행의 것일 수 있어 사용하지 않습니다.",
+        "Modelled values come from the selected run's own results. The workbook's pasted model column is not used — it may describe a different run.",
+        "モデル値は選択した実行の結果から取得します。ワークブックに貼り付けられたモデル列は別の実行のものである可能性があるため使用しません。",
+      ),
+    },
+    {
+      title: t("지도 읽기 규칙", "How to read the station map", "地図の読み方"),
+      body: t(
+        "강조된 노드는 이 단계의 다음 행동이 가리키는 노드입니다. 좌표가 없는 노드는 지도에 나타나지 않습니다.",
+        "The highlighted nodes are the ones this step's next action points at. A node without coordinates does not appear on the map.",
+        "強調されたノードは、この段階の次の行動が指すノードです。座標のないノードは地図に表示されません。",
+      ),
+    },
+    // D17 sits beside D6 rather than at the end: they are the two rules about
+    // the same object. D6 answers "which nodes are highlighted", D17 answers
+    // "why is a node missing from the map" — and a reader who has just asked one
+    // is about to ask the other. It was found during #50-d's own build, on the
+    // scoring tab's map caption, outside the eviction list; the knowledge file
+    // registered it as its own item because it overlaps D6 without being
+    // verbatim, and it was evicted with the rest.
+    {
+      title: t("지도의 좌표 출처", "Where node placement comes from", "地図の座標の出所"),
+      body: t(
+        "노드 위치는 데이터셋의 좌표 정보에서 옵니다. 좌표가 없는 노드는 지도에 나타나지 않으며, 왼쪽 타일이 전체 목록입니다.",
+        "Node placement comes from the dataset's georeference. A node without coordinates does not appear on the map — the tiles beside it are the complete list.",
+        "ノード位置はデータセットの座標情報に基づきます。座標のないノードは地図に表示されません。左のタイルが完全な一覧です。",
+      ),
+    },
+    {
+      title: t("승인 경로는 하나", "One approval path", "承認経路は一つ"),
+      body: t(
+        "승인 경로는 드로어와 같은 하나뿐입니다.",
+        "There is exactly one approval path, shared with the drawer.",
+        "承認経路はドロワーと同じ一つだけです。",
+      ),
+    },
+    {
+      title: t("단계별 근거 — 신호 (⑥·⑦)", "What each station's evidence is — signals", "段階別の根拠 — 信号 (⑥・⑦)"),
+      body: t(
+        "⑥의 근거는 사람이 서명한 현시도 확인서입니다 — 확인되지 않은 현시도는 신호가 검증됐다는 증거가 아닙니다. ⑦의 근거는 Table 5-6 적용 판정이며, 표 전체는 ⑫ 행태 스테이션에 있습니다.",
+        "Step 6's evidence is a signed 현시도 (phase-diagram) attestation — an unattested diagram is not evidence that the signals were verified. Step 7's evidence is the Table 5-6 application verdict; the full table lives in the ⑫ behaviour station.",
+        "⑥の根拠は人が署名した現示図の確認書です — 未確認の現示図は信号が検証された証拠ではありません。⑦の根拠はTable 5-6の適用判定で、表全体は⑫挙動ステーションにあります。",
+      ),
+    },
+    {
+      title: t("단계별 근거 — 행태 (⑦·⑫)", "What each station's evidence is — behaviour", "段階別の根拠 — 挙動 (⑦・⑫)"),
+      body: t(
+        "각 주행행태의 현재 ax·bx_add·bx_mult가 공표된 표의 한 행 위에 있는지 확인합니다 (단계 ⑦·⑫).",
+        "Whether each driving behaviour's current ax/bx_add/bx_mult sits on one published row of the table (steps 7 and 12).",
+        "各走行挙動の現在のax・bx_add・bx_multが公表された表の一行にあるかを確認します（段階⑦・⑫）。",
+      ),
+    },
+    {
+      title: t("단계별 근거 — 대중교통 (⑨)", "What each station's evidence is — public transport", "段階別の根拠 — 公共交通 (⑨)"),
+      body: t(
+        "이 단계에 대해 이 제품이 가진 사실은 네트워크의 대중교통 노선 수 하나뿐입니다. 노선이 0개일 때만 '해당 없음'이 되고, 노선이 있으면 보정 여부를 알 방법이 없어 '증거 없음'으로 남습니다.",
+        'The only fact this product holds for this step is the network\'s public-transport line count. Zero lines earns "not applicable"; with lines present there is no way to tell a calibrated network from an untouched one, so it stays "no evidence".',
+        "この段階について本製品が持つ事実は、ネットワークの公共交通路線数だけです。路線が0件のときのみ「該当なし」となり、路線がある場合は較正の有無を判断できないため「証拠なし」のままです。",
+      ),
+    },
+    {
+      title: t("단계별 근거 — 수요 (⑩)", "What each station's evidence is — demand", "段階別の根拠 — 需要 (⑩)"),
+      body: t(
+        "근거는 실행–실측 대조가 낸 수요 제안과 입구 교통량의 실측 확인(D4)입니다. D4가 말하는 것은 '미실측'이 아니라 '확인되지 않음'입니다.",
+        'The evidence is the demand proposals the run-versus-observed check raised, plus the D4 entrance-measurement verdicts. D4 says "unverified", never "unmeasured".',
+        "根拠は実行と実測の対照が出した需要提案と、入口交通量の実測確認(D4)です。D4が示すのは「未実測」ではなく「未確認」です。",
+      ),
+    },
+    {
+      title: t("단계별 근거 — 배분 (⑪)", "What each station's evidence is — assignment", "段階別の根拠 — 配分 (⑪)"),
+      body: t(
+        "근거는 실행–실측 대조가 낸 배분 제안과 ROUTING_SPLIT 진단입니다. 제안도 진단도 없다는 것은 배분이 확인됐다는 증거가 아닙니다.",
+        "The evidence is the route-split proposals the run-versus-observed check raised and the ROUTING_SPLIT diagnoses. Neither a proposal nor a diagnosis is not evidence that route choice was confirmed.",
+        "根拠は実行と実測の対照が出した配分提案とROUTING_SPLIT診断です。提案も診断もないことは、配分が確認された証拠ではありません。",
+      ),
+    },
+    {
+      title: t("단계별 근거 — 수동 확인 영역", "What each station's evidence is — manual-check steps", "段階別の根拠 — 手動確認領域"),
+      body: t(
+        "위 단계들은 이 제품이 측정하지 않습니다. Vissim에서 직접 확인하고 이 도구 밖에 기록하십시오. 화면이 이 단계들을 완료로 표시하는 일은 없습니다.",
+        "This product measures nothing for the steps above. Check them in Vissim and record them outside this tool — the screen will never show them as done.",
+        "上記の段階について本製品は測定しません。Vissimで直接確認し、本ツールの外に記録してください。画面がこれらを完了と表示することはありません。",
+      ),
+    },
+    {
+      title: t("수동 스테이션의 한 줄 판정", "The manual station's one-line verdict", "手動ステーションの一行判定"),
+      body: t(
+        "이 제품은 위 단계들을 측정하지 않습니다 — 완료로 표시하지 않습니다.",
+        "This product measures nothing for the steps above — it never shows them as done.",
+        "本製品は上記の段階を測定しません — 完了と表示することはありません。",
+      ),
+    },
+    {
+      title: t("W74 기본값 우연 일치", "The Vissim-default coincidence is not a measurement", "W74既定値の偶然一致"),
+      body: t(
+        "주행행태 {N}개가 공표 행과 일치하지만 정지 시 거리가 지침값(2.5 m)이 아닙니다. Vissim 기본값이 마침 {row} pcu 행과 같으므로, 이 일치는 측정이 제출됐다는 증거가 아닙니다.",
+        "{N} behaviour(s) match a published row but do not carry the guideline standstill distance (2.5 m). Vissim's default happens to equal the {row} pcu row, so this match is not evidence that a measurement was submitted.",
+        "走行挙動{N}件が公表行と一致しますが、停止時距離が指針値(2.5 m)ではありません。Vissimの既定値がちょうど{row} pcu行と同じため、この一致は測定が提出された証拠にはなりません。",
+      ),
+    },
+    {
+      title: t("제안 배치 — 미매핑 도구", "Proposal placement — unmapped tools", "提案の配置 — 未対応ツール"),
+      body: t(
+        "이 제안의 편집 도구는 §2.12.1의 어느 단계에도 매핑되어 있지 않아 여기(채점·진단)에 둡니다 — 단계를 지어내지 않습니다.",
+        "This proposal's edit tools map to no §2.12.1 step, so it is shown here (scoring & diagnosis) — the step is not invented.",
+        "この提案の編集ツールは§2.12.1のいずれの段階にも対応付けられていないため、ここ（採点・診断）に表示します — 段階を作り出しません。",
+      ),
+    },
+    {
+      title: t("제안 배치 — 스테이션 미해결 폴백", "Proposal placement — station fallback", "提案の配置 — ステーション未解決"),
+      body: t(
+        "이 제안은 단계 {step}에 해당하지만 그 단계의 스테이션을 찾지 못해 여기(채점·진단)에 둡니다.",
+        "This proposal belongs to step {step}, whose station could not be resolved, so it is shown here (scoring & diagnosis).",
+        "この提案は段階{step}に属しますが、その段階のステーションを解決できなかったため、ここ（採点・診断）に表示します。",
+      ),
+    },
+    {
+      title: t("제안 배치 — 다단계 제안", "Proposal placement — multi-step proposals", "提案の配置 — 複数段階の提案"),
+      body: t(
+        "이 제안은 다른 단계의 조치도 함께 포함합니다.",
+        "This proposal also carries actions belonging to other steps.",
+        "この提案には他の段階の操作も含まれます。",
+      ),
+    },
+    {
+      title: t("빈 상태 — 다른 단계에 대기 중일 때", "An empty proposal list — waiting elsewhere", "空の状態 — 他の段階で待機中"),
+      body: t(
+        "이 단계에는 승인을 기다리는 제안이 없습니다. 다른 단계에 {N}건이 대기 중입니다 — 왼쪽 레일의 파란 배지를 보세요.",
+        "No proposal awaits approval at this step. {N} are waiting at other steps — see the blue badges on the left rail.",
+        "この段階では承認待ちの提案はありません。他の段階で{N}件が待機中です — 左レールの青いバッジをご覧ください。",
+      ),
+    },
+    {
+      title: t("빈 상태 — 아무 데도 없을 때", "An empty proposal list — nothing anywhere", "空の状態 — どこにもないとき"),
+      body: t(
+        "승인을 기다리는 제안이 없습니다. 제안은 어시스턴트가 만들며, 만들어지면 해당 단계에 나타납니다.",
+        "No proposal is waiting for approval. Proposals are produced by the assistant, and appear at their own step when they are.",
+        "承認待ちの提案はありません。提案はアシスタントが作成し、作成されると該当する段階に表示されます。",
+      ),
+    },
+    {
+      title: t("기준 모델 검증 탭", "The base-model validation tab", "基準モデル検証タブ"),
+      body: t(
+        "AM/PM 기본 시나리오의 교통량, GEH, 통행시간 검증 결과를 확인합니다.",
+        "Validate AM/PM base scenarios with traffic volume, GEH, and travel time checks.",
+        "AM/PM基本シナリオの交通量・GEH・旅行時間の検証結果を確認します。",
+      ),
+    },
+    {
+      title: t("검증 항목 커버리지 카드", "The criteria-coverage card", "検証項目カバレッジカード"),
+      body: t(
+        "이 페이지가 실제로 평가한 항목과 평가할 수 없는 항목을 구분해 표시합니다.",
+        "Which criteria this page actually evaluated, and which it cannot.",
+        "このページが実際に評価した項目と評価できない項目を区別して表示します。",
+      ),
+    },
+    {
+      title: t(
+        "Critical 교차로 기준이 별도인 이유 (§5.6.3.1, p.213)",
+        "Why the critical-intersection criterion is separate (§5.6.3.1, p.213)",
+        "Critical 交差点の基準が別である理由 (§5.6.3.1, p.213)",
+      ),
+      body: t(
+        "네트워크 전체 기준({profile})을 만족하더라도, 지정한 critical 교차로는 개별적으로 GEH < {X} 를 만족해야 합니다. 통과율 {Y}% 로는 이 조건이 충족되지 않습니다.",
+        "Even when the network-wide {profile} criteria are met, each designated critical intersection must individually achieve GEH < {X}. The {Y}% pass rate does not satisfy this.",
+        "ネットワーク全体の基準（{profile}）を満たしていても、指定したcritical交差点は個別にGEH < {X} を満たす必要があります。通過率 {Y}% ではこの条件は満たされません。",
+      ),
+    },
+    // D16-a/b/c. The ⑫ guardrail machinery. Its SCREEN was removed by the user's
+    // 2026-08-20 decision ("developer side information... get rid of it") and its
+    // BACKEND was not touched by one line: the refusals and the grants are
+    // enforced in backend/services/agent/parameter_search.py,
+    // searched_behaviour_broker.py and gates.py, and the server still sends every
+    // field these three entries describe. Only the rendering went.
+    //
+    // All three are verbatim ko/en/ja triples in
+    // docs/product/calibration-doctrine.md, exactly like every other item here,
+    // and the contract suite cross-pins all NINE sentences in both files. (They
+    // were briefly the exception: D16 landed in the knowledge file as Korean
+    // prose, so these entries carried the only en/ja that existed. The knowledge
+    // file caught up on 2026-08-20 and the two copies are now byte-identical —
+    // which is the only state the cross-pins accept.)
+    {
+      title: t("탐색 산출물의 가드레일 — 두 경로 예보", "The guardrail on a searched value — the two-path forecast", "探索産出物のガードレール — 二経路の予報"),
+      body: t(
+        "탐색이 산출한 값이 모델에 닿는 길은 두 가지이고, 예보는 언제나 두 줄이었습니다. 직접 발행(direct_edit) — 플래너가 공유 행태 파라미터를 직접 쓰려 하면 공유 행태 가드레일이 이름을 명명하며 거부합니다 (constraint SHARED_BEHAVIOR_REFUSAL). 승인 경로(approved_set) — 완료된 탐색의 승자를 승인 카드로 승인하면 원장에서 grant가 재발급되어 1회 소모로 적용됩니다. 이 경로의 조건 코드는 RADIUS_NAMED_IN_FULL — 동의 반경을 전부 명명할 수 없으면 예외가 성립하지 않습니다 (ko 표기: '통과 (반경 전부 명명 시)'). 예보 상태는 3값입니다: 거부 예상 / 통과 예상 / 미지 — 조건 코드 GUARDRAIL_WILL_REFUSE · GUARDRAIL_CLEAR · GUARDRAIL_UNKNOWN.",
+        "A searched value reaches the model by two roads, so the forecast was always two lines. Issued directly (direct_edit) — a planner writing a shared behaviour parameter is refused BY NAME by the shared-behaviour guardrail (constraint SHARED_BEHAVIOR_REFUSAL). Through the approval machinery (approved_set) — approving a finished search's winner on its approval card re-mints the grant from the ledger and spends it once. That road's condition code is RADIUS_NAMED_IN_FULL: the exception does not hold unless the consent radius can be named in full. The forecast has three states — expected to refuse, expected to pass, and not forecast — carried by GUARDRAIL_WILL_REFUSE, GUARDRAIL_CLEAR and GUARDRAIL_UNKNOWN.",
+        "探索が算出した値がモデルに届く経路は二つあり、予報は常に二行でした。単独発行(direct_edit) — プランナーが共有挙動パラメータを直接書こうとすると、共有挙動ガードレールが名指しで拒否します (constraint SHARED_BEHAVIOR_REFUSAL)。承認経路(approved_set) — 完了した探索の勝者を承認カードで承認すると、台帳から grant が再発行され1回消費で適用されます。この経路の条件コードは RADIUS_NAMED_IN_FULL で、同意半径を完全に命名できなければ例外は成立しません。予報の状態は3値です: 拒否見込み / 通過見込み / 未予報 — 条件コードは GUARDRAIL_WILL_REFUSE · GUARDRAIL_CLEAR · GUARDRAIL_UNKNOWN。",
+      ),
+    },
+    {
+      title: t("탐색 산출물의 가드레일 — 결정 칩", "The guardrail on a searched value — the resolution chips", "探索産出物のガードレール — 決定チップ"),
+      body: t(
+        "가드레일 충돌의 해소는 사용자 결정이며, 각 해소안의 상태(REJECTED_BY_USER 등)는 서버가 구동합니다. 문장과 상태 단어는 전부 서버의 것이었고, 지금도 서버 페이로드에 그대로 있습니다 — 화면이 렌더하지 않을 뿐입니다.",
+        "Resolving a guardrail collision is the USER's decision, and each resolution's status (REJECTED_BY_USER and its kin) is driven by the server. Every sentence and every status word was the server's, and every one of them is still in the server payload — the screen simply no longer renders them.",
+        "ガードレール衝突の解消はユーザーの決定であり、各解消案の状態(REJECTED_BY_USER など)はサーバーが駆動します。文章も状態語もすべてサーバーのものであり、今もサーバーのペイロードにそのまま存在します — 画面が描画しないだけです。",
+      ),
+    },
+    {
+      title: t("탐색 산출물의 가드레일 — 증거 등급", "The guardrail on a searched value — evidence rank", "探索産出物のガードレール — 証拠等級"),
+      body: t(
+        "탐색 산출물은 Table 5-6 산출물보다 한 단계 낮은 증거입니다 — 근거문(원장 digest·홀드아웃 seed 탑재)이 스스로 명시합니다. 이 문장은 서버가 합성하며, 승인 카드 표면에 계속 표시됩니다 — 승인 결정에 필요한 정직성이므로 #50-d에서도 퇴거되지 않았습니다.",
+        "A searched value is evidence one rank below a Table 5-6 value, and the backend's own sentence — carrying the ledger digest and the holdout seed — says so. The server composes it, and it still renders on the surface of the approval card: it is honesty the approval decision needs, so #50-d did not evict it.",
+        "探索産出物は Table 5-6 の産出物より一段低い証拠であり、根拠文（台帳の digest・ホールドアウトの seed を含む）が自ら明示します。この文章はサーバーが合成し、承認カードの表面に表示され続けます — 承認判断に必要な誠実さであるため、#50-d でも撤去されていません。",
+      ),
+    },
+  ];
+}
+
+/**
  * /genesis/jobs/[id] -- one generation's detail and its verdict. These three
  * entries have moved twice: out of inline ⓘ tooltips on the hub (U-1-quick),
  * onto the hub's own drawer, then onto the detail route the R1.5 grid actually

@@ -47,11 +47,30 @@ from services.rag_documents import (
     list_corpus_documents,
     list_markdown_documents,
     load_markdown_chunks,
+    search_keyword_rag,
     search_rag,
+    title_for_markdown,
 )
+from services.rag_vector_store import search_vector_index
 
 
 CASES_PATH = Path(__file__).with_name("fixtures") / "rag_retrieval_cases.json"
+
+#: The calibration workspace's doctrine (#50-d, user-confirmed 2026-08-20).
+#:
+#: Every doctrine sentence the /calibration screen used to carry lives here now,
+#: and the assistant is one of the three readers that arrangement promises --
+#: alongside the frontend contract suite and the /docs page. That promise is only
+#: worth something if a reader who asks the assistant a doctrine question is
+#: actually handed this file, so the checks below ask it.
+#:
+#: Committed to the repo, not gitignored, so these are FIRM assertions rather
+#: than the corpus-presence skips the PDF cases take.
+CALIBRATION_DOCTRINE = REPO_ROOT / "docs" / "product" / "calibration-doctrine.md"
+
+#: A sentence a modeller would actually ask about, taken from D2 -- the honest
+#: headline the rail used to carry in a tooltip.
+CALIBRATION_DOCTRINE_QUERY = "증거가 없는 단계는 완료로 표시"
 
 #: Measured 2026-08-18 on this checkout: 29 markdown documents under ``docs/``
 #: producing 989 chunks. The floors sit far enough below that for ordinary
@@ -248,6 +267,144 @@ def test_a_pdf_hit_carries_the_printed_page_number():
         assert re.fullmatch(r"(p\.[0-9IVXLCDM]+|PDF p\.\d+)", str(hit["page_range"])), hit["page_range"]
         assert str(hit["citation"]).startswith(str(hit["title"]))
         assert f"PDF p.{hit['pdf_page']}" in str(hit["citation"])
+
+
+# ---------------------------------------------------------------------------
+# The calibration doctrine (#50-d, 2026-08-20)
+# ---------------------------------------------------------------------------
+
+
+def doctrine_hits(hits: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        hit
+        for hit in hits
+        if Path(str(hit.get("path") or "")).name == CALIBRATION_DOCTRINE.name
+    ]
+
+
+def doctrine_is_in_the_vector_index() -> bool:
+    """Does the built index CARRY the doctrine file? An identity question.
+
+    Read the distinction carefully, because the first version of this probe got it
+    wrong in the direction that costs the most: it asked a RANKING question and
+    read the answer as an identity one.
+
+    WHAT WENT WRONG, measured. The probe queried the index with the file's stem,
+    ``"calibration-doctrine"``, and skipped the merged-path check when no doctrine
+    chunk came back in the top 25. Those are two English tokens, and this corpus
+    holds 521 chunks of the Main Roads WA operational-modelling PDF, which is
+    English and is *about* calibration -- so the query's whole top-25 was
+    ``operational-modelling-v2.pdf`` and the doctrine file scored 0 hits on a
+    freshly built index that carried it perfectly well (measured 2026-08-20, index
+    of 1556 chunks). The check then skipped with the reason "the index predates
+    the file", which was false, while the assertion it was guarding
+    (``search_rag`` returning the doctrine file at merged positions #1 and #2)
+    would have passed. A guard that turns a green assertion into a skip on a false
+    premise is worse than no guard: the suite reports coverage it is not
+    delivering, which is the exact silent-pass failure this module was rewritten
+    to end.
+
+    WHAT IT ASKS NOW. The file's own H1 -- read from the file, so a retitle
+    carries the probe with it, and it is the same string the ingester stores as
+    each chunk's ``title``. It is unique to this document in this corpus, so
+    ranking cannot crowd it out the way two generic English words could; measured
+    on the same 1556-chunk index, it returns the doctrine file at rank #1.
+
+    A rebuilt index answers True. An index built before the doctrine file existed
+    answers False, and only then does the caller skip.
+    """
+    probe = title_for_markdown(CALIBRATION_DOCTRINE)
+    assert probe.strip(), (
+        f"{CALIBRATION_DOCTRINE.name} has no '# ' heading for the index probe to ask about; "
+        "without one this probe would degrade back into a ranking question"
+    )
+    return bool(doctrine_hits(search_vector_index(probe, 25)))
+
+
+def test_the_calibration_doctrine_is_a_corpus_document():
+    """The file exists and the markdown glob actually reaches it.
+
+    First, because the two retrieval checks below cannot tell "the ranking put it
+    fifth" apart from "the retriever never saw the file at all", and those need
+    different fixes. ``list_markdown_documents()`` globs ``docs/**/*.md``, so a
+    doctrine file written anywhere else -- or renamed -- silently stops being
+    something the assistant can cite.
+    """
+    assert CALIBRATION_DOCTRINE.is_file(), (
+        f"{CALIBRATION_DOCTRINE} is missing. #50-d evicted the /calibration screen's doctrine "
+        "into this file; without it the sentences have no home the assistant can read."
+    )
+
+    names = {document.path.name for document in list_markdown_documents()}
+    assert CALIBRATION_DOCTRINE.name in names, (
+        f"{CALIBRATION_DOCTRINE.name} is on disk but outside the corpus glob "
+        f"(docs/**/*.md, rooted at {REPO_ROOT / 'docs'})."
+    )
+
+    # And it is chunked, not merely listed: a document that produces no chunk is
+    # a document no query can ever return.
+    chunks = [
+        chunk
+        for chunk in load_markdown_chunks()
+        if Path(str(chunk.get("path") or "")).name == CALIBRATION_DOCTRINE.name
+    ]
+    assert chunks, "the doctrine file reached the corpus but produced no chunks"
+
+
+def test_a_doctrine_query_retrieves_the_doctrine_file_without_any_index():
+    """FIRM, on the path that needs nothing built.
+
+    ``search_keyword_rag`` live-scans the markdown under ``docs/`` on every call
+    -- no index, no cache, no build step -- so this check has no environmental
+    dependency at all and is allowed none. It is asserted twice: directly, and
+    through ``search_rag`` with the vector half stubbed out, which is the same
+    "keyword-only" path the parametrised cases below exercise and is what the
+    assistant falls back to on a machine where nobody has run
+    ``tools/build_rag_index.py``.
+    """
+    assert doctrine_hits(search_keyword_rag(CALIBRATION_DOCTRINE_QUERY, 5)), (
+        f"a doctrine query ({CALIBRATION_DOCTRINE_QUERY!r}) did not retrieve "
+        f"{CALIBRATION_DOCTRINE.name} on the index-free keyword path"
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rag_documents, "search_vector_index", lambda query, limit: [])
+        hits = search_rag(CALIBRATION_DOCTRINE_QUERY, 5)
+    assert doctrine_hits(hits), (
+        "search_rag() with no vector index did not surface the doctrine file: "
+        f"{[str(hit.get('path')) for hit in hits]}"
+    )
+
+
+def test_a_doctrine_query_retrieves_the_doctrine_file_on_the_merged_path():
+    """The merged path, and the ONE dependency this module is honest about.
+
+    ``search_rag`` concatenates ``[*vector_hits, *keyword_hits]`` and truncates at
+    the limit, so a ready vector index starves the keyword half completely (the
+    same mechanic the ``mrwa_linsig_tables`` case above carries a note about).
+    That makes this check a question about the INDEX, not about the corpus: a
+    file written after the last ``python tools/build_rag_index.py`` is invisible
+    to the vector half until somebody rebuilds, and the rebuild writes under
+    ``runtime/``, which is not this test's business.
+
+    So the dependency is probed rather than assumed, and the skip names the exact
+    command that turns this into a pass -- never a silent one. When the index is
+    absent entirely, the merged path IS the keyword path and this asserts firmly.
+    """
+    vector_ready = bool(get_rag_status()["vector"].get("ready"))
+    if vector_ready and not doctrine_is_in_the_vector_index():
+        pytest.skip(
+            f"the vector index on this machine does not carry {CALIBRATION_DOCTRINE.name} "
+            "(it predates the file). search_rag() fills its limit from the vector half first, "
+            "so the keyword hit is truncated away until the index is rebuilt: "
+            "python tools/build_rag_index.py"
+        )
+
+    hits = search_rag(CALIBRATION_DOCTRINE_QUERY, 5)
+    assert doctrine_hits(hits), (
+        "the merged path did not surface the doctrine file: "
+        f"{[str(hit.get('path')) for hit in hits]}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,26 @@ function read(relativePath: string) {
 }
 
 /**
+ * The calibration workspace's DOCTRINE, as a file (#50-d, 2026-08-20).
+ *
+ * Read from the repo root rather than from `frontend/`, because it is not a
+ * frontend asset: `docs/product/calibration-doctrine.md` is the single source of
+ * truth for every sentence the user's 2026-08-20 decision evicted from the
+ * /calibration screen, and it has three readers — this suite, the /docs page
+ * (through lib/help-content.tsx), and the assistant's RAG corpus, which is
+ * rooted at `docs/` (backend/services/rag_documents.py). Pinning the file itself
+ * is what makes "the sentence moved" a checkable claim instead of a promise: a
+ * sweep that DELETED a doctrine sentence rather than moving it fails here, and
+ * a sweep that quietly put one back on the screen fails in the ledger below.
+ */
+function readCalibrationDoctrine(): string {
+  return readFileSync(
+    path.join(repoRoot, "docs", "product", "calibration-doctrine.md"),
+    "utf-8",
+  );
+}
+
+/**
  * The approval surface, which is now TWO files.
  *
  * Unit #50 lifted unit #47's approval and diagnosis cards out of
@@ -2995,14 +3015,27 @@ contractTest("unit #20: the ? drawer is retired -- doctrine lives in lib/help-co
   pin.match(help, /export function regionHelpEntries\(/, "expected the region doctrine to live in the shared module");
   pin.match(help, /export function phasesHelpEntries\(/, "expected the phases doctrine to live in the shared module");
   pin.match(help, /export function jobHelpEntries\(/, "expected the job-detail doctrine to live in the shared module");
+  // #50-d took the same road, five units later: the calibration workspace's
+  // doctrine is a fifth builder here rather than seven ⓘs and six folds on the
+  // screen it describes.
+  pin.match(help, /export function calibrationHelpEntries\(/, "expected the calibration doctrine to live in the shared module too");
   pin.doesNotMatch(help, /await fetch|apiFetch|apiMutationFetch/, "doctrine is static -- the module must never fetch");
   pin.doesNotMatch(docs, /await fetch|apiFetch|apiMutationFetch/, "the documentation page renders static doctrine only -- it must never fetch");
 
-  // The page renders ALL FOUR areas, not whichever subset survived a refactor.
+  // The page renders ALL FIVE areas, not whichever subset survived a refactor.
   pin.match(docs, /genesisHelpEntries\(t\)/, "expected /docs to render the hub's entries");
   pin.match(docs, /regionHelpEntries\(t\)/, "expected /docs to render the region entries (no cap passed -- the ?? 64 fallback is the honest browser-side number)");
   pin.match(docs, /phasesHelpEntries\(t\)/, "expected /docs to render the phases entries");
   pin.match(docs, /jobHelpEntries\(t\)/, "expected /docs to render the job-detail entries");
+  pin.match(docs, /calibrationHelpEntries\(t\)/, "expected /docs to render the calibration entries");
+  // ...and the calibration section carries the way back to the screen it is
+  // about, the same as every other section here. A doctrine page a reader
+  // cannot leave for the work is a dead end.
+  pin.match(
+    docs,
+    /id: "calibration",[\s\S]{0,300}?href: "\/calibration"/,
+    "expected the calibration section to link to the screen it documents",
+  );
 
   // The door: the topbar's book icon, on every route.
   pin.match(shell, /href="\/docs"/, "expected the topbar book icon to be the standing door to the documentation");
@@ -8492,16 +8525,59 @@ contractTest("unit #50: the flow rail renders the guideline's thirteen steps and
   pin.match(rail, /rail\.principles\.map/, "expected the guideline's ordering principles to be shown, not just the order");
 
   // NO_EVIDENCE must read as a real state a human acts on, not as a disabled
-  // row -- that is the whole honesty claim of this screen. RE-AIMED by #50-c:
-  // the caption became a reachable ⓘ on the step chip (hover, focus, tap), so
-  // the pin now says the step still NAMES its manual-check status rather than
-  // going silently blank, and says it through the tooltip primitive.
+  // row -- that is the whole honesty claim of this screen.
+  //
+  // RE-AIMED TWICE. #50-c turned the per-step caption into a reachable ⓘ; #50-d
+  // removed that ⓘ (the user, 2026-08-20: doctrine leaves the screen), which
+  // would have left this pin describing six identical tooltips that no longer
+  // exist. The CLAIM did not move: a manual-check step is still named, and now
+  // by something always visible rather than by a hover. Every `manual_area` step
+  // is routed into the 수동 확인 영역 station by the SERVER's flag
+  // (lib/calibrationStations.ts, pinned in the #50-b block), that station's
+  // header names it, and its one-line verdict states the promise. So the pin is
+  // aimed at the naming that survives, and at the ⓘ being gone rather than
+  // duplicated somewhere else on the page.
   pin.match(
-    page,
-    /step\.manual_area && \(\s*\n\s*<InfoTip/,
-    "expected a manual-check area to be named on the step, not silently blank",
+    withoutComments(page),
+    /activeStation === "manual" && \(/,
+    "expected the manual-check steps to have a station of their own that names them",
   );
-  pin.match(rail, /수동 확인 영역/, "expected the Korean manual-check wording on the rail");
+  pin.match(
+    withoutFolds(withoutComments(page)),
+    /이 제품은 위 단계들을 측정하지 않습니다 — 완료로 표시하지 않습니다/,
+    "expected that station's one-line verdict to stay on the SURFACE -- it is the promise the whole screen rests on, not doctrine",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /step\.manual_area && \(\s*\n\s*<InfoTip/,
+    "expected the per-step doctrine tooltip to be gone (#50-d), not moved to a second place on the same screen",
+  );
+  // TIGHTENED 2026-08-20 (#50-d). This pin read RAW source and FlowRail.tsx
+  // carries "수동 확인 영역" four times in its doc comments, so the pin was
+  // satisfied by prose and could not fail: deleting every rendered occurrence
+  // would have left it green. That is the failure `withoutComments` exists for,
+  // in the direction the /base-model redirect test carries its own scar about.
+  //
+  // Aimed at code now, in the two places the wording actually lives. The LABEL
+  // itself is not FlowRail's to write -- it belongs to the shared station table
+  // that also routes the steps -- and the rail renders it through that table, so
+  // pinning only the rail would be pinning the wrong file. The one place the
+  // rail writes the words itself is the collapsed row's own control.
+  pin.match(
+    withoutComments(read("lib/calibrationStations.ts")),
+    /manual: \["수동 확인 영역", "Manual-check areas", "手動確認領域"\]/,
+    "expected the manual-check station's own label to exist in the shared station table, in all three languages",
+  );
+  pin.match(
+    withoutComments(rail),
+    /\{stationLabel\(station, t\)\}/,
+    "expected the rail to render that label rather than writing a second copy of it",
+  );
+  pin.match(
+    withoutComments(rail),
+    /t\("수동 확인 영역 접기"|t\("수동 확인 영역 펼치기"/,
+    "expected the collapsed row's own control to name the group it opens -- the chevron has no other name",
+  );
 
   // The rail is a control too: clicking a step goes to the station whose
   // evidence produced it.
@@ -8588,7 +8664,9 @@ contractTest("unit #50: the approval card is shared with the drawer, never reimp
 
 contractTest("unit #50: the scoring station scores the RUN, and says what it will not use", (pin) => {
   const table = read("components/calibration/NodeScoreTable.tsx");
-  const page = read("app/calibration/page.tsx");
+  // app/calibration/page.tsx dropped out of this test in #50-d: the one claim it
+  // carried here -- the workbook-column rule -- is now pinned in its two new
+  // homes at the bottom of this test, and in the "#50-d ③" eviction ledger.
 
   // Pass/fail is the report's own threshold, and an undefined GEH is neither.
   pin.match(table, /report\.geh_threshold/, "expected the threshold to come from the report");
@@ -8619,13 +8697,24 @@ contractTest("unit #50: the scoring station scores the RUN, and says what it wil
   pin.match(table, /pick\(report\.message, lang\)/, "expected the refusal wording to be the backend's");
 
   // The workbook's pasted model column is the thing reality_check refuses to
-  // read; the page says so rather than quietly using a second source.
-  // RE-AIMED by #50-c: it is a RULE, so it says so from inside the scoring
-  // tab's own fold rather than above the tiles. Still said, still verbatim.
+  // read, and the product still has to SAY so somewhere a reader can find it.
+  //
+  // RE-AIMED TWICE. #50-c moved the sentence into the scoring tab's own fold;
+  // #50-d evicted it from the screen altogether (the user, 2026-08-20 — a rule
+  // about the product, not a fact about this run). The claim is unchanged and is
+  // now pinned where the sentence lives: verbatim in the knowledge file, and
+  // verbatim in the module /docs renders. The eviction ledger below
+  // ("#50-d ③") is what stops that from being satisfiable by a deletion --
+  // it asserts BOTH the two homes and the absence from every surface file.
   pin.match(
-    page.slice(page.indexOf("<details")),
+    readCalibrationDoctrine(),
     /워크북에 붙여넣은 모델 열/,
-    "expected the page to state that the workbook's model column is not used",
+    "expected the knowledge file to state that the workbook's model column is not used",
+  );
+  pin.match(
+    read("lib/help-content.tsx"),
+    /워크북에 붙여넣은 모델 열/,
+    "expected /docs to render that same sentence, from the shared doctrine module",
   );
 });
 
@@ -8641,7 +8730,23 @@ contractTest("unit #50: the Table 5-6 station cannot mistake the Vissim default 
     /summary\.default_coincident > 0 && summary\.guideline_standstill === 0/,
     "expected the default-coincidence case to be called out explicitly",
   );
-  pin.match(station, /측정이 제출됐다는 증거가 아닙니다/, "expected the Korean sentence denying that a default match is evidence");
+  // RE-AIMED by #50-d (2026-08-20). The three-sentence explanation of WHY a
+  // default match is not evidence is doctrine and left for /docs; what a reader
+  // must not lose is the WARN itself -- the count, and the refusal to call it
+  // evidence. So the pin now asks for the short verdict line, ON THE SURFACE,
+  // in the branch that renders it. Dropping the warn entirely would let a
+  // network nobody calibrated read as one that matches the published table,
+  // which is the single defect this component was built around.
+  pin.match(
+    withoutFolds(withoutComments(station)),
+    /기본값 우연 일치 \$\{summary\.default_coincident\}건[\s\S]{0,80}?측정 증거 아님/,
+    "expected the default-coincidence WARN to keep its count and its refusal on the surface",
+  );
+  pin.match(
+    readCalibrationDoctrine(),
+    /이 일치는 측정이 제출됐다는 증거가 아닙니다/,
+    "expected the full explanation to be in the knowledge file -- the sentence moved, it was not dropped",
+  );
 
   // #44's own `why` sentence, quoted -- it is the one that names a partially
   // applied set, and the UI must not paraphrase it.
@@ -8969,158 +9074,29 @@ contractTest("unit #51-c: a searched winner reaches the card, and the file only 
   );
 });
 
-contractTest("unit #51-c: the guardrail speaks in TWO paths, and the decision is on the screen", (pin) => {
-  const cards = read("components/agent/ApprovalCards.tsx");
-  const rail = read("components/calibration/FlowRail.tsx");
-
-  // BOTH arms render. A single line was true until 2026-08-20 and became
-  // misleading the moment decision (a) landed: the same write is refused
-  // directly and clean through the approval machinery.
-  pin.match(
-    cards,
-    /const direct = paths\?\.\[GUARDRAIL_PATH_DIRECT\];\s*\n\s*const approved = paths\?\.\[GUARDRAIL_PATH_APPROVED\];/,
-    "expected both paths to be bound from the server payload",
-  );
-  pin.match(
-    cards,
-    /\{direct && \(/,
-    "expected the direct-edit arm to render",
-  );
-  pin.match(
-    cards,
-    /\{approved && \(/,
-    "expected the approved-path arm to render -- one line cannot say what two paths do",
-  );
-  pin.match(
-    cards,
-    /outcome\(approved\)/,
-    "expected the approved path to state its own outcome, not inherit the direct one's",
-  );
-  // THREE states, because the server has three: refused, passes, and "not
-  // forecast, here is the condition". Inventing a pass where the server
-  // declined to forecast is the optimistic-forecast failure #44's refuter named.
-  pin.match(
-    cards,
-    /expected_to_refuse === true\s*\n?\s*\?[\s\S]{0,200}?expected_to_refuse === false/,
-    "expected the outcome to distinguish refuse / pass / not-forecast, never to collapse to a boolean",
-  );
-  pin.match(
-    cards,
-    /통과 \(반경 전부 명명 시\)/,
-    "expected the un-forecast approved path to be qualified, never rendered as a plain pass",
-  );
-  // ...and the QUALIFIER itself is the server's, printed as its machine code beside
-  // the phrase. The line above is prose this client composes; on its own it would go
-  // on saying "the radius is named in full" after a backend that changed what the
-  // approved path is conditional on, and no test here could see the difference
-  // (refuter, #51-c). `condition` is the field that makes the change visible.
-  pin.match(
-    cards,
-    /const condition = \(path: GuardrailPath\)[\s\S]{0,240}?path\.condition;/,
-    "expected the server's own `condition` code to be read, not just paraphrased",
-  );
-  pin.match(
-    cards,
-    /\{condition\(approved\) && \(\s*\n\s*<span[^>]*>\{condition\(approved\)\}<\/span>/,
-    "expected that condition code to actually be printed on the approved arm",
-  );
-
-  // The two path KEYS are a cross-language contract: these string literals are the
-  // dictionary keys the backend fills in, and nothing else in either build agrees
-  // them. Renaming `PATH_DIRECT_EDIT` in parameter_search.py would leave every lookup
-  // here resolving to `undefined`, which makes `GuardrailPathLines` return null and
-  // DELETES the two-path forecast from both the card and the ⑫ track -- silently, and
-  // with every other pin in this test still passing (refuter, #51-c). So they are
-  // pinned on BOTH sides.
-  const parameterSearch = readFileSync(
-    path.join(repoRoot, "backend", "services", "agent", "parameter_search.py"),
-    "utf-8",
-  );
-  pin.match(
-    cards,
-    /export const GUARDRAIL_PATH_DIRECT = "direct_edit";\s*\nexport const GUARDRAIL_PATH_APPROVED = "approved_set";/,
-    "expected the client's path keys to be exactly the two the backend emits",
-  );
-  pin.match(
-    parameterSearch,
-    /PATH_DIRECT_EDIT = "direct_edit"\s*\nPATH_APPROVED_SET = "approved_set"/,
-    "expected the backend to still emit those same two keys -- a rename here blanks the forecast",
-  );
-  // Nothing anywhere READS the single top-level verdict any more. Comments are
-  // stripped on purpose: this unit's own doc comments narrate the removed
-  // GUARDRAIL_WILL_REFUSE copy while explaining why it went.
-  pin.doesNotMatch(
-    withoutComments(`${cards}\n${rail}`),
-    /GUARDRAIL_WILL_REFUSE|preflight_forecast\??\.?\s*\.?verdict|guardrail\??\.\s*verdict/,
-    "no surface may read the single-verdict field -- it describes only the direct path",
-  );
-
-  // The user's answer on the collision, rendered from the SERVER's status field.
-  pin.match(
-    cards,
-    /export function GuardrailResolutionChips\(/,
-    "expected one resolution-chip component, shared by the track and the card",
-  );
-  // MUTATION-CHECKED: pinning only `{item.status}` was NOT enough -- wrapping
-  // the block in `{false && item.status && (` left the reference standing and
-  // the pin passed over a chip that renders nothing. So the BINDING is pinned,
-  // which a dead branch cannot satisfy (the same lesson #51's refusal pin
-  // carries a few tests above).
-  pin.match(
-    cards,
-    /\{item\.status && \(/,
-    "expected the decision to be the server's own status code, never a verdict this client composes",
-  );
-  pin.match(
-    cards,
-    /\{item\.status\}/,
-    "expected that status code to actually be printed",
-  );
-  pin.match(
-    cards,
-    /item\.status === "REJECTED_BY_USER"/,
-    "expected the rejected resolution to be told apart from the decided one",
-  );
-  pin.match(
-    cards,
-    /pickText\(item, lang\)/,
-    "expected the decision sentence itself to be the server's, in the reader's language",
-  );
-
-  // The ⑫ TRACK carries them in BOTH states -- the locked one is what this
-  // screen shows most of the time, and the decision is a fact about the product
-  // rather than about one search run. Pinned per branch, by slicing at the
-  // locked return, so deleting either call site fails here.
-  //
-  // Both anchors are SINGLE-LINE and the slice is sanity-checked, because a
-  // derived-source pin fails open when its end anchor misses: `indexOf` answers
-  // -1, `slice(start, -1)` hands back the rest of the file, and the pin then
-  // passes on the OTHER branch's call site while the one it names is gone.
-  const lockedBranch = rail.slice(
-    rail.indexOf("if (track.locked || !card)"),
-    rail.indexOf("bg-sky-50/60"),
-  );
-  pin.doesNotMatch(
-    lockedBranch,
-    /card\.runner\.wired/,
-    "slice sanity: the locked-branch slice must end before the open branch begins",
-  );
-  pin.match(
-    lockedBranch,
-    /<TrackGuardrail guardrail=\{track\.guardrail\} lang=\{lang\} t=\{t\} \/>/,
-    "expected the LOCKED track to state the guardrail and the decision",
-  );
-  pin.match(
-    rail.slice(rail.indexOf("card.runner.wired")),
-    /<TrackGuardrail guardrail=\{track\.guardrail\} lang=\{lang\} t=\{t\} \/>/,
-    "expected the OPEN track to state them too",
-  );
-  pin.match(
-    rail,
-    /<GuardrailPathLines paths=\{guardrail\.paths\} t=\{t\} \/>[\s\S]{0,200}?<GuardrailResolutionChips resolutions=\{guardrail\.resolutions\}/,
-    "expected the track to reuse the card's own two components, not a second copy of the sentence",
-  );
-});
+// ---------------------------------------------------------------------------
+// REMOVED BY THE USER, 2026-08-20 (#50-d): "unit #51-c: the guardrail speaks in
+// TWO paths, and the decision is on the screen".
+//
+// THE AUTHORITY: the roadmap row for #50-d records "2경로 예보·결정 칩·mono 코드
+// 바 전부 문서/지식 파일로 … #51-c 표시 핀 사용자 권한 제거(기록)" — the user's
+// own words on the section itself were "developer side information... get rid of
+// it". That test pinned a DISPLAY into existence: `GuardrailPathLines`, the
+// resolution chips, and both `<TrackGuardrail>` call sites on the ⑫ track. The
+// display is gone by the user's decision, so its pins go with it, recorded here
+// rather than deleted quietly.
+//
+// WHAT WAS *NOT* REMOVED WITH IT, because none of it was ever display:
+//
+//   * the two-path KEY contract across the two languages -- the reason that test
+//     read parameter_search.py at all -- is re-pinned in the "#50-d ④" test
+//     below, on the backend side alone, where it is now the only side;
+//   * the backend enforcement (the shared-behaviour refusal, the re-minted
+//     single-use grant) is untouched by this unit and stays pinned by the
+//     backend suite and by "#51-c: a searched winner reaches the card" above;
+//   * the evidence-rank pin, which is approval-decision material rather than
+//     developer information, survives in the trimmed test directly below.
+// ---------------------------------------------------------------------------
 
 contractTest("unit #51-c: the evidence rank is never folded away", (pin) => {
   const cards = read("components/agent/ApprovalCards.tsx");
@@ -9131,20 +9107,22 @@ contractTest("unit #51-c: the evidence rank is never folded away", (pin) => {
   // slice at `<details` can check and a plain "is it in the file" pin cannot.
   const aboveTheFold = panel.slice(0, panel.indexOf("<details"));
 
+  // TRIMMED by #50-d with the recorded authority above: this test used to also
+  // require `GuardrailPathLines` and `GuardrailResolutionChips` to render here
+  // unfolded. Those two are removed from the product; the evidence rank is not,
+  // and it is the reason this test exists.
   pin.match(
     aboveTheFold,
     /pickText\(search\.evidence_rank, lang\)/,
     "expected the evidence-rank sentence to render ABOVE the fold, never inside the disclosure",
   );
-  pin.match(
+  // Slice sanity, because `indexOf` failing open would let the pin above pass on
+  // the whole panel including its fold -- the exact failure the #51-c guardrail
+  // slices carried a note about.
+  pin.doesNotMatch(
     aboveTheFold,
-    /<GuardrailPathLines paths=\{search\.preflight_forecast\?\.paths\} t=\{t\} \/>/,
-    "expected the two-path forecast to be unfolded too -- it is the verdict, not the reasoning",
-  );
-  pin.match(
-    aboveTheFold,
-    /<GuardrailResolutionChips/,
-    "expected the user's decision to be unfolded",
+    /Search ledger/,
+    "slice sanity: the above-the-fold slice must end before the disclosure begins",
   );
   // The sentence is the SERVER's, in three languages -- this client never
   // writes its own version of "this evidence ranks below Table 5-6's".
@@ -9488,10 +9466,23 @@ contractTest("unit #50-b: a proposal this product cannot place says so, and is n
 
   const proposals = read("components/calibration/StationProposals.tsx");
   pin.match(proposals, /placed\.fallback/, "expected the fallback placement to be captioned, not silent");
+  // RE-AIMED by #50-d (2026-08-20). The caption was a full sentence ending "--
+  // the step is not invented"; that clause is doctrine about the product and is
+  // at /docs now (D11 in docs/product/calibration-doctrine.md, pinned by the
+  // "#50-d ③" ledger). What a reviewer needs above an approval card is WHICH
+  // exception applies, so the pin is aimed at the marker that says it -- and the
+  // marker must still distinguish "no step exists for this tool" from "a step
+  // exists and its station did not resolve", which is the distinction the
+  // deleted sentence carried and the one that could actually mislead.
   pin.match(
-    proposals,
-    /단계를 지어내지 않습니다/,
-    "expected the unplaceable card to say the step was not invented",
+    withoutFolds(withoutComments(proposals)),
+    /단계 미매핑/,
+    "expected an unplaceable card to be MARKED unmapped on the surface, never placed silently at the default station",
+  );
+  pin.match(
+    withoutFolds(withoutComments(proposals)),
+    /스테이션 미해결/,
+    "expected the station-fallback case to be told apart from the unmapped one",
   );
   // The empty state must not read as "nothing anywhere" when there is work at
   // another step.
@@ -9781,15 +9772,29 @@ contractTest("unit #50-c: every citation and machine code is INSIDE a fold, and 
     );
   };
 
+  // THE LEDGER'S FRAMING, CORRECTED BY #50-d. This test's title says "none of
+  // them was deleted", and as of 2026-08-20 that is no longer true of every row
+  // it used to carry: TWO of them were deleted, by the user's own decision, and
+  // saying so is the honest version of this ledger.
+  //
+  //   * `{guardrail.decision}` -- the ⑫ decision code -- went with the whole
+  //     guardrail section ("#51-c 표시 핀 사용자 권한 제거(기록)", roadmap row
+  //     #50-d). It is not folded away; it is not rendered at all.
+  //   * the workbook-column RULE left the screen for the knowledge file, which
+  //     is a MOVE and not a deletion -- but not a move into a fold, so it cannot
+  //     be described by this helper. It is pinned by the "#50-d ③" eviction
+  //     ledger below, which asserts the same two directions across three files
+  //     instead of one.
+  //
+  // What remains here is the #50-c claim in its original form: provenance that
+  // is still on this screen is one click away, and still there.
   const rail = "components/calibration/FlowRail.tsx";
   moved(rail, /\{rail\?\.citation\}/, "§2.12.1's own citation");
   moved(rail, /refusals\.map\(\(refusal\) => refusal\.code\)/, "the precondition gate's refusal CODES");
-  moved(rail, /\{guardrail\.decision\}/, "the guardrail decision code");
   moved(rail, /card\.plan\.space\[0\]\.citation/, "the page the searched bands are published on");
 
   const page = "app/calibration/page.tsx";
   moved(page, /\{step\.source\}/, "which artifact answered a step");
-  moved(page, /워크북에 붙여넣은 모델 열/, "the rule about the workbook column reality_check refuses");
 
   const table = "components/calibration/NodeScoreTable.tsx";
   moved(table, /\{report\.reason_code\}/, "reality_check's own refusal code");
@@ -9979,27 +9984,31 @@ contractTest("unit #50-c: the scoring surface is a TILE GRID, and the movement c
   pin.match(grid, /movements_ungradable \?\? 0/, "expected the ungradable count to stay beside the compared count");
 });
 
-contractTest("unit #50-c: the rail states its tally in chips, and its doctrine stays reachable", (pin) => {
+contractTest("unit #50-c: the rail's chips are the step chips, and a zero badge renders nothing", (pin) => {
   const rail = read("components/calibration/FlowRail.tsx");
-  const page = read("app/calibration/page.tsx");
 
-  // The tally was a mono SENTENCE. It is chips now, in the SAME vocabulary the
-  // step rows use -- which is what keeps the three-colour rule from acquiring a
-  // second, differently-coloured statement of the same five statuses.
+  // THE WHOLE-RAIL TALLY IS GONE, by the user's own reading of it (2026-08-20:
+  // "this stat does not help", roadmap row #50-d ⑥). #50-c had turned it from a
+  // mono sentence into chips; #50-d removed it, because it counted thirteen rows
+  // that are visible below it wearing those same chips. The pins that required
+  // it are removed with that authority recorded, and the pin that survives is
+  // the one that still has a subject: the COLLAPSED manual row's tally, which
+  // describes six steps a reader cannot see (#50-b's rule that a folded group
+  // states its own states).
   pin.match(
     rail,
-    /STATUS_ORDER\.filter\(\(status\) => \(rail\.counts\[status\] \?\? 0\) > 0\)\.map\(\(status\) => \(/,
-    "expected every non-zero status count to be its own chip",
+    /\{statusTally\(steps\)\.map\(\(entry\) => \(/,
+    "expected the collapsed 수동 확인 영역 row to keep stating its six steps' statuses",
   );
   pin.match(
     rail,
-    /rounded-full border px-1\.5 py-0\.5 text-\[14px\] font-semibold \$\{statusChipClass\(status\)\}/,
-    "expected the tally chips to reuse the step chip's own class, not a second palette",
+    /rounded-full border px-1\.5 py-0\.5 text-\[14px\] font-semibold \$\{statusChipClass\(entry\.status\)\}/,
+    "expected that tally to reuse the step chip's own class, not a second palette",
   );
   pin.doesNotMatch(
     withoutComments(rail),
-    /`\$\{statusLabel\(status, t\)\} \$\{rail\.counts\[status\]\}`/,
-    "expected the tally never to go back to being a sentence a reader has to parse",
+    /rail\.counts\[status\]/,
+    "expected the whole-rail status tally to stay removed (#50-d, user 2026-08-20: 'this stat does not help')",
   );
 
   // A GAP THIS UNIT FOUND, and closed here rather than leaving named-only.
@@ -10016,22 +10025,26 @@ contractTest("unit #50-c: the rail states its tally in chips, and its doctrine s
     "expected a zero proposal badge to render nothing at all -- a '0' badge reads as a state, not as an absence",
   );
 
-  // DOCTRINE IS REACHABLE, not deleted. The honest headline -- a step with no
-  // evidence is never shown as done -- is the claim this whole screen rests on,
-  // so it goes in an ⓘ (hover, focus, tap, Escape) rather than a `title`, which
-  // no keyboard can summon.
-  pin.match(rail, /<InfoTip[\s\S]{0,400}?각 단계의 상태는 이 워크스페이스에 실제로 있는 증거/, "expected the honest headline to live in a reachable ⓘ");
-  pin.match(rail, /증거가 없는 단계는 완료로 표시하지 않고/, "expected the no-DONE-from-silence promise to survive verbatim");
-  pin.doesNotMatch(
-    withoutFolds(withoutComments(rail)),
-    /<p className="text-\[1[34]px\] leading-[56] text-slate-600">\s*\n\s*\{t\(\s*\n\s*"각 단계의 상태는/,
-    "expected the headline paragraph itself to be off the surface -- it is in the ⓘ now",
+  // DOCTRINE IS REACHABLE, not deleted -- and since #50-d it is reachable at
+  // /docs rather than from an ⓘ on this rail. These two pins used to require the
+  // tooltip; they now require the same sentences in the two files that own them.
+  // The "#50-d ③" ledger below is what makes that a two-directional claim, by
+  // pinning both of them ABSENT from every calibration surface file.
+  pin.match(
+    readCalibrationDoctrine(),
+    /증거가 없는 단계는 완료로 표시하지 않고/,
+    "expected the no-DONE-from-silence promise to survive verbatim in the knowledge file",
   );
-
-  // 채점·진단 is not one of the thirteen. That caption could not stay on a rail
-  // row (an ⓘ is a button, and the row is one), so it moved to the station
-  // header it qualifies -- and it must still be SAID somewhere.
-  pin.match(page, /<InfoTip[\s\S]{0,300}?채점·진단은 MRWA 단계 아님/, "expected the not-an-MRWA-step caption to survive as a tooltip");
+  pin.match(
+    read("lib/help-content.tsx"),
+    /증거가 없는 단계는 완료로 표시하지 않고/,
+    "expected /docs to render that promise, from the shared doctrine module",
+  );
+  pin.match(
+    readCalibrationDoctrine(),
+    /채점·진단은 MRWA 단계 아님/,
+    "expected the not-an-MRWA-step caption to survive verbatim in the knowledge file",
+  );
   pin.doesNotMatch(withoutComments(rail), /MRWA 단계 아님/, "expected the caption to have LEFT the rail row, not been duplicated");
 });
 
@@ -10215,10 +10228,678 @@ contractTest("unit #50-c: no fall-through family ink on the calibration surface"
   // BOTH DIRECTIONS: the deliberate idiom must still be there. A sweep that
   // "fixed" this by deleting the sky selection language would pass the scan
   // above and break the screen.
+  //
+  // TWO ANCHORS since #50-d, on purpose. The step chip is the idiom's oldest
+  // carrier and #50-d's 지금 할 일 banner is its newest and largest -- the first
+  // thing on the screen, in the same navy fill and remapped sky ink. Anchoring
+  // on only one of them would let the scan stay green over a screen that had
+  // lost the other.
   pin.match(
     read("components/calibration/FlowRail.tsx"),
     /NEXT: "border-sky-300 bg-sky-50 text-sky-600"/,
     "expected the NEXT chip to keep the app's navy-fill/sky-text idiom -- this scan bans fall-through shades, not the idiom",
+  );
+  pin.match(
+    withoutFolds(withoutComments(read("app/calibration/page.tsx"))),
+    /border-sky-300 bg-sky-50[^"]*text-sky-600/,
+    "expected the 지금 할 일 banner to wear the same idiom -- sky IS 'do this one' on this screen",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #50-d — ACTION FIRST, EDUCATION EVICTED (user-confirmed 2026-08-20).
+//
+// The user drove #50-c's real screen — numbers first, prose folded — and named
+// what it still would not answer: "뭘 해야 할지 모르겠다". The decision behind
+// this unit, in the user's own words: 화면은 사용자에게 행동을 빚졌지 교육을
+// 빚진 게 아니다 — the screen owes the reader an ACTION, not an education.
+//
+// So two things happened at once, and they have to be tested as one pair:
+//
+//   * the page opens with the single thing to do next, as a button;
+//   * every doctrine, guard and education sentence LEFT the calibration
+//     surfaces — seven ⓘ tooltips, six per-station folded rules, the empty
+//     state's explanation, the W74 paragraph, and the whole ⑫ guardrail
+//     section.
+//
+// THE FAILURE MODE THIS BLOCK EXISTS AGAINST is the same one #50-c's ledger
+// named, arriving through a different door. A pin that only asked "is the
+// sentence off the screen" passes just as happily over a DELETION, and deleting
+// the sentences that say what this product refuses to do is exactly the thing
+// this codebase must not do. #50-c could answer that with `withoutFolds`,
+// because the sentence stayed in the same file. #50-d moved them out of the
+// frontend entirely, so the checks below span three files:
+//
+//   (a) ABSENT from every calibration surface file, comments stripped;
+//   (b)+(c) the knowledge file and lib/help-content.tsx carry the SAME triples —
+//       docs/product/calibration-doctrine.md is the single source of truth and
+//       the file the assistant's RAG corpus indexes, lib/help-content.tsx is
+//       what /docs renders, and every sentence of every item must be byte-equal
+//       in both, in ko AND en AND ja.
+//
+// CORRECTED 2026-08-20 (refuter, MAJOR). (b) and (c) used to be a hand-written
+// list of short KOREAN FRAGMENTS, one per item, matched into each file. The
+// comment here promised "a sweep that softened a sentence fails (b) and (c)",
+// and the refuter proved that false in one edit: it reworded D5's ENGLISH
+// sentence in lib/help-content.tsx into a meaning-changed hedge, outside the
+// pinned Korean fragment, and the whole ledger stayed green. A ko-only fragment
+// cannot see an en or a ja reword, and two of this product's three audiences
+// read those.
+//
+// So the mechanism is now WHOLE SENTENCES, ALL THREE LANGUAGES, BOTH FILES, and
+// it is derived rather than transcribed: the two files are parsed and their
+// triples compared as sets, so a fourth hand-copy cannot itself go stale and a
+// new doctrine item is covered the day it is written. Both parsers fail closed
+// and are pinned by their own test, because a parser that silently returns
+// nothing would make every comparison below pass vacuously — the lesson
+// `withoutFolds` above carries its own scars from.
+//
+// WHAT THIS DOES AND DOES NOT CATCH, stated exactly:
+//   * soften a sentence in ONE file, in any language → fails (the sets differ);
+//   * delete a sentence from either file → fails (the item count is pinned);
+//   * put a sentence back on the screen → fails (a);
+//   * add an item to one file only → fails (the id list is pinned);
+//   * edit BOTH files identically → PASSES, and deliberately: that is a change
+//     to what the product promises, which the knowledge file's own header says
+//     requires the user's approval. This suite is not the arbiter of that, and a
+//     third copy here pretending to be would just be a third thing to update.
+//     Three load-bearing sentences DO carry an independent hand-written copy in
+//     the re-aimed #50/#50-c tests above, which is where that guard belongs.
+// ---------------------------------------------------------------------------
+
+/**
+ * The knowledge file's items, in the order it writes them.
+ *
+ * PINNED AS A LIST, not counted, and the difference matters in both directions:
+ * an item DELETED from the file fails here rather than quietly dropping out of
+ * every check below it, and a NEW item fails here until it is registered — which
+ * is correct, because a new doctrine item needs a decision about whether it is
+ * evicted (absence pins) or stays on the surface, and that decision belongs to a
+ * human, not to a loop.
+ *
+ * `D8`, `D11`, `D12` and `D16` are absent on purpose: they are container
+ * headings whose sentences live in their `-a`/`-b`/`-c` children.
+ */
+const DOCTRINE_ITEM_IDS = [
+  "D1", "D2", "D3", "D4", "D5", "D6", "D7",
+  "D8-a", "D8-b", "D8-c", "D8-d", "D8-e", "D8-f",
+  // D9 is the one item that KEEPS its place on the screen -- see the pins below.
+  "D9",
+  "D10",
+  "D11-a", "D11-b", "D11-c",
+  "D12-a", "D12-b",
+  "D13", "D14", "D15",
+  "D16-a", "D16-b", "D16-c",
+  // D17 was found DURING this unit's build, on the scoring tab's map caption: an
+  // ⓘ outside the spec's eviction list, overlapping D6's claim without being
+  // verbatim (D6 says which nodes are highlighted; this says where a position
+  // comes from and why one can be missing). The knowledge file registered it as
+  // its own item rather than widening D6, and it was evicted with the rest.
+  "D17",
+] as const;
+
+/** The one item whose sentence is a VERDICT and stays on the screen. */
+const DOCTRINE_STAYS_ON_SURFACE = "D9";
+
+type DoctrineTriple = { id: string; ko: string; en: string; ja: string };
+
+/**
+ * The knowledge file, parsed into `{ id, ko, en, ja }`.
+ *
+ * FAILS CLOSED, in the two ways it can be wrong. A heading with NO sentences is
+ * a container (`## D8.`, `## D16.`) and is dropped silently — that is the normal
+ * shape of this file. A heading with ONE or TWO is a half-written item, which is
+ * exactly the state a careless edit leaves behind, so it comes back in `partial`
+ * and the caller fails on it by name rather than quietly checking two thirds of
+ * a triple. Everything else is caught by the id list: this parser cannot invent
+ * an item, and an item it fails to see goes missing from a pinned list.
+ */
+function parseDoctrineTriples(markdown: string): { items: DoctrineTriple[]; partial: string[] } {
+  const byId = new Map<string, { ko?: string; en?: string; ja?: string }>();
+  const order: string[] = [];
+  let current: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const heading = /^#{2,3} (D\d+(?:-[a-z])?)\./.exec(line);
+    if (heading) {
+      current = heading[1];
+      if (!byId.has(current)) {
+        byId.set(current, {});
+        order.push(current);
+      }
+      continue;
+    }
+    // No `$` anchor: this file is read on two machines and git hands one of them
+    // CRLF, so the line may end in a `\r` that `.` stops before but `$` would
+    // refuse to match past.
+    const sentence = /^- (ko|en|ja): (.*)/.exec(line);
+    if (!sentence || !current) continue;
+    byId.get(current)![sentence[1] as "ko" | "en" | "ja"] = sentence[2].trim();
+  }
+
+  const items: DoctrineTriple[] = [];
+  const partial: string[] = [];
+  for (const id of order) {
+    const entry = byId.get(id)!;
+    const filled = [entry.ko, entry.en, entry.ja].filter((text) => text !== undefined);
+    if (filled.length === 3) items.push({ id, ko: entry.ko!, en: entry.en!, ja: entry.ja! });
+    else if (filled.length > 0) partial.push(id);
+  }
+  return { items, partial };
+}
+
+/** A TypeScript string literal, either quoting style, escapes included. */
+const TS_STRING_LITERAL = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/;
+
+const HELP_BODY_TRIPLE = new RegExp(
+  `body: t\\(\\s*(${TS_STRING_LITERAL.source})\\s*,\\s*(${TS_STRING_LITERAL.source})\\s*,\\s*(${TS_STRING_LITERAL.source})\\s*,?\\s*\\)`,
+  "g",
+);
+
+/** One string literal's actual text.
+ *
+ * REFUSES what it cannot decode rather than guessing. These doctrine strings
+ * carry exactly one kind of escape -- `\'` inside a single-quoted sentence with
+ * an apostrophe in it -- and a `\n` or a `\u00e9` slipping in later would decode
+ * to the wrong characters here and make a comparison fail for a reason nobody
+ * could read. It is a structural violation, so it throws by name. */
+function unquoteTsString(literal: string): string {
+  const body = literal.slice(1, -1);
+  assert.ok(
+    !/\\[^'"\\]/.test(body),
+    `unsupported escape in a doctrine string literal: ${literal.slice(0, 60)}`,
+  );
+  return body.replace(/\\(['"\\])/g, "$1");
+}
+
+/**
+ * `calibrationHelpEntries`'s triples, in source order.
+ *
+ * SCOPED TO THAT ONE BUILDER: `lib/help-content.tsx` holds six of them and the
+ * other five describe screens this unit never touched, so a file-wide sweep
+ * would compare the calibration doctrine against the region screen's. The slice
+ * ends at the next top-level `export function`, and the caller sanity-checks the
+ * count -- an `indexOf` that missed would hand back the rest of the file and
+ * every comparison would then run over the wrong builder's sentences.
+ *
+ * `title:` is deliberately not read: the knowledge file writes its titles into
+ * markdown HEADINGS, which are a different shape, and pinning a title would pin
+ * a navigation label rather than a claim about the product.
+ */
+function calibrationHelpTriples(source: string): { ko: string; en: string; ja: string }[] {
+  const start = source.indexOf("export function calibrationHelpEntries(");
+  if (start === -1) return [];
+  const end = source.indexOf("\nexport function ", start + 1);
+  const body = source.slice(start, end === -1 ? undefined : end);
+  return [...body.matchAll(HELP_BODY_TRIPLE)].map((match) => ({
+    ko: unquoteTsString(match[1]),
+    en: unquoteTsString(match[2]),
+    ja: unquoteTsString(match[3]),
+  }));
+}
+
+/**
+ * The longest run of a sentence that carries no `{…}` placeholder.
+ *
+ * The ABSENCE half needs a different needle from the presence half, and this is
+ * why. Both files write `주행행태 {N}개가 …` where the screen wrote
+ * `주행행태 ${summary.default_coincident}개가 …`, so a whole-sentence absence pin
+ * would pass over the sentence coming back interpolated — which is the only way
+ * it CAN come back. The longest placeholder-free run appears byte-identically in
+ * both the knowledge file and a resurfaced `t()` call, so it is the needle that
+ * can actually fail.
+ */
+function placeholderFreeRun(sentence: string): string {
+  return sentence
+    .split(/\{[^}]*\}/)
+    .map((part) => part.trim())
+    .reduce((longest, part) => (part.length > longest.length ? part : longest), "");
+}
+
+contractTest("contract helper: the doctrine parsers fail closed, and read only what they claim to", (pin) => {
+  // A CONTAINER heading (no sentences of its own) is dropped; a HALF-WRITTEN one
+  // is reported. Getting these two confused is how a check silently stops
+  // covering an item.
+  const parsed = parseDoctrineTriples(
+    [
+      "# Title",
+      "## D1. container-less item",
+      "- ko: 하나",
+      "- en: one",
+      "- ja: いち",
+      "## D2. a container",
+      "prose only, no sentences",
+      "### D2-a. the child",
+      "- ko: 둘",
+      "- en: two",
+      "- ja: に",
+      "## D3. half written",
+      "- ko: 셋",
+      "## Not an item heading",
+      "- ko: 넷",
+    ].join("\n"),
+  );
+  assert.deepEqual(parsed.items.map((item) => item.id), ["D1", "D2-a"], "a container heading must not become an item");
+  assert.deepEqual(parsed.partial, ["D3"], "a half-written triple must be REPORTED, never silently two-thirds checked");
+  assert.deepEqual(parsed.items[0], { id: "D1", ko: "하나", en: "one", ja: "いち" });
+  assert.ok(
+    !parsed.items.some((item) => item.ko === "넷"),
+    "a sentence under a non-item heading must not be attributed to the previous item",
+  );
+
+  // CRLF, because one of the two machines this repo is developed on gets it.
+  const crlf = parseDoctrineTriples("## D1. x\r\n- ko: 가\r\n- en: a\r\n- ja: あ\r\n");
+  assert.deepEqual(crlf.items[0], { id: "D1", ko: "가", en: "a", ja: "あ" }, "a CRLF checkout must parse identically");
+
+  // The help parser reads BODIES from ONE builder, and decodes `\'`.
+  const help = calibrationHelpTriples(
+    [
+      "export function calibrationHelpEntries(t) {",
+      '  { title: t("TITLE-KO", "TITLE-EN", "TITLE-JA"),',
+      "    body: t(",
+      '      "본문",',
+      "      'the network\\'s own',",
+      '      "ほんぶん",',
+      "    ) },",
+      "}",
+      "export function otherHelpEntries(t) {",
+      '  { body: t("다른", "other", "ほか") },',
+      "}",
+    ].join("\n"),
+  );
+  assert.equal(help.length, 1, "the slice must end at the next exported builder");
+  assert.deepEqual(help[0], { ko: "본문", en: "the network's own", ja: "ほんぶん" });
+
+  // A missing builder yields NOTHING rather than the whole file's triples -- and
+  // the caller's count assertion is what turns that into a failure.
+  assert.deepEqual(calibrationHelpTriples("export function somethingElse() {}"), []);
+  // An escape this decoder cannot honour is refused, not guessed at.
+  assert.throws(() => unquoteTsString('"line\\nbreak"'), /unsupported escape/);
+
+  // The absence needle skips placeholders and keeps the longest real run.
+  assert.equal(placeholderFreeRun("주행행태 {N}개가 공표 행과 일치하지만 그렇습니다"), "개가 공표 행과 일치하지만 그렇습니다");
+  assert.equal(placeholderFreeRun("no placeholders here"), "no placeholders here");
+  pin.match(
+    read("lib/help-content.tsx"),
+    /export function calibrationHelpEntries\(/,
+    "slice sanity: the builder these parsers are scoped to must exist",
+  );
+});
+
+/** Every file whose body is a calibration surface, INCLUDING the absorbed
+ * base-model tab — which is out of the type-floor sweep for reasons that test
+ * states, but is squarely in this one: two of its own ⓘs and one of its folds
+ * were evicted by this unit. */
+const CALIBRATION_DOCTRINE_FILES = [
+  ...CALIBRATION_SURFACE_FILES,
+  "components/calibration/BaseModelStation.tsx",
+];
+
+contractTest("unit #50-d ③: the knowledge file and /docs carry the SAME doctrine, sentence for sentence, in ko AND en AND ja", (pin) => {
+  const doctrine = readCalibrationDoctrine();
+
+  // Slice sanity for the knowledge file itself: an empty read (renamed, moved)
+  // would make every comparison below fail loudly rather than quietly, but a
+  // TRUNCATED one would not, and this check is only as good as its source.
+  pin.match(doctrine, /^# 보정 워크스페이스 독트린/, "the knowledge file must be the calibration doctrine, read whole");
+  pin.match(doctrine, /### D16-c\./, "expected the file to run through its last sub-item -- a truncated source under-checks everything here");
+  pin.match(doctrine, /## D17\./, "expected the file to run through D17 -- likewise");
+
+  const { items, partial } = parseDoctrineTriples(doctrine);
+  assert.deepEqual(partial, [], "an item with one or two of its three languages is half-written, not a triple");
+  assert.deepEqual(
+    items.map((item) => item.id),
+    [...DOCTRINE_ITEM_IDS],
+    "the knowledge file's items must be exactly the registered list, in order -- a new item needs an eviction decision, and a lost one needs to be noticed",
+  );
+  // Nothing empty and nothing stubbed: a one-character "sentence" would satisfy
+  // every comparison below while saying nothing.
+  for (const item of items) {
+    for (const [lang, text] of [["ko", item.ko], ["en", item.en], ["ja", item.ja]] as const) {
+      assert.ok(text.length >= 10, `${item.id} (${lang}) is too short to be a doctrine sentence: ${JSON.stringify(text)}`);
+    }
+  }
+
+  // THE COMPARISON. Both files hold the same 3 x N sentences, and set equality
+  // is the whole claim: a reword on either side, in any language, moves one set
+  // and not the other. This replaces a hand-written list of Korean fragments
+  // that could not see an en or ja edit at all (refuter, 2026-08-20).
+  const helpTriples = calibrationHelpTriples(read("lib/help-content.tsx"));
+  assert.equal(
+    helpTriples.length,
+    items.length,
+    `lib/help-content.tsx renders ${helpTriples.length} calibration entries for ${items.length} knowledge-file items -- every item is a section at /docs and nothing at /docs is unauthored`,
+  );
+
+  const shape = (triple: { ko: string; en: string; ja: string }) =>
+    JSON.stringify([triple.ko, triple.en, triple.ja]);
+  // Compared as SORTED sets: the reading ORDER is each file's own business (the
+  // knowledge file numbers its items, /docs groups D17 beside the D6 it answers
+  // with), and pinning order would fail for a rearrangement that changed no
+  // claim.
+  const fromDoctrine = items.map(shape).sort();
+  const fromHelp = helpTriples.map(shape).sort();
+  for (const [label, missing] of [
+    ["lib/help-content.tsx", fromDoctrine.filter((entry) => !fromHelp.includes(entry))],
+    ["docs/product/calibration-doctrine.md", fromHelp.filter((entry) => !fromDoctrine.includes(entry))],
+  ] as const) {
+    assert.deepEqual(
+      missing,
+      [],
+      `${missing.length} doctrine triple(s) are not byte-identical in ${label}. #50-d moved these sentences and deleted none, and a softened copy in one file is exactly what this compares for:\n${missing.join("\n")}`,
+    );
+  }
+});
+
+contractTest("unit #50-d ③: every evicted doctrine sentence left the calibration surface, in all three languages", (pin) => {
+  const { items } = parseDoctrineTriples(readCalibrationDoctrine());
+  assert.equal(items.length, DOCTRINE_ITEM_IDS.length, "parser sanity: this sweep is vacuous over an empty item list");
+
+  // Read once. This is 26 items x 3 languages x 6 files of regex, and re-reading
+  // a 2,700-line file 78 times to do it would be the slowest test in the suite
+  // for no gain.
+  const surfaces = CALIBRATION_DOCTRINE_FILES.map(
+    (file) => [file, withoutComments(read(file))] as const,
+  );
+
+  for (const item of items) {
+    if (item.id === DOCTRINE_STAYS_ON_SURFACE) continue;
+    for (const [lang, sentence] of [["ko", item.ko], ["en", item.en], ["ja", item.ja]] as const) {
+      const needle = placeholderFreeRun(sentence);
+      // A degenerate needle would make the pin below unfalsifiable (or, worse,
+      // fire on unrelated text). A sentence chopped into nothing but short runs
+      // by placeholders surfaces here by name instead.
+      assert.ok(
+        needle.length >= 16,
+        `${item.id} (${lang}): the longest placeholder-free run is only ${needle.length} characters (${needle}) -- too short to identify this sentence on a surface`,
+      );
+      const pattern = literalPattern(needle);
+      for (const [file, source] of surfaces) {
+        pin.doesNotMatch(
+          source,
+          pattern,
+          `${item.id} (${lang}): must not be back on ${file} -- the user's 2026-08-20 decision took it off this screen`,
+        );
+      }
+    }
+  }
+
+  // THE ONE THAT STAYS, and it is here so "evicted" cannot quietly grow to mean
+  // "all of it". 수동 확인 영역's one-line verdict is the promise this screen
+  // rests on — it says what the product WILL NOT DO — so it is a verdict, not an
+  // education, and it renders UNFOLDED on the station it belongs to.
+  const stays = items.find((item) => item.id === DOCTRINE_STAYS_ON_SURFACE);
+  assert.ok(stays, `${DOCTRINE_STAYS_ON_SURFACE} must be in the knowledge file -- it is the rule this screen keeps`);
+  pin.match(
+    withoutFolds(withoutComments(read("app/calibration/page.tsx"))),
+    literalPattern(stays.ko),
+    "the manual station's one-line verdict must stay on the SURFACE -- it is the screen's promise, not doctrine",
+  );
+
+  // ZERO TOOLTIPS, and this is the pin that keeps the eviction from being a
+  // one-time sweep. Every item above left as a SENTENCE, and a sentence can come
+  // back under a different wording that no fragment pin would catch -- the
+  // vehicle it would come back in is an ⓘ, because that is the vehicle six of
+  // the seven arrived in. `InfoTip` itself is untouched and the genesis screens
+  // still use it correctly; what this bans is a doctrine tooltip returning to
+  // THIS workspace, in any wording.
+  for (const file of CALIBRATION_DOCTRINE_FILES) {
+    pin.doesNotMatch(
+      withoutComments(read(file)),
+      /<InfoTip\b/,
+      `${file}: the calibration workspace carries no tooltips after #50-d -- background belongs at /docs, and an ⓘ is how it would come back`,
+    );
+  }
+  // BOTH DIRECTIONS: the primitive must still EXIST and still be used where it
+  // belongs. "No ⓘ here" satisfied by deleting the component would be a change
+  // to four other screens that nobody asked for.
+  pin.match(
+    read("components/genesis/ui.tsx"),
+    /export function InfoTip\(/,
+    "expected the ⓘ primitive to survive -- #50-d evicted doctrine from one workspace, it did not retire a control",
+  );
+  pin.match(
+    read("app/genesis/jobs/[id]/page.tsx"),
+    /<InfoTip\b/,
+    "expected the genesis job detail to keep using it -- a phrase beside a control is what it is for",
+  );
+
+  // The doctrine module obeys the same three-language rule the calibration
+  // screens do: a 2-argument t() here would fall back to English for ja readers,
+  // and this module is now the ONLY copy of these sentences a reader can reach.
+  pin.doesNotMatch(
+    read("lib/help-content.tsx"),
+    /\bt\(\s*"[^"]*"\s*,\s*"[^"]*"\s*,?\s*\)/,
+    "a two-argument t() in lib/help-content.tsx would leave a ja reader with English doctrine",
+  );
+});
+
+contractTest("unit #50-d ①: the workspace opens with the ONE THING TO DO, and it is a button", (pin) => {
+  const page = read("app/calibration/page.tsx");
+  const surface = withoutFolds(withoutComments(page));
+
+  // DERIVED, NEVER DECIDED. There are exactly two legitimate sources for this
+  // line -- the run selection this page already holds, and the SERVER's own NEXT
+  // status -- and the binding is pinned WHOLE, ending at `?? null`, for the
+  // reason #51's track binding is: appending a locally invented fallback to the
+  // expression is the mutation that satisfies a looser pin.
+  pin.match(
+    page,
+    /const nextStep = railSteps\.find\(\(step\) => step\.status === "NEXT"\) \?\? null;/,
+    "expected the banner's step to be the first NEXT the server sent, and nothing else",
+  );
+  // The WORDING is the rail's own helper, so the banner and the rail row beside
+  // it cannot describe the same step differently -- and a hardcoded Korean todo
+  // string in this position fails here.
+  pin.match(surface, /\{stepLabel\(nextStep, lang\)\}/, "expected the banner to print the rail's own label for that step");
+  // It is an ACTION: pressing it opens that step's station, through the same
+  // handler a rail row uses. A caption would be an education.
+  pin.match(
+    surface,
+    /onClick=\{\(\) => handleSelectStep\(nextStep\)\}/,
+    "expected the banner to navigate to the step it names, by the existing station-select path",
+  );
+  // The no-run branch, verbatim in three languages -- and an action too: it puts
+  // the cursor in the selector it names, rather than pointing at it.
+  pin.match(
+    surface,
+    literalPattern('t("채점할 실행을 선택하세요", "Choose a run to score", "採点する実行を選択してください")'),
+    "expected the no-run branch to state the exact sentence, in all three languages",
+  );
+  pin.match(
+    surface,
+    /onClick=\{\(\) => runSelectRef\.current\?\.focus\(\)\}/,
+    "expected the no-run banner to reach the run selector it names",
+  );
+  // ...and NOTHING when there is nothing. A rail that has not loaded, or a rail
+  // with no NEXT step, must produce no banner at all: an invented todo is the
+  // one lie a line in this position can tell.
+  pin.match(
+    page,
+    /\) : nextStep \? \([\s\S]{0,2000}?\) : null\}/,
+    "expected the banner to render nothing when no step is NEXT -- never a placeholder todo",
+  );
+
+  // FIRST ON THE PAGE. A next-action line below the context bar is a caption;
+  // above it, it is the answer to the question the reader arrived with.
+  const bannerAt = page.indexOf("지금 할 일:");
+  const contextBarAt = page.indexOf('t("데이터셋", "Dataset", "データセット")');
+  assert.ok(bannerAt > 0 && contextBarAt > 0, "expected both the banner and the context bar to be found");
+  assert.ok(bannerAt < contextBarAt, "the 지금 할 일 banner must render ABOVE the context bar");
+
+  // Read at a glance: 16-18px, which is above this screen's 14px floor and
+  // above the 15px the context bar's verdict is set in.
+  pin.match(surface, /text-\[17px\] font-semibold/, "expected the banner to be set at 17px -- the biggest sentence on the screen");
+});
+
+contractTest("unit #50-d ②: no card on the calibration surface carries more than one 자세히 fold", (pin) => {
+  // COUNTED, not described. "At most one per card" is a claim about rendering,
+  // and the closest a source-regex suite can honestly get is an EXACT count per
+  // file with the card each fold belongs to named here. That makes a new
+  // disclosure anywhere on this screen a failure that has to be argued for,
+  // which is the point -- the shape the user's 2026-08-20 decision named was a
+  // panel with seven of them.
+  const expected: [string, number, string][] = [
+    ["app/calibration/page.tsx", 1, "the step box (one per step row, one fold each)"],
+    [
+      "components/calibration/FlowRail.tsx",
+      3,
+      "the rail's own citation+principles fold, plus the ⑫ track's ONE fold in each of its two mutually exclusive states (locked: refusal codes / open: band citation)",
+    ],
+    ["components/calibration/BehaviourStation.tsx", 1, "one table-level fold carrying every verdict's why + citation and closing with Table 5-6's page"],
+    ["components/calibration/StationProposals.tsx", 1, "the placement note's tool ids"],
+    ["components/calibration/NodeScoreTable.tsx", 2, "one on the tile grid (reality_check's refusal code), one on the node detail -- separate cards"],
+  ];
+
+  for (const [file, count, why] of expected) {
+    const opened = (withoutComments(read(file)).match(/<details\b/g) ?? []).length;
+    assert.equal(opened, count, `${file}: expected ${count} fold(s) — ${why} — found ${opened}`);
+  }
+
+  // The two folds this unit MERGED and the one it DELETED, named so a rewrite
+  // that re-splits them fails with the reason rather than with a count.
+  const behaviour = withoutComments(read("components/calibration/BehaviourStation.tsx"));
+  pin.doesNotMatch(
+    behaviour,
+    /자세히 \(판정 근거·출처\)/,
+    "expected the PER-ROW verdict folds to be merged away -- eight behaviours meant nine triggers on one card",
+  );
+  pin.match(
+    behaviour.slice(behaviour.indexOf("<details")),
+    /\{verdict\.why\}[\s\S]{0,300}?\{verdict\.citation\}[\s\S]{0,600}?\{rows\.citation\}/,
+    "expected the merged fold to carry every verdict's own sentence and citation, and to close with the table's",
+  );
+  pin.doesNotMatch(
+    withoutComments(read("app/calibration/page.tsx")),
+    /자세히 \(모델 값의 출처\)|자세히 \(이 단계의 근거 규칙\)/,
+    "expected the scoring tab's model-value fold and the per-station doctrine fold to be gone, not renamed",
+  );
+});
+
+contractTest("unit #50-d ④: the ⑫ guardrail section is off the screen, and the backend that enforces it is untouched", (pin) => {
+  // AUTHORITY: the user, 2026-08-20 — "developer side information... get rid of
+  // it", recorded in the roadmap row for #50-d as "2경로 예보·결정 칩·mono 코드
+  // 바 전부 문서/지식 파일로 … #51-c 표시 핀 사용자 권한 제거(기록)".
+  //
+  // THE DISPLAY IS GONE — component, both ⑫ call sites, the two path constants,
+  // and the per-path forecast sentences inside the approval card's fold. Swept
+  // over the WHOLE app rather than the two files that had them, because
+  // components/agent/ApprovalCards.tsx is rendered by FloatingAssistant on every
+  // route: a third caller reintroducing either component would put the section
+  // back on screens this unit never looked at.
+  // The SYMBOLS and the two SENTENCES they rendered, because a hand-rolled
+  // second copy would carry the words without importing the components.
+  for (const file of appSourceFiles()) {
+    pin.doesNotMatch(
+      withoutComments(read(file)),
+      /GuardrailPathLines|GuardrailResolutionChips|TrackGuardrail|GUARDRAIL_PATH_DIRECT|GUARDRAIL_PATH_APPROVED|통과 \(반경 전부 명명 시\)|해소 방안 — 사용자 결정/,
+      `${file}: the ⑫ guardrail display was removed by the user's decision -- it may not come back through another caller`,
+    );
+  }
+
+  // ...AND THE ENFORCEMENT IS UNTOUCHED, which is the half that matters. The
+  // server still forecasts both paths, still refuses the direct write BY NAME,
+  // and still re-mints a single-use grant on the approved one. #51-c pinned the
+  // two path keys on BOTH sides because a rename would blank the client's
+  // lookup; there is no client lookup any more, so the pin moves to the side
+  // that is now the only one — the payload these keys are built into is still
+  // the thing the approve leg is gated on.
+  const parameterSearch = readFileSync(
+    path.join(repoRoot, "backend", "services", "agent", "parameter_search.py"),
+    "utf-8",
+  );
+  pin.match(
+    parameterSearch,
+    /PATH_DIRECT_EDIT = "direct_edit"\s*\nPATH_APPROVED_SET = "approved_set"/,
+    "expected the backend to keep emitting both paths -- #50-d removed a rendering, not a forecast",
+  );
+  pin.match(
+    parameterSearch,
+    /SHARED_BEHAVIOR_REFUSAL = "driving_behavior_shared_object_edit"/,
+    "expected the shared-behaviour refusal to still be the named constraint a direct write hits",
+  );
+  pin.match(
+    parameterSearch,
+    /"condition": "RADIUS_NAMED_IN_FULL"/,
+    "expected the approved path to still carry its condition code -- the exception does not hold without the full radius",
+  );
+  // The wire still carries what the screen stopped drawing. A backend that
+  // dropped the forecast would be a real change; this unit made none.
+  pin.match(
+    read("lib/api.ts"),
+    /preflight_forecast\?:/,
+    "expected the forecast to stay on the approval payload -- the screen stopped rendering it, the server did not stop sending it",
+  );
+
+  // WHERE IT WENT: D16-a/b/c of the knowledge file, and /docs. The CODES are
+  // pinned here because they are the join between this test's backend half and
+  // the documentation; the three entries' full ko/en/ja sentences are cross-
+  // pinned byte-for-byte between the two files by the "#50-d ③: D16's guardrail
+  // account" test, so a reword on either side fails there rather than sliding
+  // past a code-only check.
+  for (const [what, needle] of [
+    ["the direct path's constraint", "SHARED_BEHAVIOR_REFUSAL"],
+    ["the approved path's condition", "RADIUS_NAMED_IN_FULL"],
+    ["the un-forecast qualifier", "통과 (반경 전부 명명 시)"],
+    ["the three forecast codes", "GUARDRAIL_UNKNOWN"],
+    ["the user's decision on the collision", "REJECTED_BY_USER"],
+  ] as const) {
+    pin.match(readCalibrationDoctrine(), literalPattern(needle), `${what} must be documented in the knowledge file`);
+    pin.match(read("lib/help-content.tsx"), literalPattern(needle), `${what} must be readable at /docs`);
+  }
+
+  // WHAT STAYED ON THE CARD, because it is approval-decision material rather
+  // than developer information: the evidence rank (its own test above) and the
+  // radius the human is consenting to. And the fold keeps what stands behind
+  // the NUMBER -- the ledger digest, the holdout, the citation.
+  const cards = read("components/agent/ApprovalCards.tsx");
+  pin.match(cards, /\{search\.consent_radius_phrase\}/, "expected the consent radius to stay on the card -- it is the SCOPE of the approval");
+  const panel = cards.slice(cards.indexOf("export function SearchedParameterPanel"));
+  pin.match(panel, /ledger\.digest/, "expected the search ledger's digest to stay in the fold");
+  pin.match(panel, /holdout\.unseen_seed/, "expected the holdout seed to stay in the fold");
+  pin.match(panel, /\{search\.citation \?\? ""\}/, "expected the citation to stay in the fold");
+});
+
+contractTest("unit #50-d ⑤⑥: the empty state has no fold, and the rail's expander is an icon", (pin) => {
+  const proposals = read("components/calibration/StationProposals.tsx");
+  const rail = read("components/calibration/FlowRail.tsx");
+
+  // ⑤ A six-word absence does not need a disclosure under it. The fold is gone
+  // and the LINE is untouched -- including the half that may never fold.
+  const emptyState = sliceBetween(proposals, "if (placed.length === 0)", "flex flex-col gap-2");
+  pin.match(emptyState, /승인 대기 제안 없음/, "slice sanity: the empty-state slice must contain the empty state");
+  pin.doesNotMatch(
+    withoutComments(emptyState),
+    /<details\b/,
+    "expected the empty state's fold to be gone (#50-d ⑤) -- the sentence it held is at /docs",
+  );
+  pin.match(
+    withoutFolds(withoutComments(proposals)),
+    /다른 단계 \$\{otherCount\}건/,
+    "the count waiting at OTHER stations must still be on the surface -- without it every station's empty state reads as 'no work anywhere'",
+  );
+
+  // ⑥ The words became an arrow. `aria-expanded` survived and an `aria-label`
+  // joined it, so what a screen reader is told did not shrink with the control.
+  pin.doesNotMatch(
+    withoutComments(rail),
+    /t\("접기", "Collapse", "折りたたむ"\)|t\("펼치기", "Expand", "展開"\)/,
+    "expected the 펼치기/접기 words to be replaced by a chevron (#50-d ⑥)",
+  );
+  pin.match(rail, /aria-expanded=\{manualOpen\}/, "expected the toggle to keep announcing its state");
+  pin.match(
+    rail,
+    /aria-label=\{[\s\S]{0,400}?수동 확인 영역 펼치기[\s\S]{0,120}?手動確認領域を展開/,
+    "expected a three-language aria-label -- an icon with no name is a control a screen reader cannot describe",
+  );
+  pin.match(
+    rail,
+    /<svg[\s\S]{0,700}?<path d="M5 7\.5 10 12\.5 15 7\.5" \/>/,
+    "expected an inline chevron rather than an imported icon set",
+  );
+  pin.match(
+    rail,
+    /manualOpen \? "rotate-180" : ""/,
+    "expected the chevron to turn over when the group opens -- the rotation IS the state",
   );
 });
 

@@ -67,7 +67,9 @@ import {
   toneTextClass,
 } from "@/lib/validationThresholds";
 import BaseValidationMap, { type BaseValidationMapNode } from "@/components/BaseValidationMap";
-import { InfoTip } from "@/components/genesis/ui";
+// `InfoTip` is no longer imported: #50-d evicted this tab's two doctrine
+// tooltips to /docs (lib/help-content.tsx), and an unused import is a lint error
+// here as well as a false trail for the next reader.
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import WorkbookMappingModal from "@/components/WorkbookMappingModal";
 import {
@@ -676,16 +678,10 @@ export default function BaseModelStation() {
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
+            {/* What this tab validates was an ⓘ here until #50-d — background a
+                reader needs once, now at /docs (calibrationHelpEntries). */}
             <h1 className="text-[22px] font-semibold tracking-tight text-white">
               {t("베이스모델 검증", "Base Model Validation")}
-              <InfoTip
-                text={t(
-                  "AM/PM 기본 시나리오의 교통량, GEH, 통행시간 검증 결과를 확인합니다.",
-                  "Validate AM/PM base scenarios with traffic volume, GEH, and travel time checks.",
-                  "AM/PM基本シナリオの交通量・GEH・旅行時間の検証結果を確認します。",
-                )}
-                label={t("이 탭에 대하여", "About this tab", "このタブについて")}
-              />
             </h1>
           </div>
           <div className="flex flex-wrap items-start justify-end gap-3">
@@ -1210,16 +1206,11 @@ function CriteriaCoverageCard({
     <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
+          {/* What this card separates — evaluated from not-assessable — was an ⓘ
+              here until #50-d. The rows below state it by doing it; the sentence
+              is at /docs. */}
           <p className="text-[15px] font-bold text-slate-800">
             {t("MRWA §5.6.3 검증 항목 커버리지", "MRWA §5.6.3 criteria coverage", "MRWA §5.6.3 検証項目カバレッジ")}
-            <InfoTip
-              text={t(
-                "이 페이지가 실제로 평가한 항목과 평가할 수 없는 항목을 구분해 표시합니다.",
-                "Which criteria this page actually evaluated, and which it cannot.",
-                "このページが実際に評価した項目と評価できない項目を区別して表示します。",
-              )}
-              label={t("이 카드에 대하여", "About this card", "このカードについて")}
-            />
           </p>
         </div>
       </div>
@@ -1237,20 +1228,11 @@ function CriteriaCoverageCard({
             placeholder={t("예: 12, 15, 7 (쉼표 또는 공백으로 구분)", "e.g. 12, 15, 7 (comma or space separated)", "例: 12, 15, 7 (カンマまたはスペース区切り)")}
           />
         </label>
-        {/* THE RULE the input exists for — folded (#50-c), because it is a
-            paragraph of doctrine sitting above the criteria rows it governs,
-            and the rows already print their own verdict. Verbatim. */}
-        <details className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
-          <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
-            {t("자세히 (이 조건이 왜 별도인가)", "More (why this criterion is separate)", "詳細（この条件が別である理由）")}
-          </summary>
-          <p className="mt-1 border-l border-slate-300 pl-3">
-            {t(
-              `네트워크 전체 기준(${profile.nameKo})을 만족하더라도, 지정한 critical 교차로는 개별적으로 GEH < ${profile.criticalIntersectionGehMax} 를 만족해야 합니다. 통과율 ${profile.gehUnder5Pct}% 로는 이 조건이 충족되지 않습니다.`,
-              `Even when the network-wide ${profile.nameEn} criteria are met, each designated critical intersection must individually achieve GEH < ${profile.criticalIntersectionGehMax}. The ${profile.gehUnder5Pct}% pass rate does not satisfy this.`,
-            )}
-          </p>
-        </details>
+        {/* WHY this criterion is separate was folded here by #50-c and is
+            EVICTED by #50-d: it is a paragraph of guideline doctrine above an
+            input, and the criteria rows below already print their own verdict.
+            The label on the input keeps the citation it is measured by
+            (§5.6.3.1, p.213), and the sentence is verbatim at /docs. */}
       </div>
 
       <div className="mt-4 space-y-2">

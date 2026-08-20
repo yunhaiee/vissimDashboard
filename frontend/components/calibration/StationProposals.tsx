@@ -200,7 +200,17 @@ export function usePendingProposals({
  * that DO are the ones where a reader could otherwise be misled: an edit this
  * product cannot map to a guideline step, or one whose step's station could not
  * be resolved (neither may look like a step-⑩ demand edit merely because it is
- * sitting at the default station), and a batch that also moves another step. */
+ * sitting at the default station), and a batch that also moves another step.
+ *
+ * #50-d: A MARKER, NOT A PARAGRAPH. Each of the three cases used to explain
+ * itself in a full sentence ("…so it is shown here (scoring & diagnosis) — the
+ * step is not invented"), stacked above the approval card a reviewer is there to
+ * decide on. What the reviewer needs from this strip is WHICH of the three
+ * exceptions applies; WHY the product refuses to invent a step is doctrine, and
+ * all three sentences are verbatim at /docs (D11 in
+ * docs/product/calibration-doctrine.md). The tool ids stay one click below,
+ * where they were, because they are what a reader checks when the placement
+ * itself looks wrong. */
 function PlacementNote({
   placed,
   t,
@@ -212,26 +222,20 @@ function PlacementNote({
   if (!placed.fallback && placed.alsoSteps.length === 0 && placed.unmappedTools.length === 0) return null;
   return (
     <div className="rounded-t-lg border border-b-0 border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[14px] leading-6 text-slate-700">
-      {unmapped
-        ? t(
-            "이 제안의 편집 도구는 §2.12.1의 어느 단계에도 매핑되어 있지 않아 여기(채점·진단)에 둡니다 — 단계를 지어내지 않습니다.",
-            "This proposal's edit tools map to no §2.12.1 step, so it is shown here (scoring & diagnosis) — the step is not invented.",
-            "この提案の編集ツールは§2.12.1のいずれの段階にも対応付けられていないため、ここ（採点・診断）に表示します — 段階を作り出しません。",
-          )
-        : placed.fallback
-          ? t(
-              `이 제안은 단계 ${placed.step}에 해당하지만 그 단계의 스테이션을 찾지 못해 여기(채점·진단)에 둡니다.`,
-              `This proposal belongs to step ${placed.step}, whose station could not be resolved, so it is shown here (scoring & diagnosis).`,
-              `この提案は段階${placed.step}に属しますが、その段階のステーションを解決できなかったため、ここ（採点・診断）に表示します。`,
-            )
-          : t(
-            "이 제안은 다른 단계의 조치도 함께 포함합니다.",
-            "This proposal also carries actions belonging to other steps.",
-            "この提案には他の段階の操作も含まれます。",
-          )}
+      <span className="font-semibold">
+        {unmapped
+          ? t("단계 미매핑 — 채점·진단에 배치", "No mapped step — placed at scoring & diagnosis", "段階未対応 — 採点・診断に配置")
+          : placed.fallback
+            ? t(
+                `단계 ${placed.step} · 스테이션 미해결 — 채점·진단에 배치`,
+                `Step ${placed.step} · station unresolved — placed at scoring & diagnosis`,
+                `段階${placed.step} · ステーション未解決 — 採点・診断に配置`,
+              )
+            : t("다른 단계의 조치도 포함", "Also carries other steps' actions", "他の段階の操作も含む")}
+      </span>
       {/* WHICH tool, and which other steps — the machine names behind the
-          sentence above. #50-c folded them (the user, 2026-08-20): the sentence
-          is what a reviewer decides on, the tool ids are what they check when
+          marker above. #50-c folded them (the user, 2026-08-20): the marker is
+          what a reviewer decides on, the tool ids are what they check when
           the placement itself looks wrong. Nothing is dropped. */}
       <details className="mt-0.5 text-[13px] leading-5 text-slate-500">
         <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
@@ -282,10 +286,16 @@ export default function StationProposals({
   }
 
   if (placed.length === 0) {
-    // ONE short line on the surface, the explanation folded (#50-c). The
-    // `otherCount` half is NOT prose and never folds: "없습니다" here would read
-    // as "없습니다" everywhere without it, which is the one thing this empty
-    // state exists to prevent.
+    // ONE SHORT LINE, AND NOTHING ELSE (#50-d ⑤). #50-c put the explanation in a
+    // fold under this line; the user's 2026-08-20 decision removed the fold —
+    // "승인 대기 제안 없음" is already the whole fact, and a disclosure under a
+    // six-word absence is furniture. Both sentences it held are verbatim at
+    // /docs (D12 in docs/product/calibration-doctrine.md).
+    //
+    // The `otherCount` half is NOT prose and never folds — and now cannot,
+    // because there is no fold: "없습니다" here would read as "없습니다"
+    // everywhere without it, which is the one thing this empty state exists to
+    // prevent.
     return (
       <div className="text-[14px] leading-6 text-slate-600">
         <p>
@@ -299,26 +309,6 @@ export default function StationProposals({
                 )
               : t("승인 대기 제안 없음", "Nothing awaits approval", "承認待ちの提案なし")}
         </p>
-        {!loading && (
-          <details className="mt-0.5 text-[13px] leading-5 text-slate-500">
-            <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
-              {t("자세히", "More", "詳細")}
-            </summary>
-            <p className="mt-1 border-l border-slate-300 pl-3">
-              {otherCount > 0
-                ? t(
-                    `이 단계에는 승인을 기다리는 제안이 없습니다. 다른 단계에 ${otherCount}건이 대기 중입니다 — 왼쪽 레일의 파란 배지를 보세요.`,
-                    `No proposal awaits approval at this step. ${otherCount} are waiting at other steps — see the blue badges on the left rail.`,
-                    `この段階では承認待ちの提案はありません。他の段階で${otherCount}件が待機中です — 左レールの青いバッジをご覧ください。`,
-                  )
-                : t(
-                    "승인을 기다리는 제안이 없습니다. 제안은 어시스턴트가 만들며, 만들어지면 해당 단계에 나타납니다.",
-                    "No proposal is waiting for approval. Proposals are produced by the assistant, and appear at their own step when they are.",
-                    "承認待ちの提案はありません。提案はアシスタントが作成し、作成されると該当する段階に表示されます。",
-                  )}
-            </p>
-          </details>
-        )}
       </div>
     );
   }

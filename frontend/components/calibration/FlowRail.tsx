@@ -64,18 +64,31 @@
 //     the citation string verbatim, because it is audit evidence.
 //
 // The type floor is 14px on the surface; 13px survives only INSIDE a fold.
+//
+// WHAT #50-d CHANGED (the user, 2026-08-20 — action first, education evicted):
+//
+//   * the honest headline's ⓘ is GONE from this header. It is doctrine, and
+//     doctrine now has one home: docs/product/calibration-doctrine.md, rendered
+//     at /docs from lib/help-content.tsx. The rail still ENFORCES it — every
+//     status here is the server's — it just no longer teaches it;
+//   * the whole-rail status TALLY is gone outright ("this stat does not help"):
+//     it counted rows the reader can see counted on the rows themselves. The
+//     collapsed 수동 확인 영역 row KEEPS its tally, because its steps are behind
+//     a fold and #50-b's rule is that a collapsed group states its own states;
+//   * the 펼치기/접기 words on that row are a chevron now;
+//   * the ⑫ guardrail SECTION is off this rail entirely — see the note where
+//     `TrackGuardrail` used to be. Backend enforcement is untouched.
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
 
-import { InfoTip } from "@/components/genesis/ui";
-
-// Unit #51-c: the guardrail's two-path line and the decision chips are the SAME
-// components the approval card uses. Imported rather than re-written for the
-// reason StationProposals states about the card itself — a second copy of a
-// sentence a human acts on is a second place for it to drift, and this one is
-// the user's own recorded decision.
-import { GuardrailPathLines, GuardrailResolutionChips } from "@/components/agent/ApprovalCards";
+// #50-d (user, 2026-08-20): the ⑫ guardrail SECTION — the two-path forecast, the
+// resolution chips and the decision code — is off this rail, so nothing here
+// imports `GuardrailPathLines`/`GuardrailResolutionChips` any more. The backend
+// is untouched: `parameter_search.py` still forecasts both paths, the refusal
+// and the grant are still enforced, and the payload still carries every field.
+// What the machinery IS lives at /docs (lib/help-content.tsx's D16 entries) and
+// in docs/product/calibration-doctrine.md.
 import { useLanguage } from "@/components/LanguageProvider";
 import type {
   CalibrationRail,
@@ -255,7 +268,6 @@ export function ParameterSearchTrack({
             </p>
           </details>
         )}
-        <TrackGuardrail guardrail={track.guardrail} lang={lang} t={t} />
       </div>
     );
   }
@@ -303,60 +315,25 @@ export function ParameterSearchTrack({
           {card.plan.space[0] ? card.plan.space[0].citation : ""}
         </p>
       </details>
-      <TrackGuardrail guardrail={track.guardrail} lang={lang} t={t} />
     </div>
   );
 }
 
-/** Unit #51-c: what happens to a value this search would produce, and the user's
- * answer on the collision — on the track in BOTH states.
+/* `TrackGuardrail` — unit #51-c's guardrail section on the ⑫ track — is DELETED
+ * by #50-d, component and both call sites (locked and open).
  *
- * Rendered locked as well as open on purpose: the locked state is what this
- * screen shows most of the time, and "the collision that used to block this door
- * has been decided, this way, on this date" is a fact about the product, not
- * about one search run.
+ * THE USER'S WORDS, 2026-08-20: "unnecessary developer side information... get
+ * rid of it", recorded in the roadmap row as "#51-c 표시 핀 사용자 권한
+ * 제거(기록)". The two-path forecast, the resolution chips and the decision code
+ * are the machinery talking to its own authors: constraint ids, condition codes
+ * and status words, on a track whose reader is deciding whether to run a search.
  *
- * TWO LINES, NEVER ONE. Until 2026-08-20 a searched write had a single forecast
- * and printing it was true; #51-b implemented decision (a) and from that moment
- * one line would be a lie in one direction or the other. The approved arm here
- * carries a CONDITION rather than a verdict — no behaviour has been chosen at
- * this point, so the server states the rule and forecasts nothing, and
- * `GuardrailPathLines` renders exactly that (the card, where a behaviour exists,
- * gets the verdict). Every sentence and every status word is the server's. */
-function TrackGuardrail({
-  guardrail,
-  lang,
-  t,
-}: {
-  guardrail: CalibrationRailTrack["guardrail"];
-  lang: string;
-  t: Translate;
-}) {
-  if (!guardrail) return null;
-  return (
-    <div className="mt-1.5 border-t border-slate-200 pt-1.5">
-      <p className="text-[14px] font-bold uppercase tracking-[0.08em] text-slate-500">
-        {t("탐색 산출물의 가드레일", "The guardrail on a searched value", "探索産出物のガードレール")}
-      </p>
-      <GuardrailPathLines paths={guardrail.paths} t={t} />
-      <GuardrailResolutionChips resolutions={guardrail.resolutions} lang={lang} t={t} />
-      {/* #50-c: the DECISION's machine code moved off the surface (the user,
-          2026-08-20) — the decision itself is the chips above, in the server's
-          own sentence, and the code beside the heading was a second, unreadable
-          copy of it. Folded, never dropped: it is the id an auditor cites. */}
-      {guardrail.decision && (
-        <details className="mt-1 text-[13px] leading-5 text-slate-500">
-          <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
-            {t("자세히 (결정 코드)", "More (the decision code)", "詳細（決定コード）")}
-          </summary>
-          <p className="mt-1 border-l border-slate-300 pl-2 font-mono text-[13px] text-slate-500">
-            {guardrail.decision}
-          </p>
-        </details>
-      )}
-    </div>
-  );
-}
+ * NOTHING ABOUT THE MACHINERY CHANGED. The forecast is still computed
+ * (backend/services/agent/parameter_search.py), the shared-behaviour refusal and
+ * the re-minted grant are still enforced (searched_behaviour_broker.py,
+ * gates.py), and every field this component rendered is still on the wire — the
+ * screen simply does not draw it. The human-language description of all of it is
+ * D16 in docs/product/calibration-doctrine.md, rendered at /docs. */
 
 /** What a row says when it is drawn for its PROPOSALS and its steps are unread.
  *
@@ -440,39 +417,18 @@ export default function FlowRail({
       className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-surface px-3 py-3 lg:sticky lg:top-4 lg:self-start"
     >
       <header>
+        {/* TWO THINGS LEFT THIS HEADER IN #50-d (the user, 2026-08-20).
+            The honest headline — "a step with no evidence is never shown as
+            done" — was an ⓘ here: doctrine, read once, now at /docs and in
+            docs/product/calibration-doctrine.md, where the contract suite pins
+            it. And the whole-rail status TALLY ("완료 1 · 진행 2 · …", chips
+            since #50-c) is gone outright on the user's own reading of it: "this
+            stat does not help". It counted the thirteen rows a reader can see
+            counted below, in the same chips, on the rows the counts are about.
+            The 수동 확인 영역 row keeps ITS tally — see the comment there. */}
         <h2 className="text-[15px] font-bold text-slate-900">
           {t("보정 13단계", "The 13 calibration steps", "補正13段階")}
-          {/* The honest headline is DOCTRINE, so it goes where this app already
-              puts doctrine beside the control it governs: a reachable ⓘ (hover,
-              focus, tap; Escape closes). It used to sit at full weight under the
-              heading, competing with the thirteen rows it describes. Verbatim —
-              a tooltip is a promotion for a sentence worth keeping. */}
-          <InfoTip
-            text={t(
-              "각 단계의 상태는 이 워크스페이스에 실제로 있는 증거에서만 유도합니다. 증거가 없는 단계는 완료로 표시하지 않고 '증거 없음 — 수동 확인 영역'으로 둡니다.",
-              "Each step's status is derived only from evidence this workspace actually holds. A step with no evidence is never shown as done — it stays a manual-check area.",
-              "各段階の状態は、このワークスペースに実在する証拠からのみ導出します。証拠のない段階は完了とせず「証拠なし — 手動確認領域」とします。",
-            )}
-            label={t("상태 유도 규칙 보기", "Show how a status is derived", "状態の導出規則を表示")}
-          />
         </h2>
-        {/* THE TALLY IS NUMBERS, so it reads as numbers. It was one mono
-            sentence ("완료 1 · 진행 2 · 다음 할 일 1 · 증거 없음 9") that a
-            reader had to parse; the counts now wear the SAME chip vocabulary as
-            the step rows, so the rail's state is legible without reading. Same
-            three-colour rule, same server words, same order. */}
-        {rail && (
-          <ul className="mt-1 flex flex-wrap gap-1">
-            {STATUS_ORDER.filter((status) => (rail.counts[status] ?? 0) > 0).map((status) => (
-              <li
-                key={status}
-                className={`rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${statusChipClass(status)}`}
-              >
-                {statusLabel(status, t)} {rail.counts[status]}
-              </li>
-            ))}
-          </ul>
-        )}
       </header>
 
       {/* A failed rail must not strand the reader: the scoring station is where
@@ -512,6 +468,13 @@ export default function FlowRail({
                       <span className="font-mono text-[14px] text-slate-500">
                         {steps.map((step) => circledStep(step.number)).join("")}
                       </span>
+                      {/* THIS TALLY STAYS, and the header's did not (#50-d).
+                          #50-b's rule is that a COLLAPSED group must surface its
+                          urgent states on the outside — these six steps are
+                          behind a fold, so removing their chips would hide state
+                          rather than declutter it. The header's tally described
+                          rows already on screen; this one describes rows that
+                          are not. */}
                       {statusTally(steps).map((entry) => (
                         <span
                           key={entry.status}
@@ -523,13 +486,36 @@ export default function FlowRail({
                     </span>
                     {stepsUnread && <StepsUnreadNote t={t} />}
                   </button>
+                  {/* #50-d ⑥: a CHEVRON, not the words 펼치기/접기. The control
+                      sits beside a station name, two status chips and a proposal
+                      badge, and a word there competes with them for the same
+                      reading; the arrow says the same thing by pointing. The
+                      state is still announced — `aria-expanded` plus a
+                      three-language `aria-label` — so nothing was traded away
+                      for the space but the width of a word. */}
                   <button
                     type="button"
                     onClick={() => setManualOpen((open) => !open)}
                     aria-expanded={manualOpen}
-                    className="ui-button-ghost shrink-0 rounded-lg px-2 text-[14px] text-slate-600"
+                    aria-label={
+                      manualOpen
+                        ? t("수동 확인 영역 접기", "Collapse the manual-check steps", "手動確認領域を折りたたむ")
+                        : t("수동 확인 영역 펼치기", "Expand the manual-check steps", "手動確認領域を展開")
+                    }
+                    className="ui-button-ghost flex shrink-0 items-center rounded-lg px-2 text-slate-600"
                   >
-                    {manualOpen ? t("접기", "Collapse", "折りたたむ") : t("펼치기", "Expand", "展開")}
+                    <svg
+                      viewBox="0 0 20 20"
+                      aria-hidden="true"
+                      className={`h-4 w-4 transition-transform ${manualOpen ? "rotate-180" : ""}`}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M5 7.5 10 12.5 15 7.5" />
+                    </svg>
                   </button>
                 </div>
                 {manualOpen && (

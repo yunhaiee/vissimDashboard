@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import {
+  calibrationHelpEntries,
   genesisHelpEntries,
   jobHelpEntries,
   observationsHelpEntries,
@@ -70,6 +71,17 @@ export default function DocsPage() {
       title: t("실측 관측", "Observed counts", "実測観測"),
       href: "/observations",
       entries: observationsHelpEntries(t),
+    },
+    // #50-d (user-confirmed 2026-08-20). The calibration workspace's doctrine
+    // came here whole -- seven ⓘ tooltips, six per-station folded rules, the
+    // empty-state explanation and the ⑫ guardrail machinery. It sits LAST
+    // because it is the longest section and the one a reader arrives at with a
+    // question already formed, not the one they browse first.
+    {
+      id: "calibration",
+      title: t("보정 워크스페이스", "Calibration workspace", "補正ワークスペース"),
+      href: "/calibration",
+      entries: calibrationHelpEntries(t),
     },
   ];
 

@@ -24,6 +24,15 @@
 // lines saturate the screen, and a citation nobody can read is not evidence
 // anyone can check. It travels with the numbers still — one click away, and
 // verbatim, because it is what a reviewer quotes.
+//
+// #50-d: ONE FOLD PER CARD, and the default-coincidence line is a VERDICT again.
+// The per-row disclosures merged into the single table-level fold at the bottom
+// (every `why`, every citation, keyed by behaviour number, then Table 5-6's own
+// page), and the three-sentence explanation of the Vissim-default coincidence
+// became the one-line warn it always was underneath — count, row, "not measured
+// evidence". The explanation is D10 in docs/product/calibration-doctrine.md and
+// renders at /docs. The WARN STATE ITSELF is untouched: same condition, same
+// neutral treatment, still impossible to miss.
 // ---------------------------------------------------------------------------
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -92,15 +101,22 @@ export default function BehaviourStation({
         ))}
       </ul>
 
-      {/* The honest sentence, shown whenever the only row matches are the ones
-          Vissim ships with. Neutral ink + heavier hairline is this app's WARN
-          treatment — never a fourth hue. */}
+      {/* THE WARN STATE STAYS, THE THREE-SENTENCE EXPLANATION LEFT (#50-d).
+          The condition is unchanged and so is the treatment — neutral ink plus a
+          heavier hairline, this app's WARN, never a fourth hue — but the line is
+          now the VERDICT and its count: N behaviours coincide with the Vissim
+          default, and that is not measured evidence. WHY the default happens to
+          sit on a published row (the 2050 pcu coincidence, the 2.5 m standstill
+          §5.2.5.1 asks for) is doctrine, and it is at /docs verbatim, D10 in
+          docs/product/calibration-doctrine.md. Dropping the WARN itself would be
+          a different act entirely: a network nobody calibrated would then read
+          as one that matches the table. */}
       {summary.default_coincident > 0 && summary.guideline_standstill === 0 && (
         <p className="mt-1.5 rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[14px] leading-6 text-slate-800">
           {t(
-            `주행행태 ${summary.default_coincident}개가 공표 행과 일치하지만 정지 시 거리가 지침값(2.5 m)이 아닙니다. Vissim 기본값이 마침 ${defaultRow} pcu 행과 같으므로, 이 일치는 측정이 제출됐다는 증거가 아닙니다.`,
-            `${summary.default_coincident} behaviour(s) match a published row but do not carry the guideline standstill distance (2.5 m). Vissim's default happens to equal the ${defaultRow} pcu row, so this match is not evidence that a measurement was submitted.`,
-            `走行挙動${summary.default_coincident}件が公表行と一致しますが、停止時距離が指針値(2.5 m)ではありません。Vissimの既定値がちょうど${defaultRow} pcu行と同じため、この一致は測定が提出された証拠にはなりません。`,
+            `기본값 우연 일치 ${summary.default_coincident}건 (${defaultRow} pcu 행) — 측정 증거 아님`,
+            `${summary.default_coincident} default coincidence(s) (the ${defaultRow} pcu row) — not measured evidence`,
+            `既定値の偶然一致 ${summary.default_coincident}件 (${defaultRow} pcu行) — 測定の証拠ではありません`,
           )}
         </p>
       )}
@@ -137,15 +153,6 @@ export default function BehaviourStation({
                         {t("참조", "used by", "参照")} <span className="font-mono">{entry.reference_count}</span>
                       </span>
                     )}
-                    <details className="mt-1 text-[13px] leading-5 text-slate-600">
-                      <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
-                        {t("자세히 (판정 근거·출처)", "More (the verdict, and its source)", "詳細（判定の根拠・出典）")}
-                      </summary>
-                      <div className="mt-1 flex flex-col gap-1 border-l border-slate-300 pl-3">
-                        <p>{verdict.why}</p>
-                        <p className="font-mono text-[13px] text-slate-500">{verdict.citation}</p>
-                      </div>
-                    </details>
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono text-slate-600">{verdict.applied.ax ?? "-"}</td>
                   <td className="px-2 py-1.5 text-right font-mono text-slate-600">{verdict.applied.bx_add ?? "-"}</td>
@@ -191,15 +198,36 @@ export default function BehaviourStation({
         </table>
       </div>
 
-      {/* Table 5-6's own citation, which used to close the mono summary line at
-          the top of this station. Folded rather than deleted: these numbers are
-          only meaningful as "the published table says so", and the page that
-          says it has to remain quotable. */}
+      {/* ONE FOLD FOR THIS CARD (#50-d ②). There were N+1 of them: a "자세히
+          (판정 근거·출처)" disclosure inside every behaviour row, plus this
+          table-level one for Table 5-6's page. On a network with eight driving
+          behaviours that is nine triggers on one card, each holding two lines —
+          the shape the user's 2026-08-20 decision names as saturation.
+          NOTHING IS DROPPED: every behaviour's own `why` sentence and its own
+          citation are here, keyed by behaviour number so a reader can find the
+          row they came from, and the table's citation closes the list exactly
+          where it did before. */}
       <details className="mt-2 text-[13px] leading-5 text-slate-600">
         <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
-          {t("자세히 (이 표의 출처)", "More (where this table is published)", "詳細（この表の出典）")}
+          {t(
+            "자세히 (판정 근거·이 표의 출처)",
+            "More (each verdict, and where this table is published)",
+            "詳細（各判定の根拠・この表の出典）",
+          )}
         </summary>
-        <p className="mt-1 border-l border-slate-300 pl-3 font-mono text-[13px] text-slate-500">{rows.citation}</p>
+        <div className="mt-1 flex flex-col gap-1.5 border-l border-slate-300 pl-3">
+          {rows.behaviors.map((entry) => {
+            const verdict = entry.verdict;
+            return (
+              <p key={entry.behavior_no}>
+                <span className="font-mono text-[13px] font-semibold text-slate-700">{entry.behavior_no}</span>{" "}
+                {verdict.why}{" "}
+                <span className="font-mono text-[13px] text-slate-500">{verdict.citation}</span>
+              </p>
+            );
+          })}
+          <p className="font-mono text-[13px] text-slate-500">{rows.citation}</p>
+        </div>
       </details>
     </div>
   );

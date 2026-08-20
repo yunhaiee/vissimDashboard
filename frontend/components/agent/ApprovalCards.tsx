@@ -976,169 +976,34 @@ export function CarFollowingSetPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Unit #51-c: the guardrail's TWO PATHS, and the user's answer on them.
+// REMOVED BY #50-d (the user, 2026-08-20): `GuardrailPathLines`,
+// `GuardrailResolutionChips`, and the two path-key constants they read with.
 //
-// Until 2026-08-20 a searched write had one forecast -- GUARDRAIL_WILL_REFUSE --
-// and a UI that printed it said the true thing. #51-b implemented the user's
-// decision (a), and from that moment the single line became MISLEADING: the same
-// write is still refused when issued directly and is clean through the approval
-// machinery under the search's own grant. So both are always printed, and
-// nothing here ever reads the payload's top-level `verdict`, which describes only
-// the direct path.
+// THE AUTHORITY, in the user's own words: "developer side information... get rid
+// of it" — recorded in the roadmap row for #50-d as "2경로 예보·결정 칩·mono 코드
+// 바 전부 문서/지식 파일로 … #51-c 표시 핀 사용자 권한 제거(기록)". What those
+// two components put on screen was constraint ids, condition codes and status
+// words (`SHARED_BEHAVIOR_REFUSAL`, `RADIUS_NAMED_IN_FULL`, `REJECTED_BY_USER`)
+// beside phrases this client composed for them — the machinery describing itself
+// to its own authors, in front of a reviewer deciding one write.
 //
-// `expected_to_refuse` has THREE states, and the third one is the point:
-// `null`/absent means the backend deliberately did not forecast (the ⑫ trigger
-// card, where no behaviour has been chosen and no radius has been read). That
-// renders as the CONDITION the backend named, never as a pass -- a forecast may
-// be pessimistic, never optimistic, and inventing an outcome the server refused
-// to state would be the client doing exactly that.
+// WHAT DID NOT CHANGE, and this is the load-bearing half: the BACKEND. The
+// two-path forecast is still computed and still on the wire
+// (backend/services/agent/parameter_search.py's PATH_DIRECT_EDIT /
+// PATH_APPROVED_SET), the shared-behaviour guardrail still refuses a direct
+// write BY NAME, and the approved path still re-mints a single-use grant
+// (searched_behaviour_broker.py, gates.py). Removing a rendering removes no
+// enforcement — and the contract suite pins the backend constants so a rename
+// there still cannot pass silently.
 //
-// Spans, not paragraphs, and no <details>: this renders inside FlowRail's
-// phrasing-content track as well as inside this module's card.
+// WHERE THE EXPLANATION WENT: D16 of docs/product/calibration-doctrine.md,
+// rendered at /docs by lib/help-content.tsx's `calibrationHelpEntries`.
+//
+// WHAT STAYED ON THE CARD: the evidence-rank sentence (below), unfolded. It is
+// the one thing here a reviewer's DECISION depends on — a searched value is
+// evidence one rank below a Table 5-6 value — and DECISIONS.md 2026-08-20 made
+// showing it a closing requirement. It is a verdict, not developer information.
 // ---------------------------------------------------------------------------
-
-/** The two path keys, matching parameter_search.PATH_DIRECT_EDIT / PATH_APPROVED_SET. */
-export const GUARDRAIL_PATH_DIRECT = "direct_edit";
-export const GUARDRAIL_PATH_APPROVED = "approved_set";
-
-type GuardrailPath = {
-  expected_to_refuse?: boolean | null;
-  constraint_id?: string;
-  condition?: string;
-  refuses_if_radius_drifts?: string;
-  why?: { ko: string; en: string; ja: string };
-};
-
-export function GuardrailPathLines({
-  paths,
-  t,
-}: {
-  paths?: Record<string, GuardrailPath>;
-  t: Translate;
-}) {
-  const direct = paths?.[GUARDRAIL_PATH_DIRECT];
-  const approved = paths?.[GUARDRAIL_PATH_APPROVED];
-  if (!direct && !approved) return null;
-  // A stated refusal is rose, a stated pass is emerald, and "not forecast" is the
-  // neutral ramp -- the same three accents the rest of the app uses, never a
-  // fourth hue for the third state.
-  const tone = (path: GuardrailPath) =>
-    path.expected_to_refuse === true
-      ? "border-rose-200 bg-rose-50 text-rose-700"
-      : path.expected_to_refuse === false
-        ? "border-emerald-200 bg-emerald-50 text-slate-800"
-        : "border-slate-300 bg-slate-50 text-slate-700";
-  const outcome = (path: GuardrailPath) =>
-    path.expected_to_refuse === true
-      ? t("거부", "refused", "拒否")
-      : path.expected_to_refuse === false
-        ? t("통과", "passes", "通過")
-        : t("통과 (반경 전부 명명 시)", "passes (where the radius is named in full)", "通過（半径を完全に命名できる場合）");
-  // The third state's qualifier is the SERVER's `condition`, printed as the machine
-  // code beside the phrase -- the same treatment `constraint_id` and
-  // `refuses_if_radius_drifts` already get, and for the same reason (refuter, #51-c).
-  // Without it the only thing on the screen naming the condition was the sentence
-  // above, which this client composes: a backend that changed what the approved path
-  // is conditional on would have gone on rendering "the radius is named in full"
-  // forever, and no test could see it. Printing the code makes the field live.
-  const condition = (path: GuardrailPath) =>
-    path.expected_to_refuse === true || path.expected_to_refuse === false ? undefined : path.condition;
-  return (
-    <span className="mt-1.5 block space-y-1">
-      {direct && (
-        <span className={`block rounded-md border px-2 py-1 text-[13px] leading-5 ${tone(direct)}`}>
-          <span className="font-semibold">{t("직접 발행", "Issued directly", "単独発行")}</span>
-          {" → "}
-          <span className="font-semibold">{outcome(direct)}</span>
-          {condition(direct) && (
-            <span className="ml-1.5 font-mono text-[13px] opacity-80">{condition(direct)}</span>
-          )}
-          {direct.constraint_id && (
-            <span className="ml-1.5 font-mono text-[13px] opacity-80">{direct.constraint_id}</span>
-          )}
-        </span>
-      )}
-      {approved && (
-        <span className={`block rounded-md border px-2 py-1 text-[13px] leading-5 ${tone(approved)}`}>
-          <span className="font-semibold">
-            {t("승인 경로", "Through the approval machinery", "承認経路")}
-          </span>
-          {" → "}
-          <span className="font-semibold">{outcome(approved)}</span>
-          {condition(approved) && (
-            <span className="ml-1.5 font-mono text-[13px] opacity-80">{condition(approved)}</span>
-          )}
-          {approved.constraint_id && (
-            <span className="ml-1.5 font-mono text-[13px] opacity-80">{approved.constraint_id}</span>
-          )}
-          {approved.refuses_if_radius_drifts && (
-            <span className="ml-1.5 font-mono text-[13px] opacity-80">
-              {t("반경 이동 시", "drifts →", "半径移動時")} {approved.refuses_if_radius_drifts}
-            </span>
-          )}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/** The two resolutions #51 offered, each carrying the USER's answer (#51-c).
- *
- * The verdict word is the SERVER's: `status` is the machine code (DECIDED /
- * REJECTED_BY_USER) and the ko/en/ja sentence beside it already opens with
- * "결정됨 (a)" / "기각 (b)" and cites the decision. This component picks a
- * language and lays out three server fields; it writes no verdict of its own,
- * which is what keeps the screen from claiming a decision the backend has not
- * recorded. */
-export function GuardrailResolutionChips({
-  resolutions,
-  lang,
-  t,
-}: {
-  resolutions?: {
-    key: string;
-    status?: string;
-    decided?: boolean;
-    decision?: string;
-    landed_in?: string;
-    ko: string;
-    en: string;
-    ja: string;
-  }[];
-  lang: string;
-  t: Translate;
-}) {
-  if (!resolutions || resolutions.length === 0) return null;
-  return (
-    <span className="mt-1.5 block space-y-1">
-      <span className="block text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
-        {t("해소 방안 — 사용자 결정", "Resolutions — the user's decision", "解消案 — ユーザーの決定")}
-      </span>
-      {resolutions.map((item) => (
-        <span key={item.key} className="block rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
-          <span className="block">
-            <span className="font-mono text-[13px] text-slate-500">{item.key}</span>
-            {item.status && (
-              <span
-                className={`ml-1.5 rounded-full border px-1.5 py-0.5 font-mono text-[13px] font-semibold ${
-                  item.status === "REJECTED_BY_USER"
-                    ? "border-slate-400 bg-slate-100 text-slate-700"
-                    : "border-emerald-200 bg-emerald-50 text-slate-800"
-                }`}
-              >
-                {item.status}
-              </span>
-            )}
-            {item.landed_in && (
-              <span className="ml-1.5 font-mono text-[13px] text-slate-500">{item.landed_in}</span>
-            )}
-          </span>
-          <span className="mt-0.5 block text-[13px] leading-5 text-slate-700">{pickText(item, lang)}</span>
-        </span>
-      ))}
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Unit #51-c: the finished SEARCH, on the card that approves one write of it.
@@ -1226,17 +1091,14 @@ export function SearchedParameterPanel({
         </p>
       )}
 
-      {/* Both paths, plus the radius the human is actually consenting to. */}
-      <GuardrailPathLines paths={search.preflight_forecast?.paths} t={t} />
+      {/* The radius the human is actually consenting to (DECISIONS.md
+          2026-08-19). The two-path forecast and the resolution chips that used
+          to bracket this line were removed by #50-d — see the note above — and
+          the radius was not: it is the SCOPE of the consent this button gives,
+          which is decision material, not developer information. */}
       {search.consent_radius_phrase && (
         <p className="mt-1 font-mono text-[13px] text-slate-600">{search.consent_radius_phrase}</p>
       )}
-
-      <GuardrailResolutionChips
-        resolutions={search.preflight_forecast?.resolutions}
-        lang={lang}
-        t={t}
-      />
 
       <details className="mt-1.5 text-[13px] leading-5 text-slate-600">
         <summary className="cursor-pointer list-none text-[13px] text-slate-500 underline decoration-dotted underline-offset-4">
@@ -1268,19 +1130,10 @@ export function SearchedParameterPanel({
               <span className="font-mono">{search.unchanged_parameters.join(", ")}</span>
             </p>
           )}
-          {/* The server's own sentence on each path, quoted in full. The lines
-              above are the verdict; this is the reasoning behind it. */}
-          {search.preflight_forecast?.paths?.[GUARDRAIL_PATH_DIRECT]?.why && (
-            <p>
-              <span className="font-semibold">
-                {t("승인 밖 경로", "Outside this approval", "この承認の外")}:{" "}
-              </span>
-              {pickText(search.preflight_forecast.paths[GUARDRAIL_PATH_DIRECT].why, lang)}
-            </p>
-          )}
-          {search.preflight_forecast?.paths?.[GUARDRAIL_PATH_APPROVED]?.why && (
-            <p>{pickText(search.preflight_forecast.paths[GUARDRAIL_PATH_APPROVED].why, lang)}</p>
-          )}
+          {/* The per-path forecast sentences went with the lines they explained
+              (#50-d). The LEDGER, the HOLDOUT and the citation above and below
+              are what stands behind the NUMBER this card approves, and they
+              stay. */}
           {search.rationale && <p>{pickText(search.rationale, lang)}</p>}
           <p className="font-mono text-[13px] text-slate-400">
             {search.citation ?? ""}
