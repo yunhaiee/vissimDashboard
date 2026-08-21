@@ -9,8 +9,21 @@ const apiProxyMaxBodySizeBytes =
     ? configuredApiProxyMaxBodySizeBytes
     : defaultApiProxyMaxBodySizeBytes;
 
+// Remote access (2026-08-21): the dev server is reached from the user's laptop
+// through a tailscale-serve reverse proxy, so the browser's Host is the tailnet
+// name, not localhost. Next 16 blocks dev-resource requests from unknown
+// origins by default (measured: Chrome AND Safari hung at "불러오는 중…" while
+// curl — which sends no browser origin metadata — sailed through; the dev log
+// names /_next/webpack-hmr as blocked). Extra origins can be supplied via
+// ALLOWED_DEV_ORIGINS (comma-separated) without editing this file.
+const extraDevOrigins = (process.env.ALLOWED_DEV_ORIGINS ?? "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(__dirname),
+  allowedDevOrigins: ["desktop-ck.tailf57fd1.ts.net", ...extraDevOrigins],
   experimental: {
     proxyClientMaxBodySize: apiProxyMaxBodySizeBytes,
   },
