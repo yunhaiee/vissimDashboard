@@ -6766,3 +6766,24 @@ reads an evidence key nothing writes — dead on real data, its test fabricates 
 (task_93c5b5dd); the rail's reality check is built TARGETLESS, so LADDER_NOT_EXHAUSTED is
 unreachable via the route on any real workspace — the start button can only refuse honestly
 until targets are threaded (task_2ebde59b).
+
+## 2026-08-24 — the long-horizon run resolves #49's named follow-up: the ceiling was the clock, not the network
+
+#49 (2026-08-19) measured the congested scene's physical ceiling at 900 s: approach storage
+saturates (~1,238 m), Vissim holds the overflow OUTSIDE the network where it accrues neither
+queue nor delay, and worst LOS caps at D (42.57 s) — CAPACITY_LIMIT unreachable by demand
+scaling. #49 named two candidate follow-ups (장구간 런 / 다중 입력 스케일) and ran neither.
+
+**Measured today (workspace 87c51893caa2, factor 2.0, --duration 3600):** the queued vehicles
+DO digest over the longer horizon and accrue their delay — approach 759 reaches **LOS F,
+229.8 s** (vs 42.6 s at 900 s), node 8 classifies **CAPACITY_LIMIT**, and the full #44 chain
+fires end-to-end offline: measured saturation flow 1780 pcu → Table 5-6 row → bx_add 2.5 /
+bx_mult 3.5, three proposals built, cited (op §5.2.5.1 Table 5-6 p.187), preflight-checked,
+#44-b's approval-bound exception exercised in both directions, stopped at the designed
+COM-apply boundary. The 장구간 런 follow-up is hereby resolved by measurement; 다중 입력
+스케일 remains unexplored. Demo guide scene 4 now uses this workspace.
+
+**Also measured (rail-targets unit live):** on the client model, every approach link carries
+a 3-per-class vehicle-input trio (105/205/305 pattern), so the narrow single-candidate
+demand derivation refuses everywhere by design — the class-ambiguity rule ("sum classes?
+one object per class?") stays an open product decision before any wider automation.
