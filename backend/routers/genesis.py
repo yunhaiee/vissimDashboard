@@ -82,12 +82,13 @@ waits on the public internet, so it can never run on the request thread.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -99,7 +100,7 @@ from services.agent import genesis_fixes
 from services.datasets import DatasetStorageError
 from services.genesis import geojson as genesis_geojson
 from services.genesis import osm as genesis_osm
-from services.genesis import phase_diagram, side_inputs
+from services.genesis import phase_diagram, phase_template, side_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -2138,10 +2139,13 @@ class ConfirmPhaseDiagramRequest(BaseModel):
     )
     level_no: int = Field(description="Which 수준 (cycle) this mapping is confirmed for.")
     plan_id: int = Field(description="Which 시간분할 ID this mapping is confirmed for.")
-    image_sha256: str = Field(
-        min_length=64,
-        max_length=64,
-        description="The image the human actually looked at. Checked against the stored render.",
+    image_sha256: str | None = Field(
+        default=None,
+        description=(
+            "The image the human actually looked at, or null for a review that HAS no image "
+            "(unit #52's 엑셀 업로드 / 직접 입력). Checked against the stored render either way: "
+            "claiming an image this review does not hold is refused, and so is dropping one it does."
+        ),
     )
     source_sha256: str = Field(min_length=64, max_length=64)
     proposal_sha256: str | None = Field(
@@ -2174,6 +2178,361 @@ def list_phase_diagrams(user: dict[str, Any] = Depends(current_user)):
     ``stale_reasons`` says which, in Korean, so the UI never has to guess.
     """
     return {"reviews": _phase_diagram_store().index_payload()}
+
+
+# ---------------------------------------------------------------------------
+# unit #52 — 현시도 입력: a template out, a workbook in, a blank one made here
+# ---------------------------------------------------------------------------
+#
+# Three ways INTO the same review store, and all three produce the same thing: a
+# PROPOSAL (or an empty form), never a fact. Nothing below writes an attestation,
+# and there is no argument on any of these routes that could make one — the only
+# road to a confirmed mapping is still POST /phase-diagrams/{id}/confirmation
+# with the attester taken from the session.
+#
+# These are declared ABOVE ``GET /phase-diagrams/{review_id}`` on purpose:
+# FastAPI matches in declaration order, so a static path added below it would be
+# swallowed by the id parameter and answer 404 for a file that exists.
+
+
+class CreateBlankPhaseDiagramRequest(BaseModel):
+    """Make an empty review for one named intersection (roadmap C1 option (b),
+    reachable from the screen at last).
+
+    There is no ``phases`` field and no proposal: this route creates the BLANK
+    FORM, and everything in it is typed by the human who then confirms it. The
+    name is required and must not be blank — a review nobody can identify is one
+    a reviewer cannot bind to a node.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    intersection_name: str = Field(min_length=1, max_length=200)
+    intersection_no: str | None = Field(default=None, max_length=64)
+    #: Where the creation was started from, recorded verbatim as PROVENANCE —
+    #: e.g. "네트워크 도식 노드 12". Never a binding: the node a mapping belongs to
+    #: is chosen on the confirm form, against a generation's own draft.
+    origin_note: str | None = Field(default=None, max_length=200)
+
+
+def _xlsx_response(content: bytes, filename: str) -> Response:
+    """One .xlsx download, named for a human and not cached.
+
+    ``Content-Disposition`` carries both the ASCII fallback and the UTF-8 form
+    (RFC 5987), because every intersection name in this product is Korean and a
+    browser that only reads the plain ``filename=`` would otherwise save mojibake.
+    """
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("_") or "phase-diagram.xlsx"
+    quoted = quote(filename, safe="")
+    return Response(
+        content=content,
+        media_type=phase_template.XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/phase-diagrams/template.xlsx")
+def download_phase_diagram_template(user: dict[str, Any] = Depends(current_user)):
+    """The standard 현시도 input template: 안내 + 현시입력 + one example row.
+
+    The 안내 sheet states the doctrine in the file itself, because the file
+    travels: somebody will fill this in a week from now, in an email thread, with
+    nothing else from this app on screen. It has to say that what comes back is a
+    proposal and that a human confirms it here.
+    """
+    return _xlsx_response(phase_template.build_template(), phase_template.template_filename())
+
+
+@router.post("/phase-diagrams/upload")
+async def upload_phase_diagram_template(
+    request: Request,
+    x_filename: str | None = Header(None),
+    user: dict[str, Any] = Depends(current_user),
+):
+    """One filled-in template → one PROPOSAL per 교차로명 in it.
+
+    Raw body + ``X-Filename``/``?filename=``, the two-step shape
+    ``routers/observations.py`` documents (this backend carries no
+    ``python-multipart``). ``xlsx_guard`` runs before openpyxl is handed a byte.
+
+    What lands is a review whose ``render`` says ``medium="excel_upload"`` and
+    carries NO image — the screen shows a named placeholder where the drawing
+    would be. The proposal records who uploaded it as provenance. Nothing is
+    confirmed, and a row this parser refused takes its whole intersection with
+    it, named, rather than importing a junction with one leg quietly missing.
+    """
+    filename = Path(unquote(request.query_params.get("filename") or x_filename or "")).name
+    if not filename:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "phase_template_no_filename",
+                "reasons": [
+                    "업로드된 파일의 이름이 없습니다. 검토는 파일 이름과 교차로명으로 식별되므로 "
+                    "이름 없는 업로드는 받지 않습니다."
+                ],
+            },
+        )
+    _reject_oversized_body(request)
+    content = await request.body()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
+
+    try:
+        parsed = phase_template.parse_template(content, source_file=filename)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise HTTPException(
+            status_code=400, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+
+    store = _phase_diagram_store()
+    uploader = str(user.get("username") or user.get("id") or "").strip()
+    source_sha = phase_diagram.sha256_hex(content)
+    created: list[dict[str, Any]] = []
+    refusals = parsed.refusal_dicts()
+
+    for entry in parsed.intersections:
+        # Keyed on (workbook, 교차로명) so one file's several intersections are
+        # several reviews, and a corrected re-upload of the same file lands back
+        # in the same ones.
+        review_id = phase_diagram.review_id_for(
+            phase_diagram.composite_source_key(filename, entry.name)
+        )
+        existing = store.attestation(review_id)
+        if existing is not None:
+            # A confirmation is a person's claim. An upload never overwrites one:
+            # it would replace a named human's statement with a spreadsheet, and
+            # the screen would show the new table under the old attester's name.
+            refusals.append(
+                {
+                    "code": "phase_template_review_confirmed",
+                    "reasons": [
+                        f"{entry.name}: 이미 {existing.attested_by}님이 확인한 배정이 있어 "
+                        "업로드로 덮어쓰지 않았습니다. 화면에서 다시 확인하십시오."
+                    ],
+                    "row": None,
+                    "intersection": entry.name,
+                }
+            )
+            continue
+        replaced = False
+        try:
+            replaced = store.render(review_id) is not None
+        except phase_diagram.PhaseDiagramRefused:
+            replaced = False
+        proposal = entry.to_proposal(source_file=filename, uploaded_by=uploader)
+        try:
+            store.put_manual_review(
+                review_id,
+                phase_diagram.manual_render(
+                    medium="excel_upload", source_file=filename, source_sha256=source_sha
+                ),
+                sheet={
+                    "intersection_name": entry.name,
+                    "intersection_no": entry.intersection_no,
+                    "phase_ids": proposal.phase_ids,
+                    "plan_choices": [],
+                    # The 신호시간 sheet's rows, per (수준, 계획ID). Empty is a
+                    # first-class state: the mapping is still confirmable and
+                    # the signals build refuses by name until timing exists.
+                    "timing": entry.timing_payload(),
+                    "declared_amber_s": entry.declared_amber_s,
+                    "amber_declaration_note": entry.amber_note,
+                    "uploaded_by": uploader,
+                    "rows": entry.rows,
+                },
+            )
+            store.put_proposal(
+                review_id,
+                proposal,
+                phase_diagram.cross_check_without_text_layer(medium="excel_upload"),
+            )
+        except phase_diagram.PhaseDiagramRefused as exc:
+            raise _phase_diagram_refusal(exc) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The uploaded 현시도 could not be written. Nothing was stored for it. "
+                    f"[{type(exc).__name__}: {exc}]"
+                ),
+            ) from exc
+        created.append(
+            {
+                "review_id": review_id,
+                "intersection_name": entry.name,
+                "intersection_no": entry.intersection_no,
+                "phase_ids": proposal.phase_ids,
+                "declared_amber_s": entry.declared_amber_s,
+                "amber_declaration_note": entry.amber_note,
+                "plans": [
+                    {"level_no": plan["level_no"], "plan_id": plan["plan_id"]}
+                    for plan in entry.timing_payload()
+                ],
+                "replaced": replaced,
+            }
+        )
+
+    return {
+        "source_file": filename,
+        "uploaded_by": uploader,
+        "created": created,
+        "refusals": refusals,
+        "skipped_example_rows": parsed.skipped_example_rows,
+    }
+
+
+@router.post("/phase-diagrams/blank", status_code=201)
+def create_blank_phase_diagram(
+    payload: CreateBlankPhaseDiagramRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """An empty review for one intersection a human names, and nothing else.
+
+    No proposal, no image, no reading — the review opens straight into the blank
+    manual-entry form the screen already has for a refused proposal. An existing
+    review for the same name is a 409 rather than an overwrite: re-creating would
+    silently replace whatever is in it, up to and including a confirmation.
+    """
+    name = payload.intersection_name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "phase_diagram_blank_name_required",
+                "reasons": [
+                    "교차로명을 입력하십시오. 이름 없는 현시도는 나중에 어느 교차로의 것인지 "
+                    "아무도 알 수 없습니다."
+                ],
+            },
+        )
+    key = phase_diagram.composite_source_key("blank", name)
+    review_id = phase_diagram.review_id_for(key)
+    store = _phase_diagram_store()
+    try:
+        store.render(review_id)
+    except phase_diagram.PhaseDiagramRefused:
+        pass
+    else:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "phase_diagram_review_exists",
+                "reasons": [
+                    f"'{name}' 현시도가 이미 있습니다 (검토 {review_id}). 새로 만들지 않고 "
+                    "기존 검토를 여십시오 — 덮어쓰면 이미 입력한 내용이 사라집니다."
+                ],
+            },
+        )
+    sheet: dict[str, Any] = {
+        "intersection_name": name,
+        "intersection_no": (payload.intersection_no or "").strip() or None,
+        "phase_ids": [],
+        "plan_choices": [],
+        "created_by": str(user.get("username") or user.get("id") or "").strip(),
+    }
+    if payload.origin_note:
+        # Provenance only. The node a mapping belongs to is bound on the confirm
+        # form against a generation's own draft — a note is not a binding.
+        sheet["origin_note"] = payload.origin_note.strip()
+    try:
+        store.put_manual_review(
+            review_id,
+            phase_diagram.manual_render(
+                medium="blank_entry",
+                source_file=name,
+                source_sha256=phase_diagram.sha256_hex(key.encode("utf-8")),
+            ),
+            sheet=sheet,
+        )
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The blank 현시도 could not be created. Nothing was stored. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    return store.review_payload(review_id)
+
+
+def _export_entry(
+    store: phase_diagram.PhaseDiagramStore, review_id: str
+) -> phase_template.ExportEntry:
+    """One review as the draft workbook needs it, TIMING INCLUDED.
+
+    Where the timing comes from is the whole point: a 대전 review's comes from
+    its own sheet (``daejeon_timing_payload`` re-uses that path's arithmetic, so
+    an export→re-upload rebuilds the same program), and an uploaded review's is
+    what somebody already typed. A blank review carries none and exports none —
+    nothing here fabricates a green.
+    """
+    render = store.render(review_id)
+    summary = store.sheet_summary(review_id)
+    name = summary.get("intersection_name") or render.source_file
+    plans: list[dict[str, Any]] = []
+    notes: list[str] = []
+    if render.medium == "pdf_band":
+        plans, notes = phase_template.daejeon_timing_payload(store.sheet(review_id))
+    else:
+        plans = list((store.manual_sheet(review_id) or {}).get("timing") or [])
+    return phase_template.ExportEntry(
+        intersection_name=str(name),
+        intersection_no=summary.get("intersection_no"),
+        proposal=store.proposal(review_id),
+        plans=plans,
+        notes=notes,
+        declared_amber_s=summary.get("declared_amber_s"),
+        amber_declaration_note=summary.get("amber_declaration_note"),
+    )
+
+
+@router.get("/phase-diagrams/exports.xlsx")
+def export_all_phase_diagrams(user: dict[str, Any] = Depends(current_user)):
+    """Every review in this workspace as ONE draft workbook, stamped 미확인.
+
+    The file is the same template these routes read back in, so a reviewer can
+    correct it in Excel and upload it — the round trip is the point. Every sheet
+    carries ``UNCONFIRMED_MARK`` because the file outlives the screen it was
+    downloaded from.
+    """
+    store = _phase_diagram_store()
+    entries = []
+    for review_id in store.review_ids():
+        try:
+            entries.append(_export_entry(store, review_id))
+        except phase_diagram.PhaseDiagramRefused:
+            continue
+    if not entries:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "phase_diagram_nothing_to_export",
+                "reasons": ["내보낼 현시도 검토가 없습니다."],
+            },
+        )
+    return _xlsx_response(
+        phase_template.build_export(entries), "현시도-제안-미확인-전체.xlsx"
+    )
+
+
+@router.get("/phase-diagrams/{review_id}/export.xlsx")
+def export_phase_diagram(review_id: str, user: dict[str, Any] = Depends(current_user)):
+    """One review's proposal as a filled-in draft template, stamped 미확인."""
+    store = _phase_diagram_store()
+    try:
+        entry = _export_entry(store, review_id)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    return _xlsx_response(
+        phase_template.build_export([entry]),
+        f"{entry.intersection_name}-현시도-제안-미확인.xlsx",
+    )
 
 
 @router.get("/phase-diagrams/{review_id}")

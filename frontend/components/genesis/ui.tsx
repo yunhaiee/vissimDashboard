@@ -467,6 +467,15 @@ export function refusalHeadline(code: string | null, t: Translate, fallback?: st
       );
     case "phase_diagram_unknown_review":
       return t("해당 검토가 없습니다", "No such review", "該当のレビューがありません");
+    // Unit #52: the confirmation is fine -- what is missing is the TIMING the
+    // signals document is built from. The headline says which, and the reasons
+    // underneath name the exact cells to fill.
+    case "phase_diagram_no_sheet_text":
+      return t(
+        "확인은 되었지만 신호시간이 없어 signals 입력을 만들 수 없습니다",
+        "Confirmed, but there is no signal timing to build the signals input from",
+        "確認済みですが、信号時間がないため signals 入力を作成できません",
+      );
     case "phase_diagram_duplicate_node":
       return t(
         "같은 노드에 두 개의 확인이 있습니다",

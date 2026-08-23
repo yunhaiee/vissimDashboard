@@ -4689,14 +4689,18 @@ export type PhaseDiagramLabel = {
  * rectangle, at what scale, hashing to what. The attestation is keyed to
  * `image_sha256`, which is what makes a confirmation falsifiable. */
 export type PhaseDiagramRender = {
+  /** Which of the three input paths made this review (unit #52). Only
+   * `pdf_band` HAS an image; the other two are null across every image field
+   * and the screen names the absence instead of drawing a stand-in. */
+  medium: "pdf_band" | "excel_upload" | "blank_entry";
   source_file: string;
   source_sha256: string;
-  page_no: number;
-  crop_pt: [number, number, number, number];
-  render_scale: number;
-  image_sha256: string;
-  image_width_px: number;
-  image_height_px: number;
+  page_no: number | null;
+  crop_pt: [number, number, number, number] | null;
+  render_scale: number | null;
+  image_sha256: string | null;
+  image_width_px: number | null;
+  image_height_px: number | null;
   renderer: string;
   renderer_version: string;
   rendered_at: string;
@@ -4726,9 +4730,17 @@ export type PhaseDiagramApproach = {
   note: string | null;
 };
 
-/** A machine's READING. An artifact, never a fact -- no field here asserts
- * correctness, and no string in this UI may imply one does. */
+/** A READING. An artifact, never a fact -- no field here asserts correctness,
+ * and no string in this UI may imply one does.
+ *
+ * Two sources since unit #52, one status. `vision` is a model reading a
+ * rendered band (`model` names it, `image_sha256` binds it). `excel_upload` is
+ * a spreadsheet somebody sent in: no model read it, it has no image, and
+ * `uploaded_by` is PROVENANCE -- who supplied the sheet -- which the review
+ * screen must never render beside the word 확인. */
 export type PhaseDiagramProposal = {
+  source: "vision" | "excel_upload";
+  uploaded_by: string | null;
   outcome: "proposed" | "refused";
   refusal: { code: string; reason: string } | null;
   read_intersection_no: string | null;
@@ -4736,8 +4748,8 @@ export type PhaseDiagramProposal = {
   approaches: PhaseDiagramApproach[];
   phases: PhaseDiagramPhase[];
   notes: string[];
-  model: string;
-  image_sha256: string;
+  model: string | null;
+  image_sha256: string | null;
   source_file: string;
   proposed_at: string;
 };
@@ -4762,7 +4774,10 @@ export type PhaseDiagramAttestation = {
   attested_at: string;
   source_file: string;
   source_sha256: string;
-  image_sha256: string;
+  /** `null` exactly when the review HAS no image. The server compares this
+   * against the render on disk either way, so a confirmation can neither drop
+   * an image that exists nor claim one that does not. */
+  image_sha256: string | null;
   proposal_sha256: string | null;
   proposal_outcome: "proposed" | "refused" | "none";
   node_id: number;
@@ -4780,10 +4795,18 @@ export type PhaseDiagramSheet = {
   source_file: string;
   intersection_name: string | null;
   intersection_no: string | null;
+  /** Whether a 대전 sheet's TEXT LAYER produced this. `false` for the #52 media,
+   * which have no sheet to parse -- what they carry is what somebody typed. */
   parsed: boolean;
   refusal_codes: string[];
   phase_ids: string[];
+  /** Empty for a review with no 대전 TOD table. The confirm form then ASKS for
+   * 수준/계획 ID instead of offering a choice nobody measured. */
   plan_choices: { level_no: number; plan_id: number }[];
+  /** What an uploaded sheet declared, for prefill only. The 대전 sheet prints
+   * 황색+전적색 as one number and never the amber alone, so that path is null. */
+  declared_amber_s: number | null;
+  amber_declaration_note: string | null;
 };
 
 export type PhaseDiagramReview = {
@@ -4806,7 +4829,17 @@ export type PhaseDiagramReview = {
 export type PhaseDiagramSummary = {
   review_id: string;
   source_file: string;
-  image_sha256: string;
+  medium: "pdf_band" | "excel_upload" | "blank_entry";
+  /** What the review is ABOUT, when the store knows it: the sheet's parsed
+   * 교차로명, the uploaded row's, or the name a human typed. `null` falls back
+   * to the file name in the list. */
+  intersection_name: string | null;
+  /** The DRAFT node a confirmation bound, or null. Not a Vissim node id -- the
+   * confirm form binds against a generation's own draft, which is a different
+   * id space from /network's active dataset. */
+  node_id: number | null;
+  image_sha256: string | null;
+  proposal_source: "vision" | "excel_upload" | null;
   proposal_outcome: "proposed" | "refused" | null;
   proposal_refusal_code: string | null;
   flags: string[];
@@ -4874,7 +4907,9 @@ export type PhaseDiagramConfirmation = {
   approach_links: Record<string, string>;
   level_no: number;
   plan_id: number;
-  image_sha256: string;
+  /** The image the human looked at, or `null` for a review that has none. Sent
+   * verbatim from `review.render.image_sha256` -- never synthesised. */
+  image_sha256: string | null;
   source_sha256: string;
   proposal_sha256: string | null;
   proposal_outcome: "proposed" | "refused" | "none";
@@ -4895,6 +4930,94 @@ export async function confirmPhaseDiagram(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Unit #52 -- 현시도 입력: a template out, a workbook in, a blank one made here
+// ---------------------------------------------------------------------------
+//
+// Three doors, one destination. Every one of them produces a PROPOSAL (or an
+// empty form) and none of them writes an attestation: the only road to a
+// confirmed mapping is still `confirmPhaseDiagram` above, with the attester
+// taken from the session. The three download URLs are plain hrefs for the same
+// reason `phaseDiagramImageUrl` is -- the session rides on a same-site cookie,
+// so an <a> works and a fetch+blob would only add a copy of the file in memory.
+
+/** The blank standard template. The 안내 sheet states the doctrine INSIDE the
+ * file, because the file travels without this app around it. */
+export function phaseDiagramTemplateUrl(): string {
+  return apiUrl("/api/genesis/phase-diagrams/template.xlsx");
+}
+
+/** One review's proposal as a filled draft, every sheet stamped 미확인. */
+export function phaseDiagramExportUrl(reviewId: string): string {
+  return apiUrl(`/api/genesis/phase-diagrams/${reviewId}/export.xlsx`);
+}
+
+/** Every review in this workspace as one draft workbook, same stamp. */
+export function phaseDiagramExportsUrl(): string {
+  return apiUrl("/api/genesis/phase-diagrams/exports.xlsx");
+}
+
+/** One row the upload created, or refused. A refusal names its Excel row
+ * number, because "fix row 14" is an instruction and "the file was bad" is not. */
+export type PhaseDiagramUploadRefusal = {
+  code: string;
+  reasons: string[];
+  row: number | null;
+  intersection: string | null;
+};
+
+export type PhaseDiagramUploadResult = {
+  source_file: string;
+  uploaded_by: string;
+  created: {
+    review_id: string;
+    intersection_name: string;
+    intersection_no: string | null;
+    phase_ids: string[];
+    declared_amber_s: number | null;
+    amber_declaration_note: string | null;
+    /** The (수준, 계획ID) pairs the 신호시간 sheet carried timing for. EMPTY is a
+     * real state, and a consequential one: the mapping can still be confirmed,
+     * but no signals input can be built until timing exists. */
+    plans: { level_no: number; plan_id: number }[];
+    replaced: boolean;
+  }[];
+  refusals: PhaseDiagramUploadRefusal[];
+  skipped_example_rows: number[];
+};
+
+/** Upload one filled-in template. Raw body + `?filename=`, the shape
+ * `uploadObservationWorkbook` uses and for the same reason (this backend
+ * carries no `python-multipart`). The response reports what was created AND
+ * every row that refused -- a bad row is never silently dropped. */
+export async function uploadPhaseDiagramTemplate(file: File): Promise<PhaseDiagramUploadResult> {
+  const path = `/api/genesis/phase-diagrams/upload?filename=${encodeURIComponent(file.name)}`;
+  const r = await apiMutationFetch(path, { method: "POST", cache: "no-store", body: file });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Create an empty review for one named intersection -- roadmap C1 option (b),
+ * reachable from the screen at last. No proposal, no image: it opens straight
+ * into the blank manual-entry form. `originNote` is provenance only (e.g. which
+ * node on the network diagram the reader started from) and binds nothing. */
+export async function createBlankPhaseDiagram(
+  intersectionName: string,
+  options?: { intersectionNo?: string | null; originNote?: string | null },
+): Promise<PhaseDiagramReview> {
+  const r = await apiMutationFetch("/api/genesis/phase-diagrams/blank", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      intersection_name: intersectionName,
+      intersection_no: options?.intersectionNo ?? null,
+      origin_note: options?.originNote ?? null,
+    }),
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();

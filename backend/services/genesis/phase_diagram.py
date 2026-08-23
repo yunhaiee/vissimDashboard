@@ -105,6 +105,12 @@ PROPOSAL_FILENAME = "proposal.json"
 CROSS_CHECK_FILENAME = "crosscheck.json"
 ATTESTATION_FILENAME = "attestation.json"
 SHEET_TEXT_FILENAME = "sheet.txt"
+#: unit #52 — what a no-image review knows about its intersection, in place of
+#: the 대전 sheet text a pdf review parses. A separate file rather than a field
+#: on the render for the reason the render's own kind exists: it is a different
+#: document with a different author (a person typing, not a parser reading).
+MANUAL_SHEET_FILENAME = "manual-sheet.json"
+MANUAL_SHEET_DOC_KIND = "prism.phase_diagram_manual_sheet.v1"
 
 #: The renderer. PDFium through ``pypdfium2`` — permissive (Apache-2.0 /
 #: BSD-3-Clause), pip-installable with no external binary, and imported LAZILY
@@ -151,6 +157,20 @@ TURNS: tuple[str, ...] = ("through", "left", "right", "u_turn", "pedestrian", "u
 Side = Literal["top", "right", "bottom", "left", "unknown"]
 SIDES: tuple[str, ...] = ("top", "right", "bottom", "left", "unknown")
 
+#: What a review was made FROM (unit #52). ``pdf_band`` is the original path —
+#: a rasterised band of a client sheet, which is the only medium that HAS an
+#: image. The other two carry no image at all and say so by name: the review
+#: screen shows a named placeholder where the drawing would be, and nothing
+#: anywhere renders a stand-in picture. A fake image would make the one thing an
+#: attestation is bound to — "the drawing this human actually looked at" —
+#: unfalsifiable, which is the whole reason the sha is recorded.
+ReviewMedium = Literal["pdf_band", "excel_upload", "blank_entry"]
+MEDIA_WITHOUT_IMAGE: tuple[str, ...] = ("excel_upload", "blank_entry")
+
+#: The ``renderer`` string a no-image review records. Not "none": the field is
+#: read by a human months later and has to answer "what drew this" honestly.
+NO_RENDERER = "이미지 없음 — 렌더링하지 않았습니다"
+
 
 class PhaseDiagramRefused(ValueError):
     """Something that cannot be done AT ALL — the same ``{code, reasons}`` shape
@@ -185,6 +205,59 @@ def review_id_for(source_file: str) -> str:
             ["A review is keyed by its sheet's file name and this one has none."],
         )
     return hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+
+
+#: The characters :func:`composite_source_key` escapes, and what each becomes.
+#: ``%`` is FIRST and that ordering is load-bearing: escaping it after the
+#: others would re-escape the escapes and stop the encoding being reversible.
+#: ``/`` and ``\`` are in the set because :func:`review_id_for` hashes
+#: ``Path(key).name``, which silently truncates at a separator; ``#`` is in it
+#: because it is the delimiter itself.
+_KEY_ESCAPES: tuple[tuple[str, str], ...] = (
+    ("%", "%25"),
+    ("#", "%23"),
+    ("/", "%2F"),
+    ("\\", "%5C"),
+)
+_KEY_DELIMITER = "#"
+
+
+def composite_source_key(*parts: str) -> str:
+    """A review key made of several strings — e.g. a workbook plus 교차로명 (#52).
+
+    One upload carries many intersections, so the key has to name both; and it
+    has to stay DETERMINISTIC, so a corrected re-upload lands in the same review
+    and its existing confirmation is compared against the new content rather
+    than starting a second review of the same junction.
+
+    **The encoding is injective, and that is the whole point.** The first
+    version joined the parts on a raw ``#`` and folded path separators to their
+    full-width forms, and an adversarial pass proved both halves collide over
+    real HTTP::
+
+        ("현시도.xlsx", "둔산네거리#부속")  ->  "현시도.xlsx#둔산네거리#부속"
+        ("현시도.xlsx#둔산네거리", "부속")  ->  "현시도.xlsx#둔산네거리#부속"
+
+    — one review id for two different intersections, and the second upload
+    silently overwrote the first's proposal (``replaced: true``). The fold had
+    the same shape (``가/나`` and ``가／나`` folding together).
+
+    So each part is percent-escaped over :data:`_KEY_ESCAPES` — the RFC 3986
+    device, used here for its property rather than its provenance: the delimiter
+    cannot occur inside an escaped part, and every escape is reversible, so
+    distinct tuples produce distinct keys. Korean text is untouched; only the
+    four ASCII characters change.
+    """
+    encoded: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        for character, replacement in _KEY_ESCAPES:
+            text = text.replace(character, replacement)
+        encoded.append(text)
+    # Empty parts are kept as empty segments rather than dropped: dropping one
+    # would make ("", "가") and ("가",) the same key, which is the very
+    # collision this function exists to rule out.
+    return _KEY_DELIMITER.join(encoded)
 
 
 # ---------------------------------------------------------------------------
@@ -231,17 +304,20 @@ class DiagramRender(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["prism.phase_diagram_render.v1"] = RENDER_DOC_KIND
+    #: unit #52 — which of the three input paths made this review. Defaults to
+    #: the original one, so every record written before #52 reads back unchanged.
+    medium: ReviewMedium = "pdf_band"
     source_file: str = Field(min_length=1)
     source_sha256: str = Field(min_length=64, max_length=64)
-    page_no: int = Field(ge=1, description="1-based, as a human counts pages.")
-    page_width_pt: float
-    page_height_pt: float
+    page_no: int | None = Field(default=None, ge=1, description="1-based, as a human counts pages.")
+    page_width_pt: float | None = None
+    page_height_pt: float | None = None
     #: (left, bottom, right, top) in PDF points, PDF axes (y up).
-    crop_pt: tuple[float, float, float, float]
-    render_scale: float = Field(gt=0)
-    image_sha256: str = Field(min_length=64, max_length=64)
-    image_width_px: int = Field(gt=0)
-    image_height_px: int = Field(gt=0)
+    crop_pt: tuple[float, float, float, float] | None = None
+    render_scale: float | None = Field(default=None, gt=0)
+    image_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    image_width_px: int | None = Field(default=None, gt=0)
+    image_height_px: int | None = Field(default=None, gt=0)
     renderer: str
     renderer_version: str
     rendered_at: str
@@ -251,8 +327,74 @@ class DiagramRender(BaseModel):
         description="Which text runs the crop was cut between, and where they were found.",
     )
 
+    @model_validator(mode="after")
+    def _image_fields_match_the_medium(self) -> "DiagramRender":
+        """A pdf band HAS an image; the other two media have none, and may not
+        borrow one. Both directions are enforced, because either shape of drift
+        breaks the attestation's binding: a band with no sha cannot be confirmed
+        against anything, and a no-image review carrying a sha would let a
+        confirmation claim a drawing that does not exist."""
+        image_fields = {
+            "page_no": self.page_no,
+            "crop_pt": self.crop_pt,
+            "render_scale": self.render_scale,
+            "image_sha256": self.image_sha256,
+            "image_width_px": self.image_width_px,
+            "image_height_px": self.image_height_px,
+        }
+        if self.medium == "pdf_band":
+            missing = sorted(name for name, value in image_fields.items() if value is None)
+            if missing:
+                raise ValueError(
+                    f"a pdf_band render is missing {missing}. The band IS the image, and an "
+                    "attestation is bound to its sha."
+                )
+        else:
+            present = sorted(name for name, value in image_fields.items() if value is not None)
+            if present:
+                raise ValueError(
+                    f"a {self.medium} review carries no image, but {present} were set. Never "
+                    "fabricate one: the review screen names the absence instead."
+                )
+        return self
+
+    @property
+    def has_image(self) -> bool:
+        return self.image_sha256 is not None
+
     def label_texts(self) -> list[str]:
         return [label.text for label in self.labels]
+
+
+def manual_render(
+    *,
+    medium: ReviewMedium,
+    source_file: str,
+    source_sha256: str,
+) -> DiagramRender:
+    """The provenance record for a review that has NO diagram image (#52).
+
+    ``source_sha256`` is the bytes the review came from — the uploaded workbook
+    for ``excel_upload``, and for ``blank_entry`` the digest of the name a human
+    typed, which is the only thing that review is made of. Both are real digests
+    of real bytes: the staleness comparison stays falsifiable, it simply has one
+    side (the image) that this medium never had.
+    """
+    if medium == "pdf_band":
+        raise PhaseDiagramRefused(
+            "phase_diagram_medium_invalid",
+            ["manual_render() builds the no-image variants; a pdf band comes from the renderer."],
+        )
+    return DiagramRender(
+        medium=medium,
+        source_file=source_file,
+        source_sha256=source_sha256,
+        page_width_pt=None,
+        page_height_pt=None,
+        renderer=NO_RENDERER,
+        renderer_version=NO_RENDERER,
+        rendered_at=_now_iso(),
+    )
 
 
 def _normalise_label(text: str) -> str:
@@ -545,17 +687,29 @@ class ProposalRefusal(BaseModel):
 
 
 class PhaseProposal(BaseModel):
-    """A machine's READING of one 현시도. An artifact, not a fact.
+    """A READING of one 현시도. An artifact, not a fact.
 
-    Carries its own provenance (``model``, ``image_sha256``, ``proposed_at``) so
-    it can be argued with. Nothing in this class asserts correctness, and no
-    consumer may render it as though it did — the only field that means "this
-    mapping is right" lives on :class:`MappingAttestation`.
+    Carries its own provenance (``model``/``uploaded_by``, ``image_sha256``,
+    ``proposed_at``) so it can be argued with. Nothing in this class asserts
+    correctness, and no consumer may render it as though it did — the only field
+    that means "this mapping is right" lives on :class:`MappingAttestation`.
+
+    **Two sources, one status (unit #52).** ``vision`` is a model reading a
+    rendered band. ``excel_upload`` is a person's spreadsheet, and it is a
+    proposal for exactly the same reason: nothing this app holds can check
+    either, so both wait for a human's 확인 on the confirm form. ``uploaded_by``
+    names who supplied the sheet — PROVENANCE, and the review screen must render
+    it as such and never beside the word 확인.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["prism.phase_diagram_proposal.v1"] = PROPOSAL_DOC_KIND
+    source: Literal["vision", "excel_upload"] = "vision"
+    uploaded_by: str | None = Field(
+        default=None,
+        description="Who uploaded the sheet this reading came from. Provenance, never attestation.",
+    )
     outcome: Literal["proposed", "refused"]
     refusal: ProposalRefusal | None = None
     read_intersection_no: str | None = Field(
@@ -565,13 +719,52 @@ class PhaseProposal(BaseModel):
     approaches: list[ProposedApproach] = Field(default_factory=list)
     phases: list[ProposedPhase] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
-    model: str = Field(min_length=1)
-    image_sha256: str = Field(min_length=64, max_length=64)
+    #: The model that read the image — ``None`` exactly when no model did.
+    #: An uploaded spreadsheet must not put a person's name in this field: it
+    #: would read, everywhere it is displayed, as "a model called X said so".
+    model: str | None = Field(default=None, min_length=1)
+    image_sha256: str | None = Field(default=None, min_length=64, max_length=64)
     source_file: str = Field(min_length=1)
     proposed_at: str
     usage: dict[str, Any] = Field(
         default_factory=dict, description="Token counts the provider reported, when it did."
     )
+
+    @model_validator(mode="after")
+    def _provenance_matches_the_source(self) -> "PhaseProposal":
+        """Each source carries its OWN provenance, and never the other's."""
+        if self.source == "vision":
+            if not self.model:
+                raise ValueError(
+                    "A vision proposal must name the model that produced it. A reading whose "
+                    "author is unknown cannot be argued with."
+                )
+            if not self.image_sha256:
+                raise ValueError(
+                    "A vision proposal is bound to the image it read. Without that sha nobody "
+                    "can tell which drawing it is about."
+                )
+            if self.uploaded_by:
+                raise ValueError(
+                    "uploaded_by belongs to an uploaded sheet. A model's reading has no uploader, "
+                    "and putting a person there would make a machine's artifact look human-signed."
+                )
+        else:
+            if self.model:
+                raise ValueError(
+                    "An uploaded sheet was not read by a model, so `model` must be empty."
+                )
+            if self.image_sha256:
+                raise ValueError(
+                    "An uploaded sheet has no diagram image. Never bind one to a sha it does not "
+                    "have — that is what makes the attestation's image binding meaningful."
+                )
+            if not str(self.uploaded_by or "").strip():
+                raise ValueError(
+                    "An uploaded sheet records WHO uploaded it. An anonymous upload is a claim "
+                    "with nobody behind it."
+                )
+        return self
 
     @model_validator(mode="after")
     def _outcome_and_content_agree(self) -> "PhaseProposal":
@@ -629,6 +822,11 @@ CHECK_LABEL_SIDE = "phase_diagram_label_side_observed"
 CHECK_NO_PARSED_PLAN = "phase_diagram_no_parsed_plan"
 CHECK_PHASE_WITHOUT_MOVEMENT = "phase_diagram_phase_without_movement"
 CHECK_AGREES = "phase_diagram_agrees_with_text_layer"
+#: unit #52 — an uploaded spreadsheet (or a blank entry) has no text layer and no
+#: image, so there is NOTHING to compare it against. The review still carries a
+#: cross-check document saying exactly that, because "no findings" and "not
+#: checked" must never be the same shape on the screen.
+CHECK_NO_TEXT_LAYER = "phase_diagram_no_text_layer_to_check"
 #: A refused proposal has NO reading — nothing was compared, so the finding must
 #: not wear CHECK_AGREES (that code means "compared and matched"). Its own code
 #: keeps `codes("ok")`-style debugging honest on refused proposals.
@@ -865,6 +1063,35 @@ def cross_check(
     return CrossCheckResult(findings=findings)
 
 
+def cross_check_without_text_layer(*, medium: ReviewMedium) -> CrossCheckResult:
+    """The cross-check document for a review with no sheet text (unit #52).
+
+    Running :func:`cross_check` here would be worse than useless: with
+    ``sheet=None`` it FLAGS *"the text layer produced no phases"*, which on an
+    uploaded spreadsheet is not a finding about the data — it is this app
+    describing a document that was never supposed to exist. So the review gets
+    one honest observation instead, and the reviewer is told that the machine
+    compared nothing at all.
+    """
+    return CrossCheckResult(
+        findings=[
+            CrossCheckFinding(
+                code=CHECK_NO_TEXT_LAYER,
+                severity="observation",
+                message=(
+                    "이 검토에는 대조할 시트 텍스트도 도면 이미지도 없습니다. 기계가 대조한 "
+                    "것은 아무것도 없으며, 표의 내용은 올린 사람의 진술입니다."
+                ),
+                message_en=(
+                    "This review has neither sheet text nor a diagram image, so the machine "
+                    "compared nothing at all. The table is the uploader's claim."
+                ),
+                context={"medium": medium},
+            )
+        ]
+    )
+
+
 class _PrintedLabels:
     """What text this sheet PRINTS inside the diagram band, for membership tests.
 
@@ -999,7 +1226,13 @@ class MappingAttestation(BaseModel):
     attested_at: str = Field(min_length=1)
     source_file: str = Field(min_length=1)
     source_sha256: str = Field(min_length=64, max_length=64)
-    image_sha256: str = Field(min_length=64, max_length=64)
+    #: The rendered band the human looked at — ``None`` exactly when the review
+    #: HAS no image (unit #52's excel/blank media). Which of the two it is, is
+    #: not this record's word to take: ``PhaseDiagramStore.put_attestation``
+    #: compares against the render on disk and refuses either mismatch, so a
+    #: confirmation can neither drop an image that exists nor claim one that
+    #: does not.
+    image_sha256: str | None = Field(default=None, min_length=64, max_length=64)
     proposal_sha256: str | None = Field(
         default=None, description="None = confirmed with no proposal (blank manual entry)."
     )
@@ -1057,7 +1290,7 @@ class MappingAttestation(BaseModel):
         return value
 
     def staleness(
-        self, *, source_sha256: str, image_sha256: str
+        self, *, source_sha256: str, image_sha256: str | None
     ) -> list[str]:
         """Why this attestation no longer applies, or an empty list.
 
@@ -1072,9 +1305,18 @@ class MappingAttestation(BaseModel):
                 f"(확인 당시 {self.source_sha256[:12]}…, 현재 {source_sha256[:12]}…). 재확인 필요."
             )
         if image_sha256 and self.image_sha256 != image_sha256:
+            attested = "이미지 없음" if self.image_sha256 is None else f"{self.image_sha256[:12]}…"
             reasons.append(
                 f"현시도 이미지가 확인 이후 다시 렌더링되었습니다 "
-                f"(확인 당시 {self.image_sha256[:12]}…, 현재 {image_sha256[:12]}…). 재확인 필요."
+                f"(확인 당시 {attested}, 현재 {image_sha256[:12]}…). 재확인 필요."
+            )
+        elif image_sha256 is None and self.image_sha256 is not None:
+            # The other direction, which #52 made reachable: a review that used
+            # to carry a band no longer does. Saying nothing here would carry a
+            # confirmation of a drawing forward onto a review with no drawing.
+            reasons.append(
+                f"확인 당시에는 현시도 이미지({self.image_sha256[:12]}…)가 있었으나 지금은 "
+                "이 검토에 이미지가 없습니다. 재확인 필요."
             )
         return reasons
 
@@ -1086,17 +1328,27 @@ class MappingAttestation(BaseModel):
 
 @dataclass(frozen=True)
 class ConfirmedMapping:
-    """One node's confirmed mapping, and the sheet text its plan is built from.
+    """One node's confirmed mapping, and the timing its plan is built from.
 
     ``attestation`` has **no default and is never optional**. That is the whole
     enforcement: :func:`build_signals_document` takes these and nothing else, so
     there is no argument anywhere on the emit path that a proposal could be
     passed as, and therefore no flag that could turn confirmation off. A caller
     holding only a proposal cannot construct this value.
+
+    **Two plan sources, one confirmation (unit #52).** Exactly one of
+    ``sheet_text`` (a 대전 sheet, parsed by ``signals_daejeon``) and
+    ``declared_plan`` (the timing a reviewer typed into the 신호시간 sheet,
+    converted by ``signals_declared``) must be present. Neither is "the good
+    one": both produce a ``ProgramSourceKind.DECLARED`` program, both take the
+    amber from THIS attestation, and both are inert without it. What must never
+    happen is a typed plan travelling as a sheet — the ``daejeon_sheet`` branch
+    parses ``sheet_text``, so that would mean fabricating a sheet.
     """
 
     attestation: MappingAttestation
-    sheet_text: str
+    sheet_text: str = ""
+    declared_plan: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.attestation, MappingAttestation):
@@ -1108,7 +1360,17 @@ class ConfirmedMapping:
                     "one, and there is no flag that makes it one."
                 ],
             )
-        if not str(self.sheet_text or "").strip():
+        has_sheet = bool(str(self.sheet_text or "").strip())
+        has_declared = bool(self.declared_plan)
+        if has_sheet and has_declared:
+            raise PhaseDiagramRefused(
+                "phase_diagram_two_plan_sources",
+                [
+                    f"{self.attestation.source_file}: this confirmation carries BOTH a sheet and "
+                    "a typed plan. One node has one plan; two would mean one silently wins."
+                ],
+            )
+        if not has_sheet and not has_declared:
             raise PhaseDiagramRefused(
                 "phase_diagram_no_sheet_text",
                 [
@@ -1118,11 +1380,35 @@ class ConfirmedMapping:
             )
 
     def to_assignment(self) -> dict[str, Any]:
-        """This confirmation as one ``side_inputs.SignalAssignment`` payload."""
+        """This confirmation as one ``side_inputs.SignalAssignment`` payload.
+
+        The amber on both branches is the CONFIRMED one — a reviewer's
+        declaration recorded on the attestation, never the number that happened
+        to be in the upload.
+        """
         attestation = self.attestation
-        return {
-            "node_id": attestation.node_id,
-            "plan": {
+        if self.declared_plan:
+            plan: dict[str, Any] = {
+                "source": "excel_upload",
+                "source_file": attestation.source_file,
+                "intersection_name": str(
+                    self.declared_plan.get("intersection_name") or attestation.source_file
+                ),
+                "intersection_no": self.declared_plan.get("intersection_no"),
+                "level_no": attestation.level_no,
+                "plan_id": attestation.plan_id,
+                "cycle_s": self.declared_plan.get("cycle_s"),
+                # Carried, not applied — and carried at all only because an
+                # adversarial pass caught this field silently becoming None
+                # between the sheet and the rebuilt program.
+                "offset_s": self.declared_plan.get("offset_s"),
+                "time_of_day": self.declared_plan.get("time_of_day"),
+                "phases": list(self.declared_plan.get("phases") or []),
+                "declared_amber_s": attestation.declared_amber_s,
+                "amber_declaration_note": attestation.amber_declaration_note,
+            }
+        else:
+            plan = {
                 "source": "daejeon_sheet",
                 "sheet_text": self.sheet_text,
                 "source_file": attestation.source_file,
@@ -1130,7 +1416,10 @@ class ConfirmedMapping:
                 "plan_id": attestation.plan_id,
                 "declared_amber_s": attestation.declared_amber_s,
                 "amber_declaration_note": attestation.amber_declaration_note,
-            },
+            }
+        return {
+            "node_id": attestation.node_id,
+            "plan": plan,
             "approach_phases": {
                 str(link_id): phase for link_id, phase in sorted(attestation.approach_phases.items())
             },
@@ -1345,6 +1634,35 @@ class PhaseDiagramStore:
         (directory / SHEET_TEXT_FILENAME).write_text(sheet_text, encoding="utf-8")
         return review_id
 
+    def put_manual_review(
+        self,
+        review_id: str,
+        render: DiagramRender,
+        *,
+        sheet: dict[str, Any],
+    ) -> str:
+        """Store one review that has NO diagram image (unit #52).
+
+        Same directory, same file names, one difference: there is no PNG and no
+        ``sheet.txt``, because neither exists. What takes the sheet text's place
+        is :data:`MANUAL_SHEET_FILENAME` — the intersection's name, its number if
+        somebody typed one, and the phase ids the upload (or the human) named. It
+        is deliberately NOT called a parse: nothing was parsed.
+
+        Refuses a ``pdf_band`` render, which belongs to :meth:`put_render` and
+        carries an image this method would not write.
+        """
+        if render.medium == "pdf_band":
+            raise PhaseDiagramRefused(
+                "phase_diagram_medium_invalid",
+                ["A pdf_band review is stored with its image, through put_render()."],
+            )
+        directory = self.review_dir(review_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        _write_json(directory / RENDER_FILENAME, render.model_dump(mode="json"))
+        _write_json(directory / MANUAL_SHEET_FILENAME, {"kind": MANUAL_SHEET_DOC_KIND, **sheet})
+        return review_id
+
     def put_proposal(
         self, review_id: str, proposal: PhaseProposal, cross: CrossCheckResult
     ) -> None:
@@ -1363,13 +1681,16 @@ class PhaseDiagramStore:
         """
         render = self.render(review_id)
         if attestation.image_sha256 != render.image_sha256:
+            attested = (
+                "이미지 없음" if attestation.image_sha256 is None else attestation.image_sha256[:12] + "…"
+            )
+            stored = "이미지 없음" if render.image_sha256 is None else render.image_sha256[:12] + "…"
             raise PhaseDiagramRefused(
                 "phase_diagram_attestation_stale",
                 [
                     "확인하려는 현시도 이미지가 현재 저장된 이미지와 다릅니다. 화면을 새로 "
                     "고친 뒤 다시 확인하십시오 (재확인 필요).",
-                    f"attested against {attestation.image_sha256[:12]}…, "
-                    f"stored image is {render.image_sha256[:12]}…",
+                    f"attested against {attested}, stored image is {stored}",
                 ],
             )
         if attestation.source_sha256 != render.source_sha256:
@@ -1440,6 +1761,79 @@ class PhaseDiagramStore:
         render = self.render(review_id)
         return parse_sheet_text(self.sheet_text(review_id), source_file=render.source_file)
 
+    def manual_sheet(self, review_id: str) -> dict[str, Any] | None:
+        """What a no-image review knows about its intersection, or ``None``."""
+        path = self.review_dir(review_id) / MANUAL_SHEET_FILENAME
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def declared_plan(
+        self, review_id: str, level_no: int, plan_id: int
+    ) -> dict[str, Any] | None:
+        """The typed timing for ONE (수준, 계획 ID), or ``None`` (unit #52).
+
+        Looked up by the pair the CONFIRMATION names, not by "the first one on
+        file": a reviewer confirming the 첨두 plan must not silently get the
+        off-peak numbers because they happened to be typed first.
+        """
+        stored = self.manual_sheet(review_id) or {}
+        for plan in stored.get("timing") or []:
+            if int(plan.get("level_no", -1)) == int(level_no) and int(
+                plan.get("plan_id", -1)
+            ) == int(plan_id):
+                return {
+                    "intersection_name": stored.get("intersection_name"),
+                    "intersection_no": stored.get("intersection_no"),
+                    "level_no": int(level_no),
+                    "plan_id": int(plan_id),
+                    "cycle_s": plan.get("cycle_s"),
+                    "offset_s": plan.get("offset_s"),
+                    "time_of_day": plan.get("time_of_day"),
+                    "phases": list(plan.get("phases") or []),
+                }
+        return None
+
+    def sheet_summary(self, review_id: str) -> dict[str, Any]:
+        """The confirm screen's 'what do we know about this intersection'.
+
+        One shape for all three media, so the screen has one branch fewer — but
+        the two halves are honestly different underneath: a pdf review's summary
+        is PARSED from the sheet's text layer, and a no-image review's is what a
+        person typed or uploaded. ``parsed`` says which.
+        """
+        render = self.render(review_id)
+        if render.medium == "pdf_band":
+            return _sheet_summary(self.sheet(review_id))
+        stored = self.manual_sheet(review_id) or {}
+        return {
+            "source_file": render.source_file,
+            "intersection_name": stored.get("intersection_name"),
+            "intersection_no": stored.get("intersection_no"),
+            # Nothing was parsed: there is no sheet to parse. Saying `true` here
+            # would claim a text layer this review never had.
+            "parsed": False,
+            "refusal_codes": [],
+            "phase_ids": list(stored.get("phase_ids") or []),
+            # 수준/계획 come off the 대전 sheet's own TOD table for a pdf review.
+            # For this medium they are the (수준, 계획) pairs the 신호시간 sheet
+            # actually carries timing for — so the confirm form offers exactly
+            # the plans that could become a signals document, and an empty list
+            # (no timing typed) makes it ASK for the two numbers instead of
+            # offering a choice nobody measured.
+            "plan_choices": [
+                {"level_no": plan["level_no"], "plan_id": plan["plan_id"]}
+                for plan in (stored.get("timing") or [])
+            ]
+            or list(stored.get("plan_choices") or []),
+            # What the UPLOAD said the amber is, so the confirm form can prefill
+            # it with its 근거 attached. Prefill, never a default: the field is
+            # still the reviewer's declaration and the sentence under it still
+            # says so.
+            "declared_amber_s": stored.get("declared_amber_s"),
+            "amber_declaration_note": stored.get("amber_declaration_note"),
+        }
+
     def stale_reasons(self, review_id: str) -> list[str]:
         attestation = self.attestation(review_id)
         if attestation is None:
@@ -1477,6 +1871,41 @@ class PhaseDiagramStore:
         stale = self.stale_reasons(review_id)
         if stale:
             raise PhaseDiagramRefused("phase_diagram_attestation_stale", stale)
+        render = self.render(review_id)
+        if render.medium != "pdf_band":
+            # A no-image review (unit #52) builds its plan from the timing a
+            # reviewer TYPED into the 신호시간 sheet, converted by
+            # signals_declared with the sheet path's own arithmetic. Without
+            # that timing the confirmation is still recorded and still valid —
+            # what is missing is the PLAN, and the refusal names exactly the
+            # cells that would supply it rather than letting a caller read it as
+            # "the confirmation did not count".
+            declared = self.declared_plan(review_id, attestation.level_no, attestation.plan_id)
+            if declared is None:
+                stored = self.manual_sheet(review_id) or {}
+                name = stored.get("intersection_name") or render.source_file
+                available = [
+                    f"수준 {plan.get('level_no')} / 계획 {plan.get('plan_id')}"
+                    for plan in (stored.get("timing") or [])
+                ]
+                raise PhaseDiagramRefused(
+                    "phase_diagram_no_sheet_text",
+                    [
+                        f"{name}: 배정은 확인되었지만 이 계획(수준 {attestation.level_no} / "
+                        f"계획 {attestation.plan_id})의 신호시간이 없습니다. 템플릿의 신호시간 "
+                        "시트에 이 교차로의 수준·계획·현시별 녹색과 소거시간을 채워 다시 "
+                        "올리시면 됩니다.",
+                        (
+                            f"현재 신호시간이 있는 계획: {', '.join(available)}."
+                            if available
+                            else "현재 이 교차로에는 신호시간이 한 줄도 없습니다."
+                        ),
+                        f"review {review_id}: medium={render.medium}, no declared timing for "
+                        f"L{attestation.level_no}-P{attestation.plan_id}. The attestation is "
+                        "intact and stays on disk.",
+                    ],
+                )
+            return ConfirmedMapping(attestation=attestation, declared_plan=declared)
         return ConfirmedMapping(attestation=attestation, sheet_text=self.sheet_text(review_id))
 
     # -- the whole review, for a browser -------------------------------
@@ -1493,7 +1922,7 @@ class PhaseDiagramStore:
         proposal = self.proposal(review_id)
         attestation = self.attestation(review_id)
         cross = self.cross_check(review_id)
-        sheet = self.sheet(review_id)
+        summary = self.sheet_summary(review_id)
         stale = self.stale_reasons(review_id)
         return {
             "review_id": review_id,
@@ -1505,7 +1934,7 @@ class PhaseDiagramStore:
             "attestation": None if attestation is None else attestation.model_dump(mode="json"),
             "stale_reasons": stale,
             "confirmed": attestation is not None and not stale,
-            "sheet": _sheet_summary(sheet),
+            "sheet": summary,
         }
 
     def index_payload(self) -> list[dict[str, Any]]:
@@ -1519,11 +1948,25 @@ class PhaseDiagramStore:
             attestation = self.attestation(review_id)
             cross = self.cross_check(review_id)
             stale = self.stale_reasons(review_id)
+            try:
+                intersection_name = self.sheet_summary(review_id).get("intersection_name")
+            except (PhaseDiagramRefused, OSError, ValueError):
+                intersection_name = None
             rows.append(
                 {
                     "review_id": review_id,
                     "source_file": render.source_file,
+                    # unit #52 — the list has three kinds of row now, and a row
+                    # that says which it is spares the screen from inferring it
+                    # from a null image sha.
+                    "medium": render.medium,
+                    "intersection_name": intersection_name,
+                    #: The draft node a confirmation bound, so a deep link from
+                    #: the network map can FIND the review for a node instead of
+                    #: creating a second one for the same intersection.
+                    "node_id": None if attestation is None else attestation.node_id,
                     "image_sha256": render.image_sha256,
+                    "proposal_source": None if proposal is None else proposal.source,
                     "proposal_outcome": None if proposal is None else proposal.outcome,
                     "proposal_refusal_code": (
                         None
@@ -1554,6 +1997,12 @@ def _sheet_summary(sheet: DaejeonSheet) -> dict[str, Any]:
         "intersection_no": sheet.intersection_no,
         "parsed": sheet.ok,
         "refusal_codes": sheet.issue_codes(IssueSeverity.REFUSE),
+        # The 대전 sheet prints 황색+전적색 as ONE number and never the amber on
+        # its own, so this path has nothing to prefill and says so with a null
+        # rather than a zero. (The uploaded-sheet path fills it in; see
+        # PhaseDiagramStore.sheet_summary.)
+        "declared_amber_s": None,
+        "amber_declaration_note": None,
         "phase_ids": [f"Φ{timing.phase_no}" for timing in sheet.phases],
         "plan_choices": [
             {"level_no": level_no, "plan_id": plan_id}
@@ -1574,7 +2023,11 @@ def _write_json(path: Path, payload: Any) -> None:
 
 __all__ = [
     "ATTESTATION_DOC_KIND",
+    "CHECK_NO_TEXT_LAYER",
     "CROSS_CHECK_DOC_KIND",
+    "MANUAL_SHEET_DOC_KIND",
+    "MEDIA_WITHOUT_IMAGE",
+    "NO_RENDERER",
     "PROPOSAL_DOC_KIND",
     "RENDER_DOC_KIND",
     "SIDES",
@@ -1595,7 +2048,10 @@ __all__ = [
     "ProposedPhase",
     "approach_bearing",
     "build_signals_document",
+    "composite_source_key",
     "cross_check",
+    "cross_check_without_text_layer",
+    "manual_render",
     "node_candidates",
     "render_phase_diagram",
     "review_id_for",

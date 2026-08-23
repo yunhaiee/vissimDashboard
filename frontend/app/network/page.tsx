@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -715,6 +716,46 @@ function NetworkPageContent() {
               >
                 {t("모두 지우기", "Clear all")}
               </button>
+            </div>
+          )}
+          {/* Unit #52 ④ — the way from a junction on the diagram to its 현시도.
+              One link per selected node, carrying the node's NAME and its id.
+              The name is what the phases screen uses; the id rides along as a
+              breadcrumb and is recorded there as provenance only. It cannot be
+              a binding: this diagram is the ACTIVE VISSIM DATASET (ids out of
+              the .inpx) while the confirm form binds a node from a GENERATION'S
+              DRAFT, and those are different id spaces.
+
+              MEASURED, and why there is no "signalised only" filter here: the
+              /api/network payload carries signal heads keyed by LINK
+              (`elements.signal_heads[].link`) and nodes carrying a `polygon`
+              that is EMPTY on every node of the real client model
+              (client-data/데모-교차로: 6 nodes, 0 polygons, 39 signal heads), so
+              nothing in what this page holds says which node a signal head
+              belongs to. Rather than invent a backend flag or a distance
+              threshold, the link is offered for any selected node and claims
+              nothing about whether it is signalised. */}
+          {selectedNodeIds.length > 0 && (
+            <div className="mx-1 flex flex-wrap items-center gap-2">
+              {selectedNodeIds.map((nodeId) => {
+                const node = network?.nodes.find((candidate) => candidate.id === nodeId);
+                const nodeName = node?.name || "";
+                const query = new URLSearchParams({ node: nodeId });
+                if (nodeName) query.set("name", nodeName);
+                return (
+                  <Link
+                    key={`phases-${nodeId}`}
+                    href={`/genesis/phases?${query.toString()}`}
+                    className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  >
+                    {t(
+                      `${nodeName || nodeId} 현시도 입력 →`,
+                      `Enter the 현시도 for ${nodeName || nodeId} →`,
+                      `${nodeName || nodeId} の現示図を入力 →`,
+                    )}
+                  </Link>
+                );
+              })}
             </div>
           )}
           {selectionNotice && (

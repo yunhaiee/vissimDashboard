@@ -1051,6 +1051,35 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       and why, quoted verbatim into the new job's skip ledger. A confirmation
       nobody can be named for is not one, so an anonymous caller cannot make it.
 
+    **Unit #52 adds five, and they are the rest of the same sub-tree.**
+    현시도 입력 opened three more ways INTO the review store and two ways out of
+    it, and every one of them handles the client-confidential material the C1-b
+    paragraph above is about — so they join that sub-tree's rule rather than
+    inventing a second one:
+
+    * ``GET  /api/genesis/phase-diagrams/template.xlsx`` — the blank template.
+      It carries no client data at all, and it is guarded anyway, because the
+      whole sub-tree is: a reader who cannot see the reviews has no use for the
+      form they are filled on, and one route quietly open in a guarded tree is
+      how the next one gets added open by copying its neighbour.
+    * ``POST /api/genesis/phase-diagrams/upload`` — a filled-in workbook becomes
+      a proposal per 교차로명. It writes into the project's tree (same reason
+      ``POST /api/genesis/uploads`` is guarded) and the uploader's name is
+      recorded on each proposal as PROVENANCE, taken from the session so a body
+      cannot claim somebody else supplied the sheet.
+    * ``POST /api/genesis/phase-diagrams/blank`` — creates an empty review for a
+      named intersection. Writes into the project's tree, same reason.
+    * ``GET  /api/genesis/phase-diagrams/{review_id}/export.xlsx`` and
+      ``GET  …/exports.xlsx`` — the reviews' own contents (교차로명, the
+      proposal's approaches and phases, the model's ambiguity sentences) as a
+      workbook. Exactly the material ``GET …/{review_id}`` serves, in a file
+      that gets mailed around; guarding the JSON and not the .xlsx of the same
+      facts would be a distinction without one.
+
+    None of the five writes an attestation, and none of them can: the only
+    route that mints a ``MappingAttestation`` is still
+    ``POST …/{review_id}/confirmation`` above.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1088,9 +1117,14 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs/{job_id}/regenerate",
         "/api/genesis/jobs/{job_id}/dead-end-confirmation",
         "/api/genesis/phase-diagrams",
+        "/api/genesis/phase-diagrams/blank",
+        "/api/genesis/phase-diagrams/exports.xlsx",
         "/api/genesis/phase-diagrams/signals-input",
+        "/api/genesis/phase-diagrams/template.xlsx",
+        "/api/genesis/phase-diagrams/upload",
         "/api/genesis/phase-diagrams/{review_id}",
         "/api/genesis/phase-diagrams/{review_id}/confirmation",
+        "/api/genesis/phase-diagrams/{review_id}/export.xlsx",
         "/api/genesis/phase-diagrams/{review_id}/image",
         "/api/genesis/phase-diagrams/{review_id}/network-candidates",
         "/api/genesis/region/fetches",

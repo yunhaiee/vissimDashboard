@@ -80,6 +80,7 @@ from .compose import ComposedLayers, compose_layers
 from .demand import DemandSettings
 from .draft import DraftNetwork
 from .fleet import FleetSettings
+from . import signals_declared
 from .signals import SignalSettings
 from .signals_daejeon import DaejeonSettings, parse_sheet_text, to_fixed_time_plan
 
@@ -286,6 +287,88 @@ class DaejeonSheetPlanRef(BaseModel):
     amber_declaration_note: str | None = None
 
 
+class ExcelTimingPlanRef(BaseModel):
+    """A plan a REVIEWER TYPED into the 현시도 input template (unit #52).
+
+    A third source rather than a relabelling of ``daejeon_sheet``, and the
+    difference is not cosmetic: the ``daejeon_sheet`` branch of
+    :func:`build_signal_assignments` PARSES ``sheet_text``, so calling a typed
+    plan a sheet would mean fabricating a sheet for it to parse. This ref
+    carries the numbers themselves and is converted by
+    :func:`services.genesis.signals_declared.to_fixed_time_plan`, which uses the
+    sheet path's arithmetic unchanged.
+
+    ``declared_amber_s`` is the SAME reviewer's declaration
+    ``DaejeonSheetPlanRef`` carries and behaves identically: omitting it does
+    not default to 3.0 s or anything else — it produces ``declared_amber_unstated``
+    and no plan. ``clearance_s`` on each phase is 황색+전적색 combined, exactly
+    the quantity the 대전 sheet prints as YELLOW(RED), so the all-red is derived
+    the one way this product derives it and never invented.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    class Phase(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        phase_id: str = Field(min_length=1)
+        green_s: float = Field(gt=0)
+        clearance_s: float = Field(ge=0, description="황색+전적색 combined, as typed.")
+        #: The actuated band the source states, or None for "stated none" —
+        #: which is a different fact from zero and is kept as such.
+        min_green_s: float | None = Field(default=None, ge=0)
+        max_green_s: float | None = Field(default=None, ge=0)
+
+    source: Literal["excel_upload"]
+    source_file: str = Field(min_length=1, description="The workbook the numbers were typed in.")
+    intersection_name: str = Field(min_length=1)
+    intersection_no: str | None = None
+    level_no: int
+    plan_id: int
+    cycle_s: float | None = Field(
+        default=None,
+        gt=0,
+        description="As typed. Omitted = Σ(green + clearance); a stated cycle that "
+        "contradicts that sum is a refusal, never a correction.",
+    )
+    offset_s: float | None = Field(
+        default=None,
+        ge=0,
+        description="연동. Recorded on the program and never applied to the phase starts — "
+        "the same treatment, and the same warning, the 대전 sheet path gives it.",
+    )
+    time_of_day: str | None = Field(
+        default=None, description="When the plan applies, as the source words it."
+    )
+    phases: list[Phase] = Field(min_length=1)
+    declared_amber_s: float | None = Field(default=None, gt=0)
+    amber_declaration_note: str | None = None
+
+    def to_declared(self) -> "signals_declared.DeclaredPlan":
+        return signals_declared.DeclaredPlan(
+            source_file=self.source_file,
+            intersection_name=self.intersection_name,
+            intersection_no=self.intersection_no,
+            level_no=self.level_no,
+            plan_id=self.plan_id,
+            cycle_s=self.cycle_s,
+            offset_s=self.offset_s,
+            time_of_day=self.time_of_day,
+            declared_amber_s=self.declared_amber_s,
+            amber_declaration_note=self.amber_declaration_note,
+            phases=tuple(
+                signals_declared.DeclaredPhaseTiming(
+                    phase_id=phase.phase_id,
+                    green_s=phase.green_s,
+                    intergreen_s=phase.clearance_s,
+                    min_green_s=phase.min_green_s,
+                    max_green_s=phase.max_green_s,
+                )
+                for phase in self.phases
+            ),
+        )
+
+
 class SignalAssignment(BaseModel):
     """One signalised node: which plan runs it, and which approach is in which
     phase.
@@ -299,7 +382,9 @@ class SignalAssignment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     node_id: int
-    plan: ObservedHistoryPlanRef | DaejeonSheetPlanRef = Field(discriminator="source")
+    plan: ObservedHistoryPlanRef | DaejeonSheetPlanRef | ExcelTimingPlanRef = Field(
+        discriminator="source"
+    )
     approach_phases: dict[int, str] = Field(
         description="draft approach link id → plan phase id. Required; never derived.",
     )
@@ -526,10 +611,12 @@ class SignalPlanBuild:
 def build_signal_assignments(document: SignalsSideInput) -> SignalPlanBuild:
     """Every assignment's ``FixedTimePlan``, built by its own named source.
 
-    Neither route is reimplemented here: ``observed_history`` calls 1.6's
-    :func:`~services.dataimport.fixed_time.convert_to_fixed_time` and
+    No route is reimplemented here: ``observed_history`` calls 1.6's
+    :func:`~services.dataimport.fixed_time.convert_to_fixed_time`,
     ``daejeon_sheet`` calls
-    :func:`~services.genesis.signals_daejeon.to_fixed_time_plan`. This function
+    :func:`~services.genesis.signals_daejeon.to_fixed_time_plan`, and
+    ``excel_upload`` (unit #52) calls
+    :func:`~services.genesis.signals_declared.to_fixed_time_plan`. This function
     only routes, and carries each route's findings out verbatim.
     """
     issues: list[ImportIssue] = []
@@ -599,6 +686,15 @@ def build_signal_assignments(document: SignalsSideInput) -> SignalPlanBuild:
                 controller, program, settings=document.conversion_settings
             )
             issues.extend(plan.issues)
+        elif isinstance(assignment.plan, ExcelTimingPlanRef):
+            # Unit #52: numbers a reviewer typed, converted by the sheet path's
+            # own arithmetic. Its findings arrive here exactly like the other
+            # two routes' do, so "why was this generation refused" stays one
+            # list however the plan was sourced.
+            plan, plan_issues = signals_declared.to_fixed_time_plan(
+                assignment.plan.to_declared()
+            )
+            issues.extend(plan_issues)
         else:
             sheet = parse_sheet_text(
                 assignment.plan.sheet_text, source_file=assignment.plan.source_file
@@ -699,6 +795,7 @@ __all__ = [
     "SIGNALS_DOC_KIND",
     "DaejeonSheetPlanRef",
     "DemandSideInput",
+    "ExcelTimingPlanRef",
     "ObservedHistoryPlanRef",
     "SideInputRefused",
     "SignalAssignment",

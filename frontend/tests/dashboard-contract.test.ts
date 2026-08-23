@@ -4208,6 +4208,228 @@ contractTest("the 현시도 review screen distinguishes stale, unconfirmed and b
   );
 });
 
+// ---------------------------------------------------------------------------
+// Unit #52 -- 현시도 입력: a template out, a workbook in, a blank one made here.
+// Three new doors into the SAME review store, and the pins here are what keeps
+// them doors rather than ways around the confirmation.
+// ---------------------------------------------------------------------------
+
+contractTest("the 현시도 screen offers all three ways in, and each one produces a proposal", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+
+  // ① the template, ② the upload, ③ the blank creation.
+  pin.match(page, /phaseDiagramTemplateUrl\(\)/, "expected the template download to be offered on the screen");
+  pin.match(page, /템플릿 다운로드/, "expected the template control to be named in ko");
+  pin.match(page, /uploadPhaseDiagramTemplate\(uploadFile\)/, "expected the upload to send the chosen workbook");
+  pin.match(page, /accept="\.xlsx"/, "expected the upload control to ask for a workbook");
+  pin.match(page, /createBlankPhaseDiagram\(trimmed/, "expected in-page creation to POST a named intersection");
+  pin.match(page, /새 현시도 입력/, "expected the blank-creation control to be named in ko");
+  pin.match(
+    page,
+    /blankName\.trim\(\) === "" \|\| busy/,
+    "expected a blank name to disable creation -- a review nobody can identify cannot be bound to a node",
+  );
+
+  // A refused row is RENDERED, not counted away: a row nobody sees is a row
+  // nobody fixes, and its whole intersection did not come in.
+  pin.match(page, /uploadResult\.refusals\.map\(/, "expected every refused row to be rendered verbatim");
+  pin.match(page, /refusal\.row != null/, "expected a refused row to name its Excel row number");
+
+  // The client never assembles a proposal or an attestation of its own: it
+  // hands the file to the server and renders what came back.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /outcome:\s*"proposed"/,
+    "expected the page never to build a proposal itself -- it uploads a file and renders the server's reading",
+  );
+  pin.match(
+    api,
+    /export async function uploadPhaseDiagramTemplate\(/,
+    "expected one upload call in the api module, so the raw-body shape has a single home",
+  );
+});
+
+contractTest("a 현시도 review with no drawing says so and never fakes one", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+
+  // The three media, and the fact that only one of them HAS an image.
+  pin.match(
+    api,
+    /medium: "pdf_band" \| "excel_upload" \| "blank_entry"/,
+    "expected the render to declare which of the three input paths made it",
+  );
+  pin.match(api, /image_sha256: string \| null/, "expected the image sha to be nullable -- two media have none");
+  pin.match(
+    page,
+    /review\?\.render\.medium === "pdf_band" && review\.render\.image_sha256 != null/,
+    "expected the image band to render ONLY when this review actually holds one",
+  );
+  pin.match(page, /hasImage \? \(/, "expected the <img> to sit inside that branch");
+  pin.match(page, /noImageSentence\(review\.render\.medium, t\)/, "expected the absence to be NAMED where the drawing would be");
+  pin.match(page, /이미지 없음 — 엑셀 업로드로 만든 검토입니다/, "expected the excel placeholder to say in ko that there is no drawing");
+
+  // A stand-in picture would make the attestation's binding -- "the drawing
+  // this person actually looked at" -- unfalsifiable.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /data:image|placeholder\.(png|svg|jpg)/,
+    "expected no stand-in image anywhere on the review screen",
+  );
+  // The confirmation still sends the sha VERBATIM from the render, null and all.
+  pin.match(
+    page,
+    /image_sha256: review\.render\.image_sha256/,
+    "expected the confirmation to carry the stored sha unchanged -- never a synthesised one",
+  );
+});
+
+contractTest("an uploaded sheet is provenance, and the panel says whose reading it is", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  // Two sources, two honest titles, ONE status. The vision title must survive:
+  // an uploaded sheet was not read by a model, and a model's reading was not
+  // uploaded by a person.
+  pin.match(page, /모델의 판독 \(제안\)/, "expected the vision branch to keep its own title");
+  pin.match(page, /업로드된 시트 \(제안\)/, "expected an uploaded sheet to be titled as what it is -- still a 제안");
+  pin.match(
+    page,
+    /uploadedProposal\s*\n?\s*\?\s*t\("업로드된 시트 \(제안\)"/,
+    "expected the title to be chosen by the proposal's SOURCE, not by which one was written last",
+  );
+  pin.match(page, /올린 사람: \$\{review\.proposal\.uploaded_by/, "expected the uploader to be shown as provenance");
+  pin.match(
+    page,
+    /올린 것은 확인이 아닙니다/,
+    "expected the screen to say, in ko, that uploading is not confirming",
+  );
+  // Provenance must never be dressed as an attestation.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /확인자[^\n]{0,40}uploaded_by/,
+    "expected the uploader never to be printed as the 확인자 -- that name comes from the confirmation",
+  );
+});
+
+contractTest("the 현시도 screen exports labelled drafts, one review and all of them", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+
+  pin.match(page, /phaseDiagramExportUrl\(review\.review_id\)/, "expected a per-review export control");
+  pin.match(page, /phaseDiagramExportsUrl\(\)/, "expected a bulk export control");
+  pin.match(page, /엑셀로 내보내기 \(미확인\)/, "expected the per-review export to be labelled 미확인 on the button itself");
+  pin.match(page, /전체 내보내기 \(미확인 초안\)/, "expected the bulk export to say the same");
+  pin.match(api, /export function phaseDiagramExportUrl\(/, "expected the export URLs to live beside the image URL");
+});
+
+contractTest("a review with no 대전 TOD table is ASKED for 수준/계획 ID, never given a default", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  pin.match(
+    page,
+    /review\.sheet\.plan_choices\.length > 0 \? \(/,
+    "expected the select to be offered only when the sheet actually parsed some (수준, ID) pairs",
+  );
+  pin.match(page, /planChosen/, "expected an explicit check that both numbers were supplied");
+  pin.match(
+    page,
+    /Number\.isFinite\(Number\(planLevelRaw\)\)/,
+    "expected a pair of empty boxes NOT to count as a chosen plan -- planChoice !== \"\" accepted the ':' they make",
+  );
+  pin.match(
+    page,
+    /review\.sheet\.phase_ids\.length > 0 \? \(/,
+    "expected a review with no known phase list to let the human type the phase id",
+  );
+});
+
+contractTest("the network diagram links a selected node to its 현시도 without claiming a binding", (pin) => {
+  const networkPage = read("app/network/page.tsx");
+  const phasesPage = read("app/genesis/phases/page.tsx");
+
+  pin.match(networkPage, /href=\{`\/genesis\/phases\?\$\{query\.toString\(\)\}`\}/, "expected the deep link to the phases screen");
+  pin.match(networkPage, /query\.set\("name", nodeName\)/, "expected the node's NAME to travel with the link");
+  pin.match(networkPage, /현시도 입력 →/, "expected the action to be named in ko, as an action");
+  pin.match(
+    networkPage,
+    /selectedNodeIds\.map\(\(nodeId\) => \{/,
+    "expected one entry link per selected node, in the existing selection UI",
+  );
+
+  // The two id spaces are NOT the same: /network draws the active Vissim
+  // dataset, and the confirm form binds a node from a generation's draft. The
+  // phases page must therefore treat ?node= as a breadcrumb, never as a match.
+  pin.match(
+    phasesPage,
+    /rows\.find\(\(row\) => \(row\.intersection_name \?\? ""\)\.trim\(\) === wanted\)/,
+    "expected the arriving link to be resolved by NAME",
+  );
+  pin.doesNotMatch(
+    withoutComments(phasesPage),
+    /node_id === Number\(nodeParam\)/,
+    "expected a Vissim node id never to be matched against a draft attestation's node_id -- different id spaces",
+  );
+  pin.match(
+    phasesPage,
+    /어느 노드에 배정되는지는 아래 확인 양식에서 정해집니다/,
+    "expected the screen to say the binding is still decided on the confirm form",
+  );
+});
+
+contractTest("an upload with no 신호시간 says so before the staging button does", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+  const ui = read("components/genesis/ui.tsx");
+
+  // The timing is what carries an uploaded 현시도 into a generation. A review
+  // without it is still confirmable -- and the screen has to say which it is at
+  // upload time, not at the staging button two panels away.
+  pin.match(
+    page,
+    /uploadResult\.created\s*\n?\s*\.filter\(\(row\) => row\.plans\.length === 0\)/,
+    "expected the upload result to name every intersection that arrived with no signal timing",
+  );
+  pin.match(
+    page,
+    /신호시간 없음 — 확인은 되지만 신호 입력은 만들 수 없습니다/,
+    "expected that state to be stated in ko, as a consequence rather than a warning",
+  );
+  pin.match(api, /plans: \{ level_no: number; plan_id: number \}\[\]/, "expected the created rows to carry their timed plans");
+
+  // The refusal a staging attempt gets is about the TIMING, not about the
+  // confirmation -- and it has a headline in all three languages.
+  pin.match(
+    ui,
+    /case "phase_diagram_no_sheet_text":/,
+    "expected the timing refusal to have its own translated headline",
+  );
+  pin.match(
+    ui,
+    /확인은 되었지만 신호시간이 없어/,
+    "expected that headline to say the confirmation stands and the timing is what is missing",
+  );
+});
+
+contractTest("unit #52's doctrine lives at /docs, not on the phases screen", (pin) => {
+  const help = read("lib/help-content.tsx");
+  const page = read("app/genesis/phases/page.tsx");
+
+  pin.match(help, /입력하는 세 가지 방법/, "expected the three input paths to be explained in the doctrine module");
+  pin.match(
+    help,
+    /세 가지 모두 결과는 '제안'이며/,
+    "expected the doctrine to state that all three produce a proposal",
+  );
+  pin.match(help, /가짜 이미지를 넣지 않고/, "expected the no-fake-image rule to be stated at /docs");
+  // Unit #20's rule: the screen carries actions, the doctrine page carries prose.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로/,
+    "expected the doctrine paragraph to stay at /docs rather than being pasted onto the screen",
+  );
+});
+
 contractTest("the demand side-input UI never invents a link id and stays one door", (pin) => {
   const page = read("app/genesis/demand/page.tsx");
   const api = read("lib/api.ts");

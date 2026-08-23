@@ -44,24 +44,31 @@
 // product's only human attestation is the wrong place to save space.
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   confirmPhaseDiagram,
+  createBlankPhaseDiagram,
   fetchGenesisJobs,
   fetchPhaseDiagram,
   fetchPhaseDiagramCandidates,
   fetchPhaseDiagrams,
+  phaseDiagramExportUrl,
+  phaseDiagramExportsUrl,
   phaseDiagramImageUrl,
+  phaseDiagramTemplateUrl,
   stagePhaseDiagramSignalsInput,
+  uploadPhaseDiagramTemplate,
   type GenesisJob,
   type PhaseDiagramFinding,
   type PhaseDiagramNodeCandidate,
   type PhaseDiagramReview,
   type PhaseDiagramSummary,
+  type PhaseDiagramUploadResult,
 } from "@/lib/api";
 
 type Translate = (ko: string, en: string, ja: string) => string;
@@ -108,6 +115,34 @@ function reviewStateClasses(row: { confirmed: boolean; stale_reasons: string[] }
   return "border-slate-300 bg-slate-50 text-slate-700";
 }
 
+/** What a review was made from, in one word (unit #52). The list has three kinds
+ * of row now and the reader has to be able to tell them apart before clicking:
+ * an 엑셀 row has no drawing to look at, and a 직접 입력 row has nothing in it
+ * at all yet. */
+function mediumLabel(medium: PhaseDiagramSummary["medium"], t: Translate): string | null {
+  if (medium === "excel_upload") return t("엑셀", "EXCEL", "エクセル");
+  if (medium === "blank_entry") return t("직접 입력", "MANUAL", "直接入力");
+  return null;
+}
+
+/** The named absence where the drawing would be. NEVER a stand-in image: an
+ * attestation is bound to the sha of the picture the human looked at, and a
+ * placeholder that looked like a diagram would make that binding a lie. */
+function noImageSentence(medium: PhaseDiagramReview["render"]["medium"], t: Translate): string {
+  if (medium === "excel_upload") {
+    return t(
+      "이미지 없음 — 엑셀 업로드로 만든 검토입니다. 이 교차로의 현시도 그림은 이 앱에 없습니다.",
+      "No image — this review came from an uploaded spreadsheet. This app holds no drawing for it.",
+      "画像なし — アップロードされたエクセルから作成された検討です。図面はこのアプリにありません。",
+    );
+  }
+  return t(
+    "이미지 없음 — 화면에서 직접 만든 빈 양식입니다. 아래 표에 직접 입력하십시오.",
+    "No image — a blank form created on this screen. Fill in the table below by hand.",
+    "画像なし — 画面で作成した空の様式です。下の表に直接入力してください。",
+  );
+}
+
 function findingClasses(severity: PhaseDiagramFinding["severity"]): string {
   if (severity === "flag") return "border-slate-400 bg-slate-100 text-slate-800";
   if (severity === "ok") return "border-emerald-300 bg-emerald-50 text-slate-800";
@@ -128,7 +163,21 @@ function findingWord(severity: PhaseDiagramFinding["severity"], t: Translate): s
 // the headline, because it carries the file name and the shas, and rewriting a
 // backend refusal client-side is how a UI starts lying.
 
+// `useSearchParams` client-renders the tree up to the nearest Suspense boundary
+// (Next 16, app/api-reference/functions/use-search-params "Prerendering"), so
+// the boundary lives here rather than being inherited. Everything below this
+// page's "use client" already renders client-side, so the fallback is never on
+// screen long enough to need chrome of its own -- the same shape
+// app/network/page.tsx uses for the approval-focus handoff.
 export default function PhaseDiagramReviewPage() {
+  return (
+    <Suspense fallback={null}>
+      <PhaseDiagramReviewPageContent />
+    </Suspense>
+  );
+}
+
+function PhaseDiagramReviewPageContent() {
   const { t } = useLanguage();
   const [rows, setRows] = useState<PhaseDiagramSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -147,6 +196,17 @@ export default function PhaseDiagramReviewPage() {
   const [note, setNote] = useState<string>("");
   const [stagedToken, setStagedToken] = useState<string | null>(null);
 
+  // -- unit #52: the three ways IN ---------------------------------------
+  // `uploadResult` is kept on screen after the upload rather than folded into a
+  // toast: it carries the refused rows, and a refusal a reader has to catch
+  // before it disappears is one nobody acts on.
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadResult, setUploadResult] = useState<PhaseDiagramUploadResult | null>(null);
+  const [blankName, setBlankName] = useState<string>("");
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [listLoaded, setListLoaded] = useState(false);
+
   const refreshList = useCallback(async () => {
     try {
       const listed = await fetchPhaseDiagrams();
@@ -156,8 +216,42 @@ export default function PhaseDiagramReviewPage() {
     } catch (caught) {
       setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
       return [];
+    } finally {
+      setListLoaded(true);
     }
   }, []);
+
+  // -- unit #52 ④: arriving from the network diagram ----------------------
+  // /network deep-links here as ?node=<id>&name=<node name>. The NAME is what
+  // is used: /network draws the ACTIVE VISSIM DATASET, whose node ids come from
+  // the .inpx, while the confirm form below binds a node from a GENERATION'S
+  // DRAFT (fetchPhaseDiagramCandidates over a job's own DraftNetwork). Those are
+  // two different id spaces, so matching on the number would be a coincidence
+  // dressed as a fact. The id rides along as a breadcrumb — it is recorded as
+  // provenance on a created review and binds nothing.
+  const searchParams = useSearchParams();
+  const nodeParam = searchParams.get("node");
+  const nodeNameParam = searchParams.get("name");
+  const deepLinkHandled = useRef(false);
+
+  useEffect(() => {
+    if (!listLoaded || deepLinkHandled.current) return;
+    if (!nodeParam && !nodeNameParam) return;
+    deepLinkHandled.current = true;
+    // Deferred for the react-hooks `set-state-in-effect` rule, the same pattern
+    // the initial load below uses.
+    void Promise.resolve().then(() => {
+      const wanted = (nodeNameParam ?? "").trim();
+      const existing = wanted
+        ? rows.find((row) => (row.intersection_name ?? "").trim() === wanted)
+        : undefined;
+      if (existing) {
+        setSelectedId(existing.review_id);
+        return;
+      }
+      setBlankName(wanted || (nodeParam ? `노드 ${nodeParam}` : ""));
+    });
+  }, [listLoaded, rows, nodeParam, nodeNameParam]);
 
   useEffect(() => {
     // Deferred for the react-hooks `set-state-in-effect` rule, the same pattern
@@ -181,8 +275,20 @@ export default function PhaseDiagramReviewPage() {
       const attested = loaded.attestation;
       setNodeId(attested ? attested.node_id : null);
       setPlanChoice(attested ? `${attested.level_no}:${attested.plan_id}` : "");
-      setAmber(attested?.declared_amber_s != null ? String(attested.declared_amber_s) : "");
-      setAmberNote(attested?.amber_declaration_note ?? "");
+      // The amber comes from the attestation when one exists (what a human
+      // already declared), and otherwise from what the UPLOAD said, with its
+      // 근거 beside it. A prefill, not a default: the sentence under the field
+      // still says the number is the reviewer's declaration, and an empty
+      // upload leaves an empty box.
+      const uploadedAmber = loaded.sheet.declared_amber_s;
+      setAmber(
+        attested?.declared_amber_s != null
+          ? String(attested.declared_amber_s)
+          : uploadedAmber != null
+            ? String(uploadedAmber)
+            : "",
+      );
+      setAmberNote(attested?.amber_declaration_note ?? loaded.sheet.amber_declaration_note ?? "");
       setNote(attested?.note ?? "");
       setApproachRows([]);
       setCandidates([]);
@@ -295,6 +401,49 @@ export default function PhaseDiagramReviewPage() {
     }
   }, [review, nodeId, planChoice, approachRows, proposedPhaseByLabel, amber, amberNote, note, refreshList]);
 
+  /** Upload one filled-in template. What comes back is a PROPOSAL per 교차로명
+   * in the file — never a confirmation — plus every row the parser refused,
+   * which stays on screen until the next upload. */
+  const submitUpload = useCallback(async () => {
+    if (!uploadFile) return;
+    setBusy(true);
+    try {
+      const result = await uploadPhaseDiagramTemplate(uploadFile);
+      setUploadResult(result);
+      setUploadFile(null);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+      setError(null);
+      await refreshList();
+      if (result.created.length > 0) setSelectedId(result.created[0].review_id);
+    } catch (caught) {
+      setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
+    } finally {
+      setBusy(false);
+    }
+  }, [uploadFile, refreshList]);
+
+  /** Create an empty review for a named intersection and open it. The screen's
+   * existing blank-form branch takes it from there — one workflow, not two. */
+  const createBlank = useCallback(
+    async (name: string, originNote?: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      setBusy(true);
+      try {
+        const created = await createBlankPhaseDiagram(trimmed, { originNote: originNote ?? null });
+        setBlankName("");
+        setError(null);
+        await refreshList();
+        setSelectedId(created.review_id);
+      } catch (caught) {
+        setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refreshList],
+  );
+
   const stageSignals = useCallback(async () => {
     const confirmedIds = rows.filter((row) => row.confirmed).map((row) => row.review_id);
     if (confirmedIds.length === 0) return;
@@ -314,11 +463,28 @@ export default function PhaseDiagramReviewPage() {
   const confirmedCount = rows.filter((row) => row.confirmed).length;
   const flags = review?.cross_check?.findings.filter((f) => f.severity === "flag") ?? [];
   const others = review?.cross_check?.findings.filter((f) => f.severity !== "flag") ?? [];
+
+  // 수준 / 계획 ID. A 대전 sheet offers its own (수준, ID) pairs and the select
+  // below is filled from them; a review with no TOD table (unit #52's uploaded
+  // and blank media, and any sheet whose table did not parse) offers none, and
+  // the form ASKS for the two numbers instead of defaulting them. Both paths
+  // write the same "level:plan" string, and both are checked here — the old
+  // `planChoice !== ""` would have accepted the ":" a pair of empty boxes makes.
+  const [planLevelRaw, planIdRaw] = planChoice.split(":");
+  const planChosen =
+    planLevelRaw !== undefined &&
+    planLevelRaw.trim() !== "" &&
+    planIdRaw !== undefined &&
+    planIdRaw.trim() !== "" &&
+    Number.isFinite(Number(planLevelRaw)) &&
+    Number.isFinite(Number(planIdRaw));
   const canSubmit =
     nodeId != null &&
-    planChoice !== "" &&
+    planChosen &&
     approachRows.some((row) => row.phaseId) &&
     !busy;
+  const hasImage = review?.render.medium === "pdf_band" && review.render.image_sha256 != null;
+  const uploadedProposal = review?.proposal?.source === "excel_upload";
 
   // UNIT #20's help drawer is RETIRED (2026-08-14). 확인 절차 and signals 입력
   // are verbatim in lib/help-content.tsx (`phasesHelpEntries`) and render at
@@ -395,7 +561,14 @@ export default function PhaseDiagramReviewPage() {
                           : "border-slate-200 bg-transparent hover:bg-slate-50"
                       }`}
                     >
-                      <span className="block truncate font-semibold text-slate-900">{row.source_file}</span>
+                      <span className="block truncate font-semibold text-slate-900">
+                        {row.intersection_name || row.source_file}
+                      </span>
+                      {mediumLabel(row.medium, t) && (
+                        <span className="mt-1.5 mr-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[14px] text-slate-600">
+                          {mediumLabel(row.medium, t)}
+                        </span>
+                      )}
                       {/* The three state chips were 10px. This is the list that
                         * says which intersections still need a human, so it is
                         * the last place on the screen to shrink type. */}
@@ -418,6 +591,140 @@ export default function PhaseDiagramReviewPage() {
                   </li>
                 ))}
               </ul>
+            )}
+          </Panel>
+
+          {/* Unit #52 — the three ways to get a 현시도 INTO this screen, in the
+            * order a reader meets them: take the form away, bring it back, or
+            * skip the paper entirely. Each one lands on the same review list
+            * above and the same confirm form on the right; none of them
+            * confirms anything. The doctrine sentence lives at /docs (unit
+            * #20's rule) and inside the downloaded file itself — this panel
+            * carries actions, not an education. */}
+          <Panel density="console" title={t("현시도 입력", "Add a 현시도", "現示図の入力")}>
+            <a
+              href={phaseDiagramTemplateUrl()}
+              className="ui-button-ghost block rounded-lg px-3 py-2 text-center text-[15px] font-semibold"
+            >
+              {t("템플릿 다운로드", "Download the template", "テンプレートをダウンロード")}
+            </a>
+
+            <div className="mt-3">
+              <input
+                ref={uploadInputRef}
+                type="file"
+                accept=".xlsx"
+                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                className="block w-full text-[14px] text-slate-600"
+                aria-label={t("현시도 엑셀 선택", "Choose a 현시도 workbook", "現示図エクセルを選択")}
+              />
+              <button
+                type="button"
+                onClick={submitUpload}
+                disabled={!uploadFile || busy}
+                className="mt-2 w-full rounded-lg bg-slate-900 px-3 py-2 text-[15px] font-semibold text-ink disabled:opacity-40"
+              >
+                {t("엑셀 올리기 (제안으로)", "Upload as a proposal", "エクセルを提案として送る")}
+              </button>
+            </div>
+
+            {uploadResult && (
+              <div className="mt-3 space-y-1.5 text-[14px] leading-relaxed">
+                <p className="text-slate-700">
+                  {uploadResult.created.length === 0
+                    ? t(
+                        "등록된 교차로가 없습니다. 아래 사유를 확인하십시오.",
+                        "No intersection was registered. See the reasons below.",
+                        "登録された交差点はありません。以下の理由をご確認ください。",
+                      )
+                    : t(
+                        `${uploadResult.created.length}개 교차로가 제안으로 등록되었습니다. 확인 전에는 사용되지 않습니다.`,
+                        `${uploadResult.created.length} intersection(s) registered as proposals. Nothing is used before 확인.`,
+                        `${uploadResult.created.length}件の交差点が提案として登録されました。確認前は使用されません。`,
+                      )}
+                </p>
+                {/* Whether the upload can actually reach a generation, per
+                  * intersection. An upload with no 신호시간 rows is confirmable
+                  * and useful, but it cannot become a signals input — saying so
+                  * here is the difference between a reader finding out now and
+                  * finding out at the staging button. */}
+                {uploadResult.created
+                  .filter((row) => row.plans.length === 0)
+                  .map((row) => (
+                    <p key={`no-timing-${row.review_id}`} className="text-slate-600">
+                      {t(
+                        `${row.intersection_name}: 신호시간 없음 — 확인은 되지만 신호 입력은 만들 수 없습니다.`,
+                        `${row.intersection_name}: no signal timing — confirmable, but no signals input can be built.`,
+                        `${row.intersection_name}: 信号時間なし — 確認はできますが signals 入力は作成できません。`,
+                      )}
+                    </p>
+                  ))}
+                {uploadResult.skipped_example_rows.length > 0 && (
+                  <p className="text-slate-500">
+                    {t(
+                      `예시 줄 ${uploadResult.skipped_example_rows.length}개는 읽지 않았습니다.`,
+                      `${uploadResult.skipped_example_rows.length} example row(s) were not read.`,
+                      `例示行${uploadResult.skipped_example_rows.length}件は読みませんでした。`,
+                    )}
+                  </p>
+                )}
+                {/* Refused rows are RENDERED, never counted away: a row nobody
+                  * sees is a row nobody fixes, and the intersection it belongs
+                  * to did not come in at all. */}
+                {uploadResult.refusals.map((refusal, index) => (
+                  <div
+                    key={`${refusal.code}-${index}`}
+                    className="rounded-md border border-slate-400 bg-slate-100 px-2.5 py-1.5 text-slate-800"
+                  >
+                    <span className="mr-1.5 font-semibold">
+                      {refusal.row != null
+                        ? t(`${refusal.row}행 거부`, `row ${refusal.row} refused`, `${refusal.row}行 拒否`)
+                        : t("거부", "refused", "拒否")}
+                    </span>
+                    {refusal.reasons.join(" ")}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              {(nodeParam || nodeNameParam) && (
+                <p className="mb-2 text-[14px] leading-relaxed text-slate-600">
+                  {t(
+                    `네트워크 도식에서 노드 ${nodeParam ?? "—"}을(를) 선택해 왔습니다. 이 이름은 참고용이며, 어느 노드에 배정되는지는 아래 확인 양식에서 정해집니다.`,
+                    `Arrived from node ${nodeParam ?? "—"} on the network diagram. The name is a starting point; which node the mapping binds to is decided on the confirm form.`,
+                    `ネットワーク図のノード${nodeParam ?? "—"}から来ました。名称は参考であり、どのノードに対応するかは確認様式で決まります。`,
+                  )}
+                </p>
+              )}
+              <label className="block text-[15px] text-slate-700">
+                <span className="block font-semibold">{t("교차로명", "Intersection name", "交差点名")}</span>
+                <input
+                  value={blankName}
+                  onChange={(event) => setBlankName(event.target.value)}
+                  className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
+                  placeholder={t("예: 둔산네거리", "e.g. 둔산네거리", "例: 둔산네거리")}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  void createBlank(blankName, nodeParam ? `네트워크 도식 노드 ${nodeParam}` : undefined)
+                }
+                disabled={blankName.trim() === "" || busy}
+                className="mt-2 w-full rounded-lg bg-slate-900 px-3 py-2 text-[15px] font-semibold text-ink disabled:opacity-40"
+              >
+                {t("새 현시도 입력", "New blank 현시도", "新しい現示図を入力")}
+              </button>
+            </div>
+
+            {rows.length > 0 && (
+              <a
+                href={phaseDiagramExportsUrl()}
+                className="mt-4 block text-[14px] font-semibold text-slate-500 underline"
+              >
+                {t("전체 내보내기 (미확인 초안)", "Export all (unconfirmed draft)", "全体を書き出す(未確認の草案)")}
+              </a>
             )}
           </Panel>
 
@@ -477,21 +784,47 @@ export default function PhaseDiagramReviewPage() {
                 title={`${review.sheet.intersection_name ?? review.source_file} ${
                   review.sheet.intersection_no ? `(교차로번호 ${review.sheet.intersection_no})` : ""
                 }`}
-                subtitle={t(
-                  `이미지 ${review.render.image_sha256.slice(0, 12)}… · ${review.render.renderer} · ${review.render.rendered_at}`,
-                  `image ${review.render.image_sha256.slice(0, 12)}… · ${review.render.renderer} · ${review.render.rendered_at}`,
-                  `画像 ${review.render.image_sha256.slice(0, 12)}… · ${review.render.renderer} · ${review.render.rendered_at}`,
-                )}
+                subtitle={
+                  hasImage
+                    ? t(
+                        `이미지 ${review.render.image_sha256?.slice(0, 12)}… · ${review.render.renderer} · ${review.render.rendered_at}`,
+                        `image ${review.render.image_sha256?.slice(0, 12)}… · ${review.render.renderer} · ${review.render.rendered_at}`,
+                        `画像 ${review.render.image_sha256?.slice(0, 12)}… · ${review.render.renderer} · ${review.render.rendered_at}`,
+                      )
+                    : t(
+                        `${review.source_file} · ${review.render.rendered_at}`,
+                        `${review.source_file} · ${review.render.rendered_at}`,
+                        `${review.source_file} · ${review.render.rendered_at}`,
+                      )
+                }
               >
-                <div className="overflow-x-auto rounded border border-slate-200 bg-white p-2">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={phaseDiagramImageUrl(review.review_id)}
-                    alt={t("현시도 렌더 이미지", "Rendered 현시도 band", "現示図のレンダー画像")}
-                    className="max-w-none"
-                    style={{ width: review.render.image_width_px }}
-                  />
-                </div>
+                {hasImage ? (
+                  <div className="overflow-x-auto rounded border border-slate-200 bg-white p-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={phaseDiagramImageUrl(review.review_id)}
+                      alt={t("현시도 렌더 이미지", "Rendered 현시도 band", "現示図のレンダー画像")}
+                      className="max-w-none"
+                      style={{ width: review.render.image_width_px ?? undefined }}
+                    />
+                  </div>
+                ) : (
+                  /* The named absence. Unit #52 puts two media on this screen
+                    * that have no drawing at all, and a placeholder that LOOKED
+                    * like a diagram would make the attestation's image binding
+                    * — "the picture this person actually looked at" — a lie. */
+                  <p className="rounded border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[15px] leading-relaxed text-slate-600">
+                    {noImageSentence(review.render.medium, t)}
+                  </p>
+                )}
+                {review.proposal && (
+                  <a
+                    href={phaseDiagramExportUrl(review.review_id)}
+                    className="mt-3 inline-block text-[14px] font-semibold text-slate-500 underline"
+                  >
+                    {t("엑셀로 내보내기 (미확인)", "Export to Excel (unconfirmed)", "エクセルに書き出す(未確認)")}
+                  </a>
+                )}
               </Panel>
 
               {review.stale_reasons.length > 0 && (
@@ -512,14 +845,28 @@ export default function PhaseDiagramReviewPage() {
 
               <Panel
                 density="console"
-                title={t("모델의 판독 (제안)", "The model's reading (a proposal)", "モデルの判読(提案)")}
+                /* Two sources, two honest titles, ONE status. A spreadsheet was
+                  * not read by a model, so calling it 모델의 판독 would name the
+                  * wrong author — but it is a 제안 for exactly the same reason
+                  * the model's reading is, and both wait for the same 확인. */
+                title={
+                  uploadedProposal
+                    ? t("업로드된 시트 (제안)", "The uploaded sheet (a proposal)", "アップロードされた表(提案)")
+                    : t("모델의 판독 (제안)", "The model's reading (a proposal)", "モデルの判読(提案)")
+                }
                 subtitle={
                   review.proposal
-                    ? t(
-                        `${review.proposal.model} · ${review.proposal.proposed_at} · 이 앱이 검증한 것이 아닙니다`,
-                        `${review.proposal.model} · ${review.proposal.proposed_at} · not verified by this app`,
-                        `${review.proposal.model} · ${review.proposal.proposed_at} · 本アプリの検証ではありません`,
-                      )
+                    ? uploadedProposal
+                      ? t(
+                          `올린 사람: ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · 이 앱이 검증한 것이 아닙니다`,
+                          `uploaded by ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · not verified by this app`,
+                          `アップロード: ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · 本アプリの検証ではありません`,
+                        )
+                      : t(
+                          `${review.proposal.model} · ${review.proposal.proposed_at} · 이 앱이 검증한 것이 아닙니다`,
+                          `${review.proposal.model} · ${review.proposal.proposed_at} · not verified by this app`,
+                          `${review.proposal.model} · ${review.proposal.proposed_at} · 本アプリの検証ではありません`,
+                        )
                     : undefined
                 }
               >
@@ -541,6 +888,19 @@ export default function PhaseDiagramReviewPage() {
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {uploadedProposal && (
+                      /* PROVENANCE, not attestation. It says who sent the file
+                        * in — which is a different claim from "this mapping is
+                        * right", and the only place that claim can be made is
+                        * the 확인 button below. */
+                      <p className="rounded-md border border-slate-300 bg-slate-50 px-3.5 py-2 text-[14px] leading-relaxed text-slate-700">
+                        {t(
+                          `${review.proposal.uploaded_by ?? "—"}님이 올린 엑셀의 내용입니다. 올린 것은 확인이 아닙니다 — 아래에서 확인해야 사용됩니다.`,
+                          `This is the content of the spreadsheet ${review.proposal.uploaded_by ?? "—"} uploaded. Uploading is not confirming — it is used only after 확인 below.`,
+                          `${review.proposal.uploaded_by ?? "—"}さんがアップロードしたエクセルの内容です。アップロードは確認ではありません。`,
+                        )}
+                      </p>
+                    )}
                     <p className="text-[14px] leading-relaxed text-slate-500">
                       {t("도면에 인쇄된 접근로", "Approach legs printed on the drawing", "図面に印刷された流入路")}:{" "}
                       {review.proposal.approaches.map((a) => `${a.label} (${a.side})`).join(", ") || "—"}
@@ -698,18 +1058,31 @@ export default function PhaseDiagramReviewPage() {
                             />
                           </td>
                           <td className="py-1">
-                            <select
-                              value={row.phaseId}
-                              onChange={(event) => setRow(row.linkId, { phaseId: event.target.value })}
-                              className="rounded border border-slate-300 px-1.5 py-1"
-                            >
-                              <option value="">{t("미배정", "unassigned", "未割当")}</option>
-                              {review.sheet.phase_ids.map((phaseId) => (
-                                <option key={phaseId} value={phaseId}>
-                                  {phaseId}
-                                </option>
-                              ))}
-                            </select>
+                            {review.sheet.phase_ids.length > 0 ? (
+                              <select
+                                value={row.phaseId}
+                                onChange={(event) => setRow(row.linkId, { phaseId: event.target.value })}
+                                className="rounded border border-slate-300 px-1.5 py-1"
+                              >
+                                <option value="">{t("미배정", "unassigned", "未割当")}</option>
+                                {review.sheet.phase_ids.map((phaseId) => (
+                                  <option key={phaseId} value={phaseId}>
+                                    {phaseId}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              /* A blank review knows no phase list yet — nothing
+                                * has been parsed or uploaded for it — so the
+                                * number is typed. An empty cell stays a visible
+                                * gap: `submit` skips rows with no phase. */
+                              <input
+                                value={row.phaseId}
+                                onChange={(event) => setRow(row.linkId, { phaseId: event.target.value })}
+                                className="w-20 rounded border border-slate-300 px-1.5 py-1"
+                                placeholder={t("예: Φ1", "e.g. Φ1", "例: Φ1")}
+                              />
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -723,21 +1096,48 @@ export default function PhaseDiagramReviewPage() {
                 </datalist>
 
                 <div className="mt-5 flex flex-wrap items-end gap-3">
-                  <label className="text-[15px] text-slate-700">
-                    <span className="block font-semibold">{t("수준 / 계획 ID", "level / plan", "水準 / 計画ID")}</span>
-                    <select
-                      value={planChoice}
-                      onChange={(event) => setPlanChoice(event.target.value)}
-                      className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
-                    >
-                      <option value="">{t("선택", "select", "選択")}</option>
-                      {review.sheet.plan_choices.map((choice) => (
-                        <option key={`${choice.level_no}:${choice.plan_id}`} value={`${choice.level_no}:${choice.plan_id}`}>
-                          {t("수준", "level", "水準")} {choice.level_no} / ID {choice.plan_id}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  {review.sheet.plan_choices.length > 0 ? (
+                    <label className="text-[15px] text-slate-700">
+                      <span className="block font-semibold">{t("수준 / 계획 ID", "level / plan", "水準 / 計画ID")}</span>
+                      <select
+                        value={planChoice}
+                        onChange={(event) => setPlanChoice(event.target.value)}
+                        className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
+                      >
+                        <option value="">{t("선택", "select", "選択")}</option>
+                        {review.sheet.plan_choices.map((choice) => (
+                          <option key={`${choice.level_no}:${choice.plan_id}`} value={`${choice.level_no}:${choice.plan_id}`}>
+                            {t("수준", "level", "水準")} {choice.level_no} / ID {choice.plan_id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    /* No TOD table to choose from (an uploaded or blank review,
+                      * or a sheet whose table did not parse), so the two numbers
+                      * are ASKED for rather than defaulted. An empty pair does
+                      * not enable 확인 — see `planChosen`. */
+                    <div className="flex items-end gap-2 text-[15px] text-slate-700">
+                      <label>
+                        <span className="block font-semibold">{t("수준", "level", "水準")}</span>
+                        <input
+                          value={planLevelRaw ?? ""}
+                          onChange={(event) => setPlanChoice(`${event.target.value}:${planIdRaw ?? ""}`)}
+                          inputMode="numeric"
+                          className="mt-1.5 w-20 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
+                        />
+                      </label>
+                      <label>
+                        <span className="block font-semibold">{t("계획 ID", "plan id", "計画ID")}</span>
+                        <input
+                          value={planIdRaw ?? ""}
+                          onChange={(event) => setPlanChoice(`${planLevelRaw ?? ""}:${event.target.value}`)}
+                          inputMode="numeric"
+                          className="mt-1.5 w-20 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
+                        />
+                      </label>
+                    </div>
+                  )}
                   <label className="text-[15px] text-slate-700">
                     <span className="block font-semibold">{t("선언 황색시간(초)", "declared amber (s)", "申告黄色時間(秒)")}</span>
                     <input
@@ -809,8 +1209,14 @@ export default function PhaseDiagramReviewPage() {
                     {review.attestation.attested_at}
                   </p>
                   <p className="mt-1.5 text-[14px] leading-relaxed text-slate-600">
-                    {t("이미지 해시", "image sha", "画像ハッシュ")}: {review.attestation.image_sha256.slice(0, 16)}… ·{" "}
-                    {t("제안", "proposal", "提案")}: {review.attestation.proposal_outcome}
+                    {/* A confirmation made against no image says so. Printing a
+                      * dash where the sha goes would read as "unknown"; this
+                      * review HAS no drawing and the record states it. */}
+                    {t("이미지 해시", "image sha", "画像ハッシュ")}:{" "}
+                    {review.attestation.image_sha256
+                      ? `${review.attestation.image_sha256.slice(0, 16)}…`
+                      : t("이미지 없음", "no image", "画像なし")}{" "}
+                    · {t("제안", "proposal", "提案")}: {review.attestation.proposal_outcome}
                   </p>
                   {review.attestation.changes.length > 0 && (
                     <ul className="mt-2.5 list-disc pl-5 text-[14px] leading-relaxed text-slate-700">

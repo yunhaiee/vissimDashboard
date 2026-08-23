@@ -153,6 +153,24 @@ export function phasesHelpEntries(t: Translate): HelpEntry[] {
         "確認済み（CONFIRMED）の交差点のみが信号入力に含まれます — 未確認または再確認が必要な交差点は除外されます。",
       ),
     },
+    // Unit #52 — three ways in, one status. The screen itself carries buttons;
+    // the reason they all end at the same 확인 button lives here.
+    {
+      title: t("입력하는 세 가지 방법", "Three ways to add one", "入力する三つの方法"),
+      body: t(
+        "템플릿을 내려받아 채운 뒤 올리거나, 화면에서 빈 양식을 새로 만들거나, 이미 판독된 제안을 엑셀 초안으로 내보내 고친 뒤 다시 올릴 수 있습니다. 세 가지 모두 결과는 '제안'이며, 확인 버튼을 누르기 전에는 어느 것도 사실이 아닙니다.",
+        "Download the template and upload it filled in, create a blank form on the screen, or export an existing reading as a draft workbook, correct it and send it back. All three produce a PROPOSAL — none of them is a fact until somebody clicks 확인.",
+        "テンプレートを記入して送るか、画面で空の様式を作るか、既存の判読を草案として書き出し修正して再送します。三つとも結果は「提案」であり、確認を押すまで事実ではありません。",
+      ),
+    },
+    {
+      title: t("엑셀에는 도면이 없습니다", "A spreadsheet carries no drawing", "エクセルに図面はありません"),
+      body: t(
+        "엑셀로 만든 검토와 직접 만든 빈 양식에는 현시도 그림이 없습니다. 이 앱은 그 자리에 가짜 이미지를 넣지 않고 '이미지 없음'이라고 적습니다 — 확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로, 없는 그림을 있는 것처럼 표시하면 그 기록이 거짓이 됩니다. 또한 한 줄이라도 거부되면 그 교차로 전체를 가져오지 않습니다.",
+        "A review made from a spreadsheet, or created blank on the screen, has no 현시도 image. This app writes '이미지 없음' there instead of a stand-in picture: a confirmation is bound to the hash of the drawing the person actually looked at, so a fake image would make that record a lie. And if one row is refused, the whole intersection is left out rather than half-imported.",
+        "エクセルから作成した検討や画面で作成した空の様式には現示図の画像がありません。本アプリは代わりの画像を置かず「画像なし」と記します — 確認記録は人が実際に見た図面のハッシュに紐づくためです。また一行でも拒否されればその交差点全体を取り込みません。",
+      ),
+    },
   ];
 }
 
