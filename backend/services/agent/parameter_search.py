@@ -699,12 +699,42 @@ def _graded_nodes(report: Mapping[str, Any]) -> list[str]:
 
 
 def _entrance_unverified_nodes(report: Mapping[str, Any]) -> list[str]:
-    """Nodes whose D4 entrance verdict is not ``measured``.
+    """Nodes carrying a D4 entrance verdict that is not ``measured``.
 
     The premise of every claim past this point is that the demand is fixed
     observed data. A node whose entrance was never verified could be missing
     because the input is wrong, and tuning behaviour to absorb a wrong input is
     the compensating error this whole gate exists to prevent.
+
+    THIS LEG WAS DEAD UNTIL 2026-08-23, and how it died is the reason it now
+    delegates. It read ``outcome["evidence"]["entrance"]`` — a key nothing in
+    this repository has ever written. ``fixes`` puts the verdict at
+    ``evidence["target"]["entrance_measurement"]`` (and on ``also_refused``
+    when a routing proposal displaces the D4 refusal), so the lookup returned
+    ``{}`` on every real report, ``status`` was empty, every node was skipped by
+    the ``not status`` guard, and the refusal could not fire on real data no
+    matter what the entrances said. Only the unit test's own fixture — which
+    fabricated the same nonexistent key — ever exercised it: the bug and its
+    test agreed with each other rather than with production.
+
+    So the read is :func:`geh_ladder.entrance_verdict`, the reader the diagnosis
+    ladder already uses, rather than a second spelling of the same lookup here.
+
+    WHICH STATUSES COUNT (``fixes.ENTRANCE_STATUSES`` is the whole vocabulary):
+    ``measured`` passes and ``unverified`` refuses — and an unknown third word,
+    should one ever appear, refuses too, because this gate may only pass on a
+    verdict it positively recognises as measured.
+
+    A node with NO verdict at all is NOT counted, and that is deliberate rather
+    than lenient: ``fixes.entrance_measurement`` runs only when a demand target
+    was named for a node whose total misses, so an absent verdict means the
+    question was never ASKED — a different fact from "we asked and could not
+    verify", which is the one this refusal is about. Counting silence as
+    ``unverified`` would shut the gate on every node the loop has no target for,
+    which is most of them, and the sentence it printed ("their D4 verdict reads
+    unverified") would be false. The absent-verdict case is not unpoliced: it is
+    ``geh_ladder.NO_DEMAND_TARGET``, which lands the node on
+    ``UNCLASSIFIABLE`` and is what :func:`measure_exhaustion` reads.
     """
     unverified: list[str] = []
     for entry in report.get("nodes") or ():
@@ -712,11 +742,8 @@ def _entrance_unverified_nodes(report: Mapping[str, Any]) -> list[str]:
             continue
         outcome = entry.get("outcome")
         outcome = outcome if isinstance(outcome, Mapping) else {}
-        evidence = outcome.get("evidence")
-        evidence = evidence if isinstance(evidence, Mapping) else {}
-        entrance = evidence.get("entrance")
-        entrance = entrance if isinstance(entrance, Mapping) else {}
-        status = str(entrance.get("status") or "")
+        entrance = geh_ladder.entrance_verdict(outcome)
+        status = str((entrance or {}).get("status") or "")
         node_id = str(entry.get("node_id") or "")
         if not node_id or not status:
             continue

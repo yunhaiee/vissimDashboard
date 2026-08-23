@@ -13,11 +13,12 @@ The tests are grouped the way the module's own risks are:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 import pytest
 
 from services import validation
-from services.agent import mrwa_reference, parameter_search as ps, searched_behaviour_grant
+from services.agent import fixes, mrwa_reference, parameter_search as ps, searched_behaviour_grant
 
 
 # ===========================================================================
@@ -62,11 +63,56 @@ def _runner(cost_s: float = 30.0, **kwargs):
     return ps.SyntheticRunner(surface=_surface, cost_s=cost_s, **kwargs)
 
 
+def _entrance(node_id, status):
+    """A REAL ``fixes.entrance_measurement`` verdict for this node.
+
+    Produced by the D4 function itself rather than hand-typed, for the reason
+    ``test_calibration_rail._behavior`` gives about ``verify_applied_row``: a
+    fixture that spells its own verdict can drift away from the code that
+    produces the real one, and here it did worse than drift. Until 2026-08-23
+    this helper's caller wrote ``evidence["entrance"]`` — a key no producer in
+    this repository writes — so ``_entrance_unverified_nodes`` read ``{}`` on
+    every real report and the ENTRANCE_NOT_MEASURED leg could not fire at all.
+    The bug and the fixture agreed with each other; neither agreed with
+    production. The verdict now comes from the real join, in the real place
+    (``outcome["evidence"]["target"]["entrance_measurement"]``).
+
+    MEASURED and UNVERIFIED are produced by moving the TARGET's link, never by
+    editing the verdict: the observed row enters from link 617, so a vehicle
+    input on 617 is the measured entrance and one on 620 is the entrance no
+    observed row reaches (``ENTRANCE_NO_ROW_ON_INPUT_LINK``).
+    """
+    observed_node = {
+        "node_id": str(node_id),
+        "movements": [
+            {"id": f"{node_id}-617-12.0-618-34.0", "observed": 649.0, "modelled": 601.0}
+        ],
+        "sources": {"observed": "validation_workbook"},
+    }
+    link = "617" if status == fixes.ENTRANCE_MEASURED else "620"
+    verdict = fixes.entrance_measurement(observed_node, {"input_no": "113", "link_no": link})
+    assert verdict["status"] == status, f"fixture: wanted {status}, D4 said {verdict['status']}"
+    return verdict
+
+
 def _node(node_id, *, geh=7.5, rung="CAPACITY_LIMIT", entrance="measured", missing=()):
+    """One report node in the shape ``reality_check`` really emits.
+
+    ``entrance=None`` is the node whose entrance was never ASKED about — no
+    demand target was named, so ``fixes.entrance_measurement`` never ran and no
+    verdict exists. That is a different state from ``unverified`` and the gate
+    treats it differently (see ``_entrance_unverified_nodes``).
+    """
+    evidence: dict = {}
+    if entrance is not None:
+        evidence["target"] = {
+            "input_no": "113",
+            "entrance_measurement": _entrance(node_id, entrance),
+        }
     return {
         "node_id": node_id,
         "node_total_geh": geh,
-        "outcome": {"evidence": {"entrance": {"status": entrance}}},
+        "outcome": {"evidence": evidence},
         "diagnosis": None if rung is None else {"rung": rung, "missing_evidence": list(missing)},
     }
 
@@ -212,6 +258,88 @@ def test_an_unverified_entrance_refuses_and_names_the_node():
     refusal = _refusal(gate, ps.ENTRANCE_NOT_MEASURED)
     assert refusal["detail"]["nodes"] == ["5"]
     assert "5" in refusal["why"]["en"]
+
+
+def _dead_key_reader(report):
+    """The body this leg SHIPPED WITH until 2026-08-23 — byte-verbatim.
+
+    Every line below, including the two isinstance guards and the ``not node_id``
+    half of the skip, is the shipped code copied unchanged; abbreviating it would
+    make the regression a claim about a reader nobody ever ran. Kept as a fixture
+    so the "the old one was blind" half of the test below is a MEASUREMENT.
+    """
+    unverified: list[str] = []
+    for entry in report.get("nodes") or ():
+        if not isinstance(entry, Mapping):
+            continue
+        outcome = entry.get("outcome")
+        outcome = outcome if isinstance(outcome, Mapping) else {}
+        evidence = outcome.get("evidence")
+        evidence = evidence if isinstance(evidence, Mapping) else {}
+        entrance = evidence.get("entrance")
+        entrance = entrance if isinstance(entrance, Mapping) else {}
+        status = str(entrance.get("status") or "")
+        node_id = str(entry.get("node_id") or "")
+        if not node_id or not status:
+            continue
+        if status != fixes.ENTRANCE_MEASURED:
+            unverified.append(node_id)
+    return sorted(set(unverified), key=ps._node_sort_key)
+
+
+def test_the_old_reader_was_blind_to_a_real_report_and_the_new_one_is_not():
+    """THE MEASURED DEFECT (2026-08-23), pinned from both sides.
+
+    ``evidence["entrance"]`` is a key nothing writes. On a report shaped the way
+    ``fixes`` really shapes one, the old reader found nothing, so D4's leg
+    returned no nodes and the gate opened over an unverified entrance — the
+    exact premise failure the refusal exists to prevent. Restoring that lookup
+    fails the second half of this test.
+    """
+    nodes = [_node(n) for n in NODES]
+    nodes[2] = _node("5", entrance="unverified")
+    report = _report(nodes)
+
+    assert _dead_key_reader(report) == [], "fixture: the old key must be absent from a real report"
+    assert ps._entrance_unverified_nodes(report) == ["5"]
+    assert _refusal(_open_gate(reality_check=report), ps.ENTRANCE_NOT_MEASURED)
+
+
+def test_the_verdict_is_found_where_a_routing_proposal_displaced_it():
+    """D4's refusal rides on ``also_refused`` whenever the split lever was
+    available (``fixes.map_node_counts`` arm (b)). A reader that only looked at
+    the outcome's own evidence would call that node verified by silence.
+
+    WHAT THIS IS AND IS NOT: the displaced verdict here is UNVERIFIED, which
+    production cannot produce — only a MEASURED entrance makes arm (a) hold its
+    refusal and fall through (``fixes.py`` 1425, 2443-2444); an unverified one
+    returns its demand proposal and never reaches the routing arm. So this pins
+    the READER's robustness beyond the shapes production emits, deliberately, on
+    the side that would make the gate refuse rather than pass. The real
+    displaced-MEASURED shape is covered end to end where its consequence lives —
+    ``test_calibration_rail.test_step_10_sees_a_measured_verdict_a_routing_proposal_displaced``
+    and ``test_calibration_targets.test_the_displaced_d4_verdict_is_a_real_shape_this_fixture_produces``.
+    """
+    node = _node("5", entrance="unverified")
+    displaced = {
+        "outcome": "PROPOSAL",
+        "scope": "ROUTING_LEVEL",
+        "evidence": {"node_id": "5"},
+        "also_refused": node["outcome"],
+    }
+    node["outcome"] = displaced
+    assert ps._entrance_unverified_nodes(_report([node])) == ["5"]
+
+
+def test_a_node_whose_entrance_was_never_asked_about_is_not_called_unverified():
+    """No demand target ⇒ ``entrance_measurement`` never ran ⇒ no verdict. That
+    is silence, not a failed check, and this leg's sentence ("their D4 verdict
+    reads unverified") would be false about it. The absence is policed by the
+    ladder instead (``NO_DEMAND_TARGET`` → UNCLASSIFIABLE)."""
+    report = _report([_node(n, entrance=None) for n in NODES])
+    assert ps._entrance_unverified_nodes(report) == []
+    codes = {item["code"] for item in _open_gate(reality_check=report)["refusals"]}
+    assert ps.ENTRANCE_NOT_MEASURED not in codes
 
 
 def test_a_cheaper_rung_anywhere_blocks_the_whole_search():

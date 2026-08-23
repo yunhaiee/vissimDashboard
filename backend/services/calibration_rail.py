@@ -60,7 +60,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from services.agent import mrwa_reference, parameter_search, saturation_flow
+from services.agent import geh_ladder, mrwa_reference, parameter_search, saturation_flow
 from services.genesis.gate import GateVerdict
 
 #: The gate's OWN word for "every refuse-tier check genuinely passed", taken
@@ -663,10 +663,32 @@ def _proposals_with_scope(report: Mapping[str, Any], scope: str) -> list[Mapping
 
 
 def _entrance_verdicts(report: Mapping[str, Any]) -> list[str]:
+    """Every node's D4 verdict, read through the ONE reader.
+
+    It used to spell the lookup itself — ``outcome.evidence.target.
+    entrance_measurement``, which is where the demand arm puts it — and that
+    made this step BLIND to the displaced case. ``fixes.map_node_counts`` HOLDS
+    the D4 refusal when the split lever is also available and hangs it on the
+    routing proposal's ``also_refused`` (its arm (b)), so a node whose entrance
+    is measured AND whose split misses carried its verdict somewhere this
+    function never looked. The consequence was not a missing count, it was a
+    FALSE SENTENCE: with that as the only graded node, step ⑩ printed "no
+    entrance carries a D4 measured verdict either" about a report that carried
+    one, and in mixed reports it undercounted ``entrance_measured``.
+
+    :func:`geh_ladder.entrance_verdict` looks in both places and is what the #51
+    gate reads, so the rail and the gate can no longer disagree about the same
+    report.
+
+    WHY NOT the node's ``diagnosis.evidence.entrance_measurement`` (which is the
+    same verdict, already unpacked): ``geh_ladder.classify_node`` attaches it
+    only after its DEMAND_LEVEL and ROUTING_SPLIT rungs have returned, so on a
+    routing proposal — precisely the displaced case — that key is absent. A
+    diagnosis-first read would have re-created this same blind spot one layer up.
+    """
     statuses: list[str] = []
     for node in _seq(report.get("nodes")):
-        target = _map(_map(_map(_map(node).get("outcome")).get("evidence")).get("target"))
-        entrance = _map(target.get("entrance_measurement"))
+        entrance = _map(geh_ladder.entrance_verdict(_map(_map(node).get("outcome"))))
         status = entrance.get("status")
         if isinstance(status, str) and status:
             statuses.append(status)

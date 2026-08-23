@@ -954,6 +954,13 @@ _ENTRANCE_WHY_PHRASES: dict[str, dict[str, str]] = {
 #: (``results_evidence.node_token`` takes the first for the same reason).
 _OBJECT_ID_FROM_LINK_RE = re.compile(r"^(\d+)-(\d+)-")
 
+#: The WHOLE id, anchored at both ends: node, from link, from position, to
+#: link, to position. Anchored because this one is used to read the FOURTH
+#: field, and a prefix match would happily read a link number out of a token
+#: whose tail it never looked at. Positions may be integral or negative
+#: (``-?\d+(?:\.\d+)?``), which is the same reason splitting on "-" is unsafe.
+_OBJECT_ID_FULL_RE = re.compile(r"^(\d+)-(\d+)-(-?\d+(?:\.\d+)?)-(\d+)-(-?\d+(?:\.\d+)?)$")
+
 
 def canonical_link_id(value: Any) -> str:
     """A link id in the ONE spelling both sides of the D4 join are compared in.
@@ -1004,6 +1011,23 @@ def movement_from_link(movement_id: Any) -> str | None:
     """
     match = _OBJECT_ID_FROM_LINK_RE.match(str(movement_id or "").strip())
     return match.group(2) if match else None
+
+
+def movement_to_link(movement_id: Any) -> str | None:
+    """The TO-link of a Vissim movement OBJECT_ID, or ``None``.
+
+    ``"8-12075-168.594386-758-13.532567"`` → ``"758"``: the link that turn
+    leaves node 8 on. The sibling of :func:`movement_from_link`, and it lives
+    here for the same reason that one does — this module owns what an OBJECT_ID
+    is made of, so a consumer that needs the exit link does not get to invent a
+    second parse of the same five fields.
+
+    ``None`` for anything that is not a WHOLE OBJECT_ID, including a token that
+    merely starts like one: the exit link is the fourth field, so a prefix match
+    would report a link out of a string this function never finished reading.
+    """
+    match = _OBJECT_ID_FULL_RE.match(str(movement_id or "").strip())
+    return match.group(4) if match else None
 
 
 def entrance_measurement(
@@ -3062,6 +3086,7 @@ __all__ = [
     "merge_modelled_from_run_result",
     "modelled_from_run_result",
     "movement_from_link",
+    "movement_to_link",
     "node_evidence_from_real_counts",
     "preflight_findings",
     "propose_fix",

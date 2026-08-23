@@ -529,6 +529,7 @@ def evaluate_start(
     period: str | None = None,
     observation_set_id: str | None = None,
     observation_period: str | None = None,
+    targets: Sequence[Any] | None = None,
     sessions_root: Path | None = None,
 ) -> dict[str, Any]:
     """May a search start here, now? Every "no" is a named code.
@@ -547,6 +548,12 @@ def evaluate_start(
     for ``GET /rail``). Nothing on the request body appears here except
     selectors: which run to score against, which observation window, which
     behaviour, how much budget.
+
+    ``targets`` is server-derived too (``routers/calibration._derived_targets``)
+    and is FROZEN onto the plan rather than re-derived on the job thread: the
+    same objects the gate's report was built against are the ones every
+    candidate is scored against, so the search cannot end up optimising one
+    account of the network while the gate was opened on another.
     """
     refusals: list[dict[str, Any]] = []
 
@@ -661,6 +668,7 @@ def evaluate_start(
             period=period,
             observation_set_id=observation_set_id,
             observation_period=observation_period,
+            targets=tuple(targets or ()),
         ),
         budget_s=budget,
         budget_clamped=budget_clamped,
@@ -744,7 +752,10 @@ def start(plan: StartPlan, *, work_root: Path | None = None) -> dict[str, Any] |
             "behavior_no": str(plan.behaviour.get("no") or ""),
             "behavior_name": str(plan.behaviour.get("name") or ""),
             "scenario_id": plan.scenario_id,
-            "scoring": plan.scoring.as_kwargs(),
+            # ``as_record``, not ``as_kwargs``: the kwargs carry pydantic target
+            # objects for the report builder, and a job record must stay a
+            # payload something could serialise.
+            "scoring": plan.scoring.as_record(),
             "calibration_nodes": list(
                 (plan.preconditions.get("split") or {}).get("calibration") or []
             ),

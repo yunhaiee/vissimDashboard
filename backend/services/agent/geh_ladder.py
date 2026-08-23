@@ -603,9 +603,26 @@ def _d4_refusal(outcome: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return None
 
 
-def _entrance_verdict(outcome: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def entrance_verdict(outcome: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """``fixes.entrance_measurement``'s verdict out of whichever evidence block
-    carries it — the demand arm always attaches it under ``target``."""
+    carries it — the demand arm always attaches it under ``target``.
+
+    PUBLIC since 2026-08-23, and that is the point of it: the D4 gate leg in
+    ``parameter_search._entrance_unverified_nodes`` had been reading
+    ``evidence["entrance"]`` — a key no producer in this repository has ever
+    written — so the leg returned ``[]`` on every real report and never fired.
+    Rather than give that module a second (third) opinion about where the
+    verdict lives, it calls THIS function. One reader, one answer.
+
+    Both places a verdict really rides are handled: ``map_node_counts``'s demand
+    arm hangs it under ``evidence["target"]``, and when the D4 refusal is
+    DISPLACED by a routing proposal it travels on that proposal's
+    ``also_refused`` — which is why the loop below looks in both. The OTHER real
+    shape, ``evidence["entrance_measurement"]`` at the top level, belongs to
+    ``fixes._map_latent_demand_overflow`` (a constraint finding, not a node
+    outcome) and cannot reach a reality-check node entry; it is named here so
+    the next reader does not have to re-derive that.
+    """
     for candidate in (outcome, outcome.get("also_refused")):
         if not isinstance(candidate, Mapping):
             continue
@@ -769,7 +786,7 @@ def classify_node(
 
     # -- below the two: the TOTAL misses and no edit was proposed -------------
     d4 = _d4_refusal(outcome)
-    entrance = _entrance_verdict(outcome)
+    entrance = entrance_verdict(outcome)
     base_evidence["entrance_measurement"] = dict(entrance) if entrance else None
 
     if d4 is None:
@@ -1209,6 +1226,7 @@ __all__ = [
     "UNCLASSIFIABLE",
     "VOLUMES_KEY",
     "classify_node",
+    "entrance_verdict",
     "node_congestion",
     "normalize_control",
     "run_congestion_evidence",

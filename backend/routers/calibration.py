@@ -209,12 +209,74 @@ def _language(request: Request) -> str:
     return value if value in {"ko", "en", "ja"} else "ko"
 
 
+def _derived_targets(
+    shadow: dict[str, Any] | None,
+    *,
+    period: str | None,
+    observation_set_id: str | None,
+) -> list[Any] | None:
+    """The edit targets THIS server can derive, or ``None``.
+
+    ONE derivation, called from all three of this router's reality-check call
+    sites, because a page that shows the report, a rail that summarises it and a
+    gate that is evaluated against it must not hold three opinions about which
+    object a miss belongs to. The rules — and the dominance pick they refuse to
+    make — live in ``services.agent.reality_check_targets``; this function is
+    only the I/O half: it reads the observed workbook and hands it, with the
+    offline ``.inpx`` parse the caller already had, to that pure derivation.
+
+    ``None`` (never ``[]``) whenever nothing could be derived, and every such
+    case leaves the report byte-identical to what it was before this unit:
+    ``NO_TARGET_OBJECT`` refusals, naming what was missing.
+
+    ``observation_set_id`` short-circuits, and it costs nothing: a stored
+    observation set needs a ``site_nodes`` map, no route on this router accepts
+    one, and ``observations.observed_side`` refuses without it
+    (``SITE_NODE_MAP_MISSING``) — so those requests come back NOT_CHECKABLE with
+    no nodes to target either way.
+
+    Every failure degrades to ``None`` and a log line, the same rule the other
+    gatherers on this router follow: an unreadable workbook is missing evidence
+    for the targets, not a 500 for the whole screen.
+    """
+    if shadow is None or observation_set_id:
+        return None
+    try:
+        # The MODULE, not a name bound at import: ``tools_metrics`` resolves the
+        # active workbook through this same accessor, so one seam (a workspace
+        # switch, or a test that repoints it) moves both and the derivation
+        # cannot end up reading a different workbook than the report grades.
+        from services import datasets, validation
+        from services.agent import reality_check, reality_check_targets
+
+        observed = reality_check.observed_nodes(
+            validation.load_base_workbook(str(datasets.get_active_real_counts_excel())),
+            period=period or None,
+        )
+        if observed["problem"] is not None:
+            return None
+        derived = reality_check_targets.derive_targets(
+            observed=observed["nodes"], shadow_model=shadow
+        )
+    except Exception as exc:  # noqa: BLE001 — no target is a state, not a fault
+        logger.warning(
+            "calibration: edit targets could not be derived (%s: %s)", type(exc).__name__, exc
+        )
+        return None
+    targets = derived["targets"]
+    logger.debug(
+        "calibration: derived %d edit target(s) over %d node(s)", len(targets), len(derived["nodes"])
+    )
+    return targets or None
+
+
 def _reality_check(
     scenario_id: str | None,
     *,
     period: str | None,
     observation_set_id: str | None,
     observation_period: str | None,
+    targets: list[Any] | None = None,
 ) -> dict[str, Any] | None:
     if not scenario_id:
         return None
@@ -227,6 +289,7 @@ def _reality_check(
     return build_reality_check_report(
         scenario_id,
         period=period or None,
+        targets=targets or None,
         observation_set_id=observation_set_id or None,
         observation_period=observation_period or None,
     )
@@ -255,17 +318,29 @@ def get_reality_check(
     errors, so they come back 200 with ``status`` naming what happened rather
     than as an HTTP failure a UI would have to translate back into a sentence.
 
-    Nothing is passed for ``targets``/``node_control``: this is the SCORING
-    call, and both of those are the caller-supplied inputs that turn a score
-    into a proposal about a specific vehicle input. The agent supplies them
-    when a human asks it to act; a page that is only looking does not.
+    ``targets`` are DERIVED here (:func:`_derived_targets`), which reverses what
+    this docstring said until 2026-08-23. The old sentence — "the agent supplies
+    them when a human asks it to act; a page that is only looking does not" —
+    described a choice that was never available: no producer of targets existed
+    on the server at all, so "not passing them" was not restraint, it was the
+    reason every miss on this screen came back ``NO_TARGET_OBJECT`` forever. The
+    derivation refuses wherever the join is not an identity, and the same one
+    feeds ``GET /rail`` and the search gate so the three cannot disagree.
+
+    ``node_control`` is still not passed, and that IS restraint: whether a node
+    is signalised is a fact this router could read (``get_signal_heads``) but has
+    not, and the diagnosis ladder says "unknown" rather than assuming.
     """
+    shadow = _shadow_model()
     try:
         report = _reality_check(
             scenario_id,
             period=period,
             observation_set_id=observation_set_id,
             observation_period=observation_period,
+            targets=_derived_targets(
+                shadow, period=period, observation_set_id=observation_set_id
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
@@ -346,6 +421,13 @@ def get_flow_rail(
             period=period,
             observation_set_id=observation_set_id,
             observation_period=observation_period,
+            # The SAME derivation ``GET /reality-check`` uses. Step ⑩ counts
+            # demand proposals and D4 entrance verdicts; a rail reading a
+            # targetless report would have shown zero of both while the report
+            # beside it showed them.
+            targets=_derived_targets(
+                shadow, period=period, observation_set_id=observation_set_id
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — a broken run is missing evidence
         logger.warning("calibration: reality check unavailable (%s: %s)", type(exc).__name__, exc)
@@ -442,12 +524,20 @@ def start_parameter_search(request: Request, body: ParameterSearchStartRequest):
     shadow = _shadow_model()
     gate = _gate_for_active_dataset(_language(request))
     health = None if gate else _health_report()
+    # Derived ONCE and used twice below: the report the gate is evaluated
+    # against, and the frozen scoring context every candidate is graded with.
+    # A candidate scored against different targets than the gate saw would be
+    # two opinions about the same network, one of them invisible.
+    targets = _derived_targets(
+        shadow, period=body.period, observation_set_id=body.observation_set_id
+    )
     try:
         report = _reality_check(
             body.scenario_id,
             period=body.period,
             observation_set_id=body.observation_set_id,
             observation_period=body.observation_period,
+            targets=targets,
         )
     except Exception as exc:  # noqa: BLE001 — an unscorable run is missing evidence
         logger.warning(
@@ -496,6 +586,7 @@ def start_parameter_search(request: Request, body: ParameterSearchStartRequest):
         period=body.period,
         observation_set_id=body.observation_set_id,
         observation_period=body.observation_period,
+        targets=targets,
     )
 
     payload = {

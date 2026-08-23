@@ -499,7 +499,15 @@ def _search_evidence(*, entrance="measured", rung="CAPACITY_LIMIT", signals="DON
                 {
                     "node_id": node_id,
                     "node_total_geh": 8.0,
-                    "outcome": {"evidence": {"entrance": {"status": entrance}}},
+                    # The REAL place a D4 verdict rides — the same one this
+                    # file's own ``_node`` helper uses. It said
+                    # ``evidence["entrance"]`` until 2026-08-23, a key nothing
+                    # writes, which is why the ⑫ track's ENTRANCE_NOT_MEASURED
+                    # assertion below passed against a gate leg that could not
+                    # fire on a real report.
+                    "outcome": {
+                        "evidence": {"target": {"entrance_measurement": {"status": entrance}}}
+                    },
                     "diagnosis": {"rung": rung, "missing_evidence": []},
                 }
                 for node_id in node_ids
@@ -629,6 +637,62 @@ def test_step_10_says_unverified_never_unmeasured():
 def test_step_10_done_only_with_a_measured_entrance_and_no_pending_proposal():
     step = _rail(reality_check=_reality_check(nodes=[_node("8", entrance="measured")]))[10]
     assert step["status"] == calibration_rail.DONE
+
+
+def _displaced_node(node_id, *, entrance="measured"):
+    """The shape ``fixes.map_node_counts`` arm (b) really produces.
+
+    When the entrance IS measured, D4's refusal is HELD rather than returned:
+    grading continues into the movement split, a routing proposal is emitted,
+    and the refusal — with its verdict — rides on that proposal's
+    ``also_refused``. So the verdict is NOT under the outcome's own
+    ``evidence.target``; the outcome's target there is the ROUTING one.
+    """
+    return {
+        "node_id": node_id,
+        "node_name": f"node {node_id}",
+        "outcome": {
+            "outcome": "PROPOSAL",
+            "scope": "ROUTING_SPLIT",
+            "evidence": {
+                "node_id": node_id,
+                "target": {"decision_no": "2", "route_no": "1"},
+            },
+            "also_refused": {
+                "outcome": "REFUSAL",
+                "reason_code": "INPUT_VOLUME_IS_OBSERVED_DATA",
+                "evidence": {"target": {"entrance_measurement": {"status": entrance}}},
+            },
+        },
+    }
+
+
+def test_step_10_sees_a_measured_verdict_a_routing_proposal_displaced():
+    """REGRESSION (refuter, 2026-08-24). This step spelled its own lookup and
+    only ever looked at ``outcome.evidence.target``, so a MEASURED verdict that
+    arm (b) moved onto ``also_refused`` was invisible.
+
+    The damage was not a missing number, it was a FALSE CLAIM: with this as the
+    only graded node the step fell through to "no entrance carries a D4 measured
+    verdict either" — about a report that carries exactly one.
+    """
+    step = _rail(reality_check=_reality_check(nodes=[_displaced_node("8")]))[10]
+    assert step["detail"]["entrance_measured"] == 1
+    assert step["status"] == calibration_rail.DONE
+    assert "no entrance carries a D4 measured verdict" not in step["basis"]["en"]
+    assert "한 건도 없습니다" not in step["basis"]["ko"]
+
+
+def test_step_10_counts_displaced_and_undisplaced_verdicts_alike():
+    """The mixed case, where the old reader did not lie outright — it just said
+    one where the truth was two."""
+    step = _rail(
+        reality_check=_reality_check(
+            nodes=[_node("5", entrance="measured"), _displaced_node("8")]
+        )
+    )[10]
+    assert step["detail"]["entrance_measured"] == 2
+    assert step["detail"]["entrance_unverified"] == 0
 
 
 def test_step_10_will_not_tick_when_nodes_merely_reproduce_the_counts():

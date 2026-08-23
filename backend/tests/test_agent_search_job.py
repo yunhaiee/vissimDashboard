@@ -347,6 +347,46 @@ def test_several_searchable_behaviours_are_a_question_not_a_guess(
     _await_job(started.json()["job"]["id"])
 
 
+def test_the_gates_edit_targets_reach_every_candidate_unchanged(client, monkeypatch, wired):
+    """2026-08-23. The report the gate is evaluated on is built WITH the targets
+    ``routers/calibration._derived_targets`` produced; the runner that scores
+    every candidate must be handed the SAME ones.
+
+    MUTATION: dropping ``targets`` anywhere on the route → ``evaluate_start`` →
+    ``StartPlan.scoring`` → ``VissimSearchRunner`` chain leaves each candidate's
+    report attributing its misses to nothing (``NO_TARGET_OBJECT`` everywhere)
+    while the gate was opened on a report that named the objects — two accounts
+    of one network, and the one the search optimises against is the invisible
+    one. The factory below sees the plan, which is where the freeze happens.
+    """
+    from services.agent.tools_metrics import RealityCheckNodeTarget
+
+    derived = [RealityCheckNodeTarget(node_id="3", vehicle_input_no="1")]
+    monkeypatch.setattr(
+        calibration_endpoint,
+        "_derived_targets",
+        lambda shadow, **kwargs: list(derived),
+    )
+    seen: list[Any] = []
+    inner = _synthetic_factory(cost_s=1.0)
+
+    def factory(plan, work_dir, on_candidate):
+        seen.append(plan.scoring)
+        return inner(plan, work_dir, on_candidate)
+
+    monkeypatch.setattr(search_job, "runner_factory", factory)
+    session_id = _open_session(client, monkeypatch)
+
+    response = _start(client, session_id)
+    assert response.json()["started"] is True, response.json()["refusals"]
+    _await_job(response.json()["job"]["id"])
+
+    assert seen, "the runner factory never saw a plan"
+    assert list(seen[0].targets) == derived
+    # ...and that is what the report builder is called with, spread whole.
+    assert seen[0].as_kwargs()["targets"] == derived
+
+
 def test_a_behaviour_that_is_not_there_is_named(client, monkeypatch, wired):
     session_id = _open_session(client, monkeypatch)
     assert search_job.BEHAVIOUR_NOT_FOUND in _codes(_start(client, session_id, behavior_no="99"))
@@ -1628,9 +1668,31 @@ def test_the_observation_window_is_carried_not_re_resolved():
         "period": "AM",
         "observation_set_id": "obs-1",
         "observation_period": "07:00-08:00",
+        "targets": None,
     }
     with pytest.raises(Exception):
         scoring.period = "PM"  # type: ignore[misc] — frozen on purpose
+
+
+def test_the_edit_targets_are_carried_to_every_candidate_too():
+    """2026-08-23. The gate is evaluated on a report built WITH server-derived
+    targets, so a candidate scored WITHOUT them would carry a different account
+    of the same misses (every one of them ``NO_TARGET_OBJECT``) than the gate
+    read. The context freezes the targets beside the window for that reason, and
+    ``_score`` spreads the whole context into the report builder."""
+    from services.agent.tools_metrics import RealityCheckNodeTarget
+
+    target = RealityCheckNodeTarget(node_id="1", vehicle_input_no="1")
+    scoring = search_runner.ScoringContext(period="AM", targets=(target,))
+    assert scoring.as_kwargs()["targets"] == [target]
+    # The job record is a payload, not a place for pydantic models.
+    assert scoring.as_record() == {
+        "period": "AM",
+        "observation_set_id": None,
+        "observation_period": None,
+        "target_nodes": ["1"],
+        "target_count": 1,
+    }
 
 
 # ===========================================================================

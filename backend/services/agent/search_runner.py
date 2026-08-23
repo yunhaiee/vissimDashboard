@@ -440,7 +440,8 @@ def _reap_vissim(
 
 @dataclass(frozen=True)
 class ScoringContext:
-    """Which observed data every candidate is graded against.
+    """Which observed data every candidate is graded against, and against WHICH
+    objects its misses are attributed.
 
     Constructed ONCE, where the search's preconditions are evaluated
     (``services.agent.search_job.evaluate_start``), and carried from there into
@@ -448,18 +449,51 @@ class ScoringContext:
     candidate scored against a different observation set or window than the gate
     was opened on is not comparable to the baseline the gate measured, and the
     search would be optimising one number while reporting another.
+
+    ``targets`` (2026-08-23) is frozen here for the same reason and not a
+    weaker one. The gate is evaluated on a report built WITH the server-derived
+    edit targets; a candidate graded without them would produce a report whose
+    every miss reads ``NO_TARGET_OBJECT`` — same GEH numbers, different account
+    of what they mean — and the acceptance story would be told from one report
+    while the gate was opened on another.
     """
 
     period: str | None = None
     observation_set_id: str | None = None
     observation_period: str | None = None
+    #: ``tools_metrics.RealityCheckNodeTarget`` instances. Typed ``Any`` on
+    #: purpose: naming the class here would mean importing ``tools_metrics`` at
+    #: module scope, which pulls in the whole tool registry and reorders tool
+    #: registration — the trap :meth:`VissimSearchRunner._score` defers its own
+    #: import to avoid. A TUPLE, because this dataclass is frozen and a frozen
+    #: value that holds a mutable list is only half frozen.
+    targets: tuple[Any, ...] = ()
 
     def as_kwargs(self) -> dict[str, Any]:
         return {
             "period": self.period,
             "observation_set_id": self.observation_set_id,
             "observation_period": self.observation_period,
+            # ``None`` rather than ``[]``: ``build_reality_check_report`` treats
+            # an empty list and no list identically, and the absence is the
+            # honest word for "nothing could be derived".
+            "targets": list(self.targets) or None,
         }
+
+    def as_record(self) -> dict[str, Any]:
+        """The JSON-safe half, for the job record.
+
+        :meth:`as_kwargs` carries target OBJECTS bound for
+        ``build_reality_check_report``; a job record is a payload other code may
+        one day serialise, so it gets the node ids and the count instead of
+        models ``json.dumps`` would refuse.
+        """
+        payload = {key: value for key, value in self.as_kwargs().items() if key != "targets"}
+        payload["target_nodes"] = sorted(
+            {str(getattr(target, "node_id", "")) for target in self.targets}
+        )
+        payload["target_count"] = len(self.targets)
+        return payload
 
 
 # ---------------------------------------------------------------------------

@@ -1948,6 +1948,35 @@ def test_movement_from_link_reads_object_ids_and_refuses_labels(movement_id, exp
     assert fixes.movement_from_link(movement_id) == expected
 
 
+@pytest.mark.parametrize(
+    "movement_id, expected",
+    [
+        ("8-617-1229.801336-617-1286.072980", "617"),
+        ("1-508-100.779980-510-62.109716", "510"),
+        ("8-12075-168.594386-758-13.532567", "758"),
+        # Integral positions, and a negative one — the same two shapes the
+        # from-link reader is parametrized over, because the exit link is read
+        # out of the SAME five fields.
+        ("2-207-250-141-5", "141"),
+        ("2-207-250.0-141--5.0", "141"),
+        # A token that merely STARTS like an OBJECT_ID. The exit link is the
+        # fourth field, so an unanchored read would answer "141" here — a link
+        # number pulled out of a string it never finished checking. The
+        # from-link reader may match a prefix (its answer is the second field
+        # and is complete by then); this one may not.
+        ("2-207-250.0-141-5.0-and-then-some", None),
+        ("2-207-250.0-141", None),  # truncated: no exit position at all
+        ("E-W", None),
+        ("북측방면|left", None),
+        ("8", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_movement_to_link_reads_the_whole_object_id_or_nothing(movement_id, expected):
+    assert fixes.movement_to_link(movement_id) == expected
+
+
 def test_d4_latent_demand_overflow_labels_its_ceiling_an_estimate_too():
     """The mapping's OTHER ``set_vehicle_input_volume`` proposal is under the
     same doctrine — and this builder's evidence can never contain an observed
