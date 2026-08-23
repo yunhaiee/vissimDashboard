@@ -210,3 +210,11 @@ D6과 겹치되 축자가 아니어서 별도 항목으로 등재하고 함께 �
 - ko: 노드 위치는 데이터셋의 좌표 정보에서 옵니다. 좌표가 없는 노드는 지도에 나타나지 않으며, 왼쪽 타일이 전체 목록입니다.
 - en: Node placement comes from the dataset's georeference. A node without coordinates does not appear on the map — the tiles beside it are the complete list.
 - ja: ノード位置はデータセットの座標情報に基づきます。座標のないノードは地図に表示されません。左のタイルが完全な一覧です。
+
+## D18. 사람 증언은 완료가 아니다 — A human attestation is not Done
+
+#53(2026-08-24)이 추가한 상태어의 규칙: 증언은 증거의 한 형태이지 측정이 아니다.
+
+- ko: 확인됨(사람 증언)은 완료가 아닙니다 — 사람이 서명한 단계이지 이 제품이 측정한 단계가 아니며, 서명한 네트워크가 바뀌면 다시 확인해야 합니다.
+- en: Confirmed (human attestation) is not Done — it means a named person signed for the step, not that this product measured it, and it must be made again once the network they signed against changes.
+- ja: 確認済み（人の証言）は完了ではありません — 人が署名した段階であり、本製品が測定した段階ではありません。署名した時点のネットワークが変われば、改めて確認が必要です。

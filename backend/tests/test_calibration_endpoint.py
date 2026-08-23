@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 import main
 from routers import assistant as assistant_router
-from services import calibration_rail, workspaces
+from services import calibration_attestation, calibration_rail, workspaces
 from services.agent import saturation_flow
 
 
@@ -116,11 +116,18 @@ def test_rail_returns_thirteen_steps_and_never_invents_a_completion(client: Test
             assert step["source"] != "none", (
                 f"step {step['number']} is {step['status']} with no evidence source"
             )
+        if step["status"] == calibration_rail.DONE:
+            # DONE still means an ARTIFACT answered, so it can never land on a
+            # step this product measures nothing for. #53's CONFIRMED_BY_PERSON
+            # deliberately CAN (that is the whole point of it), and is checked
+            # by the clause above instead: it must still name its source, which
+            # for a signature is the attestation store.
             assert step["manual_area"] is False
     assert set(body["sources"]) == {
         "gate",
         "health",
         "phase_diagrams",
+        "step_attestations",
         "shadow_model",
         "reality_check",
         "scenario_id",
@@ -324,18 +331,27 @@ def test_pending_approvals_is_empty_not_an_error_when_nothing_is_waiting(
 #: The ONLY non-GET route this router is allowed to carry, and the unit that put
 #: it there. #50 shipped a strictly read-only surface; #51's live runner added
 #: one control, and this list is what stops a second one arriving unnoticed.
-_ALLOWED_MUTATIONS = {"/api/calibration/parameter-search/start": "#51 live runner"}
+_ALLOWED_MUTATIONS = {
+    "/api/calibration/parameter-search/start": "#51 live runner",
+    "/api/calibration/step-attestations": "#53 signed human attestation",
+    "/api/calibration/step-attestations/{attestation_id}/revoke": "#53 revocation",
+}
 
 
-def test_the_calibration_router_exposes_no_write_verb_but_the_one_named_control():
+def test_the_calibration_router_exposes_no_write_verb_but_the_named_controls():
     """Approval STILL goes through the endpoint that already owns it.
 
     #50's rule was "no write path at all", and it held until 2026-08-21. #51's
     live runner needed exactly one control — a POST that ENQUEUES A JOB and
     writes to no network; the winner it eventually produces still goes through
-    ``POST /api/assistant/agent/approve`` with its own identity check. So the
-    rule becomes an ALLOWLIST rather than a blanket: a second mutating route on
-    this router, or an approval leg growing here, fails this test by name.
+    ``POST /api/assistant/agent/approve`` with its own identity check. #53 adds
+    two more, and they write something a HUMAN said rather than something a
+    machine will do: a step attestation and its revocation. Neither can approve
+    an edit and neither returns a status — the rail re-derives every step from
+    the store on the next read.
+
+    So the rule stays an ALLOWLIST rather than a blanket: a fourth mutating
+    route on this router, or an approval leg growing here, fails by name.
     """
     for route in main.app.routes:
         path = getattr(route, "path", "")
@@ -373,3 +389,249 @@ def test_the_start_route_refuses_a_body_that_carries_a_verdict(client: TestClien
         headers=admin_headers(),
     )
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /api/calibration/step-attestations (#53)
+#
+# The one write on this router that records something a HUMAN said. The route's
+# whole job is to make the record accountable, so every test here is about a
+# way it could stop being: an anonymous signature, a name from the body, a
+# status decided at the POST, or a signature on a step a machine already judges.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def network(workspace_root: Path) -> str:
+    """A tiny active ``.inpx`` for this workspace — the bytes a signature binds
+    to. Written rather than mocked, because the sha the store stamps has to be
+    the sha of a file that really exists for the staleness rule to mean
+    anything."""
+    from services import datasets
+
+    path = datasets.active_inpx_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"<network>calibration endpoint test</network>")
+    return str(path)
+
+
+def _sign(client: TestClient, *, step: int = 2, reason: str = "현장에서 확인함", **kwargs):
+    return client.post(
+        "/api/calibration/step-attestations",
+        json={"step_number": step, "reason": reason},
+        headers=kwargs.pop("headers", admin_headers()),
+        **kwargs,
+    )
+
+
+def test_an_anonymous_caller_cannot_sign_for_a_step(client: TestClient, network: str):
+    """A confirmation nobody can be named for is not one — so it is a 401
+    before any of the store's own rules are consulted."""
+    response = client.post(
+        "/api/calibration/step-attestations",
+        json={"step_number": 2, "reason": "현장에서 확인함"},
+    )
+    assert response.status_code == 401
+
+
+def test_an_anonymous_caller_cannot_revoke_either(client: TestClient, network: str):
+    created = _sign(client).json()
+    response = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={"reason": "아니었음"},
+    )
+    assert response.status_code == 401
+    # And the claim still stands, which is the point: an anonymous caller must
+    # not be able to strip a named person's signature off a project.
+    rail = client.get("/api/calibration/rail", headers=admin_headers()).json()
+    step = next(item for item in rail["steps"] if item["number"] == 2)
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+
+
+def test_the_attester_comes_from_the_session_and_a_body_cannot_claim_one(
+    client: TestClient, network: str
+):
+    """``extra="forbid"`` means an invented ``attested_by`` is a 422 at the
+    door, not a field that quietly does nothing — the same door
+    ``ParameterSearchStartRequest`` closes on an invented gate verdict."""
+    for forged in ({"attested_by": "somebody-else"}, {"attested_at": "1999-01-01T00:00:00Z"}):
+        response = client.post(
+            "/api/calibration/step-attestations",
+            json={"step_number": 2, "reason": "현장에서 확인함", **forged},
+            headers=admin_headers(),
+        )
+        assert response.status_code == 422, forged
+
+    recorded = _sign(client).json()
+    assert recorded["attested_by"] == "suite-admin"
+    assert recorded["attested_at"].startswith("20")
+
+
+def test_the_post_records_the_claim_and_decides_no_status(client: TestClient, network: str):
+    """The response carries the RECORD and no status word at all.
+
+    A status here would be a second place a step's state is decided; the rail
+    re-derives it from the store on the next read, and that read is what the
+    screen shows.
+    """
+    body = _sign(client).json()
+    assert set(body) >= {"id", "step_number", "attested_by", "attested_at", "reason", "stale"}
+    assert "status" not in body
+    assert body["stale"] is False
+
+    rail = client.get("/api/calibration/rail", headers=admin_headers()).json()
+    step = next(item for item in rail["steps"] if item["number"] == 2)
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+    assert step["source"] == "calibration_attestation"
+    assert step["attestation"]["id"] == body["id"]
+    assert rail["sources"]["step_attestations"] is True
+
+
+def test_an_empty_reason_is_a_named_refusal_not_a_bare_400(client: TestClient, network: str):
+    response = _sign(client, reason="   ")
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["reason_code"] == "calibration_attestation_reason_required"
+    assert set(detail["message"]) == {"ko", "en", "ja"}
+
+
+@pytest.mark.parametrize("step", [1, 6, 7, 12])
+def test_a_step_with_machine_evidence_is_refused_by_name(
+    client: TestClient, network: str, step: int
+):
+    response = _sign(client, step=step)
+    assert response.status_code == 400
+    assert response.json()["detail"]["reason_code"] == "calibration_attestation_step_not_attestable"
+
+
+def test_revoking_returns_the_withdrawn_record_and_the_rail_falls_back(
+    client: TestClient, network: str
+):
+    created = _sign(client).json()
+    revoked = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={"reason": "다시 보니 아니었음"},
+        headers=admin_headers(),
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["revoked"] is True
+    assert [event["event"] for event in revoked.json()["history"]] == ["attested", "revoked"]
+
+    rail = client.get("/api/calibration/rail", headers=admin_headers()).json()
+    step = next(item for item in rail["steps"] if item["number"] == 2)
+    assert step["status"] == calibration_rail.NO_EVIDENCE
+    assert step["attestation"] is None
+
+
+def test_revoking_requires_a_reason_on_the_body(client: TestClient, network: str):
+    created = _sign(client).json()
+    response = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={},
+        headers=admin_headers(),
+    )
+    assert response.status_code == 422
+
+
+def test_revoking_twice_is_a_named_409_over_http(client: TestClient, network: str):
+    """The store's refusal reaches the caller as its own status and code.
+
+    AUTHORITY: the refuter, 2026-08-24 — all four of these paths were probed
+    functionally and found correct, and NONE of them had a test. A refusal that
+    is right today and reachable only through a mapping nobody pins is a 500
+    (or a silent 200) one refactor away, and the whole point of a named refusal
+    is that a UI can render the sentence rather than translate a status code.
+    """
+    created = _sign(client).json()
+    first = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={"reason": "아니었음"},
+        headers=admin_headers(),
+    )
+    assert first.status_code == 200
+    second = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={"reason": "또 아니었음"},
+        headers=admin_headers(),
+    )
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["reason_code"] == "calibration_attestation_already_revoked"
+    assert set(detail["message"]) == {"ko", "en", "ja"}
+
+
+@pytest.mark.parametrize("attestation_id", ["deadbeefcafe", "not-an-id", "0" * 32])
+def test_revoking_an_unknown_attestation_is_a_named_404(
+    client: TestClient, network: str, attestation_id: str
+):
+    """404 and not 400, for all three shapes of "no such record".
+
+    A malformed id and an id that simply is not here must be indistinguishable:
+    telling the two apart would let a caller enumerate which ids exist in a
+    project they cannot otherwise read.
+    """
+    response = client.post(
+        f"/api/calibration/step-attestations/{attestation_id}/revoke",
+        json={"reason": "x"},
+        headers=admin_headers(),
+    )
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"]["reason_code"] == "calibration_attestation_not_found"
+
+
+def test_an_over_long_reason_is_a_named_422_on_both_acts(client: TestClient, network: str):
+    """Refused, never truncated — a signature whose stated reason was silently
+    cut in half is a claim its author did not make."""
+    too_long = "가" * (calibration_attestation.MAX_REASON_CHARS + 1)
+
+    signing = _sign(client, reason=too_long)
+    assert signing.status_code == 422
+    assert signing.json()["detail"]["reason_code"] == "calibration_attestation_reason_too_long"
+
+    created = _sign(client).json()
+    revoking = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={"reason": too_long},
+        headers=admin_headers(),
+    )
+    assert revoking.status_code == 422
+    assert revoking.json()["detail"]["reason_code"] == "calibration_attestation_reason_too_long"
+    # And the claim still stands: a refused revocation withdrew nothing.
+    rail = client.get("/api/calibration/rail", headers=admin_headers()).json()
+    step = next(item for item in rail["steps"] if item["number"] == 2)
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+
+
+def test_a_whitespace_only_reason_on_a_REVOCATION_is_refused(client: TestClient, network: str):
+    """``{"reason": "   "}`` clears pydantic (it is a string) and is caught by
+    the store's own strip — so this is the case a body-shape check alone would
+    let through, on the act that REMOVES a named person's claim."""
+    created = _sign(client).json()
+    response = client.post(
+        f"/api/calibration/step-attestations/{created['id']}/revoke",
+        json={"reason": "   \n\t "},
+        headers=admin_headers(),
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason_code"] == "calibration_attestation_reason_required"
+    assert set(response.json()["detail"]["message"]) == {"ko", "en", "ja"}
+    # Nothing was withdrawn.
+    rail = client.get("/api/calibration/rail", headers=admin_headers()).json()
+    step = next(item for item in rail["steps"] if item["number"] == 2)
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+    assert step["attestation"]["id"] == created["id"]
+
+
+def test_a_signature_does_not_leak_into_another_workspace(
+    client: TestClient, network: str, workspace_root: Path
+):
+    """The rail is workspace-scoped, and so is the signature behind it."""
+    other = workspaces.create_workspace("다른 프로젝트")
+    _sign(client)
+    rail = client.get(
+        "/api/calibration/rail",
+        headers={**admin_headers(), "X-Workspace-Id": other["id"]},
+    ).json()
+    step = next(item for item in rail["steps"] if item["number"] == 2)
+    assert step["status"] == calibration_rail.NO_EVIDENCE
+    assert step["attestation"] is None

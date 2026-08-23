@@ -31,7 +31,9 @@
 // the evidence that produced it.
 //
 // THE ONE RULE IT RENDERS. Six of the thirteen steps have no evidence source in
-// this product, and they say "증거 없음 — 수동 확인 영역" forever. A rail
+// this product, and they say "증거 없음 — 수동 확인 영역" until a named person
+// SIGNS for one (#53) — at which point they say 확인됨(사람 증언), which is a
+// different word from 완료 and is never mistaken for it. A rail
 // showing thirteen ticks on an uncalibrated network would be a claim nobody
 // measured, which is the failure this whole codebase is arranged against.
 // So NO_EVIDENCE is styled as a real, readable state — not as a greyed-out
@@ -46,6 +48,12 @@
 // NOT_APPLICABLE and NO_EVIDENCE are told apart by WEIGHT and hairline on the
 // neutral ramp, never by a fourth hue. The proposal badge is sky for the same
 // reason the NEXT chip is.
+//
+// #53 adds the sixth status without adding a colour: CONFIRMED_BY_PERSON (a
+// named human signed for a step no artifact speaks to) is the SAME emerald,
+// unfilled — a positive state, told apart from DONE by weight, exactly as the
+// three neutral states are told apart from each other. Nothing about the rule
+// bends: the step is not shown as done, and the label says whose claim it is.
 //
 // WHAT #50-c CHANGED, and why (the user, 2026-08-20, driving the real screen):
 // "거의 모든 fine text는 크게/직관적 대안/없애" and, on the mono provenance
@@ -110,6 +118,10 @@ type Translate = (ko: string, en: string, ja?: string) => string;
 
 const STATUS_LABELS: Record<CalibrationStepStatus, [string, string, string]> = {
   DONE: ["완료", "Done", "完了"],
+  // #53. The chip says WHOSE claim it is, in the label itself, because that is
+  // the only thing separating it from 완료 at a glance — and the separation is
+  // the whole reason the word exists.
+  CONFIRMED_BY_PERSON: ["확인됨(사람 증언)", "Confirmed (human attestation)", "確認済み（人の証言）"],
   IN_PROGRESS: ["진행", "In progress", "進行中"],
   NEXT: ["다음 할 일", "Next", "次の作業"],
   NOT_APPLICABLE: ["해당 없음", "Not applicable", "該当なし"],
@@ -119,6 +131,7 @@ const STATUS_LABELS: Record<CalibrationStepStatus, [string, string, string]> = {
 /** The order every status tally is printed in — the server's own. */
 const STATUS_ORDER: CalibrationStepStatus[] = [
   "DONE",
+  "CONFIRMED_BY_PERSON",
   "IN_PROGRESS",
   "NEXT",
   "NOT_APPLICABLE",
@@ -128,6 +141,16 @@ const STATUS_ORDER: CalibrationStepStatus[] = [
 // Neutral for three of the five, on purpose — see the header's colour note.
 const STATUS_CHIP: Record<CalibrationStepStatus, string> = {
   DONE: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  // #53. The emerald FAMILY, because a signed step is a positive state and the
+  // three-colour rule has exactly one hue for that — but UNFILLED, so it is
+  // told apart from DONE by weight rather than by a fourth colour. DONE is a
+  // tint with a hairline; this is a hairline on the page's own surface, which
+  // is the same distinction NO_EVIDENCE already uses against NOT_APPLICABLE.
+  // `text-emerald-700` reads correctly in both themes: globals.css's dark
+  // @theme remaps the whole emerald ramp (700 -> #9cc8a4, a light sage), and
+  // `bg-surface` is the token that follows the theme, so this is never
+  // dark-green-on-dark the way a stock shade would be.
+  CONFIRMED_BY_PERSON: "border-emerald-200 bg-surface text-emerald-700",
   IN_PROGRESS: "border-slate-400 bg-slate-100 text-slate-800",
   // `text-sky-600`, not 700: globals.css's dark `@theme` remaps sky-50 to a NAVY
   // (#032042) but only remaps sky-400/500/600 on the text side, so a `text-sky-700`

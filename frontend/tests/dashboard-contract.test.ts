@@ -8765,16 +8765,38 @@ contractTest("unit #50: the flow rail renders the guideline's thirteen steps and
   // the same thing: the sentence and the manual-area naming are the backend's.
   const page = read("app/calibration/page.tsx");
 
-  // The statuses are the SERVER's vocabulary. A sixth word invented on the
-  // client would be a status no backend rule can produce, and therefore a
-  // claim nothing measured.
+  // The statuses are the SERVER's vocabulary. A word invented on the client
+  // would be a status no backend rule can produce, and therefore a claim
+  // nothing measured.
+  //
+  // WIDENED BY #53 (2026-08-23) from five words to six. CONFIRMED_BY_PERSON is
+  // `services/calibration_rail.CONFIRMED_BY_PERSON`, added because nine of the
+  // thirteen steps have no artifact at all and had no way to say a named person
+  // had done the work. It is pinned in the SAME list as the other five, on
+  // purpose: what makes it safe is that it arrives on the wire like every other
+  // status, and the day it can be produced client-side is the day this pin
+  // stops meaning anything. The backend pins the same set from its own side
+  // (tests/test_calibration_rail.test_the_status_vocabulary_has_exactly_six_words),
+  // and the union type it is spelled into lives in lib/api.ts.
   pin.match(
     rail,
     /const STATUS_LABELS: Record<CalibrationStepStatus, \[string, string, string\]>/,
-    "expected the five statuses to be labelled from the wire type, not from a client-side list",
+    "expected the six statuses to be labelled from the wire type, not from a client-side list",
   );
-  for (const status of ["DONE", "IN_PROGRESS", "NEXT", "NOT_APPLICABLE", "NO_EVIDENCE"]) {
+  for (const status of [
+    "DONE",
+    "CONFIRMED_BY_PERSON",
+    "IN_PROGRESS",
+    "NEXT",
+    "NOT_APPLICABLE",
+    "NO_EVIDENCE",
+  ]) {
     pin.match(rail, literalPattern(`${status}:`), `expected the rail to label the ${status} status`);
+    pin.match(
+      read("lib/api.ts"),
+      literalPattern(`| "${status}"`),
+      `expected ${status} to be a member of the CalibrationStepStatus wire union`,
+    );
   }
 
   // The step's own basis sentence is the backend's, picked by language. It is
@@ -8868,6 +8890,17 @@ contractTest("unit #50: the rail's step status is never computed on the client",
     source,
     /status: "DONE"/,
     "expected no client-side assignment of DONE -- statuses come from /api/calibration/rail",
+  );
+  // #53's word is the one most tempting to compute here: the browser POSTS the
+  // signature, so it KNOWS a step was just confirmed and could paint the chip
+  // without waiting. It must not -- the server decides whether that signature
+  // upgrades anything (machine evidence outranks it, a stale one upgrades
+  // nothing), so an optimistic chip would be a status no rule produced. The
+  // POST response carries no status either; the screen re-reads the rail.
+  pin.doesNotMatch(
+    source,
+    /status: "CONFIRMED_BY_PERSON"|status = "CONFIRMED_BY_PERSON"/,
+    "expected no client-side assignment of CONFIRMED_BY_PERSON -- a signature's effect on a step is the rail's answer, re-read after the POST",
   );
   pin.doesNotMatch(
     source,
@@ -10535,13 +10568,13 @@ contractTest(
 );
 
 contractTest(
-  "unit #50-e: the assistant-handoff event name agrees across FloatingAssistant's receiver and all three dispatchers",
+  "unit #50-e: the assistant-handoff event name agrees across FloatingAssistant's receiver and all four dispatchers",
   (pin) => {
     // AUTHORITY: the refuter, 2026-08-23 -- MEASURED: mutating
     // FloatingAssistant.tsx's addEventListener/removeEventListener string by
-    // ONE CHARACTER fails ZERO existing tests while silently breaking all
-    // three dispatchers (app/health/page.tsx, CurationBar.tsx, and this
-    // unit's own node-detail CTA) -- the drawer simply never opens, with no
+    // ONE CHARACTER fails ZERO existing tests while silently breaking every
+    // dispatcher (app/health/page.tsx, CurationBar.tsx, #50-e's own node-detail
+    // CTA, and #53's ⑪ station CTA) -- the drawer simply never opens, with no
     // error anywhere a reader would see it. Each side declares the string
     // independently BY DESIGN (see each file's own comment on why this is not
     // a shared import -- the event NAME is the contract), which is exactly
@@ -10564,6 +10597,7 @@ contractTest(
       ["app/health/page.tsx", "the finding/report handoff buttons"],
       ["components/dashboard/CurationBar.tsx", "the insight-card handoff button"],
       ["components/calibration/NodeScoreTable.tsx", "the next-action CTA this unit (#50-e) added"],
+      ["app/calibration/page.tsx", "#53's ⑪ 경로 선택 station CTA -- the fourth dispatcher"],
     ];
     for (const [file, what] of dispatchers) {
       pin.match(
@@ -10621,6 +10655,346 @@ contractTest("unit #50-e: the next-action box hands the user to the assistant, p
   pin.match(builder, /text\.ko/, "expected the ko template to carry the server's own ko next-action text, not a paraphrase");
   pin.match(builder, /text\.en/, "expected the en template to carry the server's own en next-action text");
   pin.match(builder, /text\.ja/, "expected the ja template to carry the server's own ja next-action text");
+});
+
+// ---------------------------------------------------------------------------
+// Unit #53 — 단계별 서명 증언: the nine steps with no machine evidence get an
+// ACTION, and the action is a SIGNATURE rather than a checkbox.
+//
+// The failure this whole unit is one character away from is "mark as done". The
+// pins below are aimed at the four things that keep it from being that:
+//
+//   1. WHICH steps may be signed is the server's flag, not a list kept here;
+//   2. the browser cannot say WHO signed or WHEN — those are not on the body;
+//   3. what a signature DOES to a step is the rail's answer, re-read after the
+//      POST (pinned in the "never computed on the client" test above);
+//   4. the 수동 확인 영역 promise (doctrine item D9) is untouched — a signed
+//      step still is not shown as done, and the sentence that says so is still
+//      unfolded on the station it belongs to.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #53: every station with no machine evidence carries a signature control, and the SERVER says which steps", (pin) => {
+  const page = withoutComments(read("app/calibration/page.tsx"));
+
+  // THE FLAG, not a list. A client-side copy of ATTESTABLE_STEPS would be a
+  // second opinion about which steps carry machine evidence, and it would drift
+  // the first time one of them gained an artifact.
+  pin.match(
+    page,
+    /steps\.filter\(\(step\) => step\.attestable\)/,
+    "expected the signable steps to be filtered by the server's own `attestable` flag",
+  );
+  pin.doesNotMatch(
+    page,
+    /\[\s*2,\s*3,\s*4,\s*5,\s*8,\s*9,\s*10,\s*11,\s*13\s*\]/,
+    "expected NO client-side copy of the signable-step list -- that set is services/calibration_rail.ATTESTABLE_STEPS",
+  );
+
+  // Every station whose steps have no machine evidence renders the rows. All
+  // four, named, because a station that quietly lost them would leave its steps
+  // exactly as unanswerable as they were before this unit.
+  for (const station of ["transit", "demand", "assignment", "manual"]) {
+    pin.match(
+      page,
+      new RegExp(`activeStation === "${station}" && \\(`),
+      `expected the ${station} station to have a body of its own`,
+    );
+  }
+  const signatureRows = page.match(/<StepSignatures\b/g) ?? [];
+  assert.equal(
+    signatureRows.length,
+    4,
+    `expected the signature rows at all four stations with signable steps (transit, demand, assignment, manual) -- found ${signatureRows.length}`,
+  );
+
+  // AND THE STATION'S OWN ACTION BESIDE THEM. Each of the three single-step
+  // stations owes something more specific than "sign for it", and what it owes
+  // is the thing its evidence gap actually points at.
+  pin.match(page, /href="\/genesis\/demand"/, "expected ⑩ to link to where demand inputs are actually built");
+  pin.match(page, /href="\/docs"/, "expected ⑨ to link to the doctrine that says why this product measures nothing for it");
+  pin.match(
+    page,
+    /requestAgentHandoff\(buildRouteSplitPrompt\(step, lang, t\)\)/,
+    "expected ⑪ to hand the user to the assistant, prefilled from THIS step",
+  );
+
+  // The prompt is built from the STEP, in all three languages -- same rule as
+  // #50-e's node-id splice: a CTA opened on ⑪ must not ask about some other step.
+  const builderAt = page.indexOf("function buildRouteSplitPrompt");
+  const builder = page.slice(builderAt, page.indexOf("\n}", builderAt));
+  const splices = builder.match(/\$\{number\}/g) ?? [];
+  assert.ok(
+    splices.length >= 3,
+    `expected the step number interpolated into the ko, en AND ja templates -- found ${splices.length} splice(s)`,
+  );
+  pin.match(builder, /stepLabel\(step, lang\)/, "expected the prompt to use the SERVER's label for the step, not a paraphrase");
+});
+
+contractTest("unit #53: the browser cannot say who signed, when, or that a step is done", (pin) => {
+  const api = read("lib/api.ts");
+
+  for (const binding of ["postCalibrationStepAttestation", "revokeCalibrationStepAttestation"]) {
+    pin.match(
+      api,
+      literalPattern(`export async function ${binding}(`),
+      `expected a shared binding for ${binding} -- a bare fetch would skip withWorkspaceHeader and sign against the DEFAULT project`,
+    );
+  }
+
+  // THE BODY, exactly. The attester is the session and the clock is the
+  // server's; the backend's request model forbids extra fields, so sending
+  // either is a 422 at the door -- and this pin is what stops the client from
+  // sending one in the first place and getting a confusing 422 instead of a
+  // signature.
+  // Sliced by LENGTH, not to the next `\n}` -- these two bindings take an
+  // inline object type, so their parameter list closes with a line-leading `}`
+  // and a to-the-brace slice would stop before the body it is checking.
+  const bindingAt = api.indexOf("export async function postCalibrationStepAttestation(");
+  assert.ok(bindingAt > 0, "slice sanity: the signing binding must exist");
+  const binding = api.slice(bindingAt, bindingAt + 900);
+  pin.match(
+    binding,
+    /JSON\.stringify\(\{ step_number: params\.stepNumber, reason: params\.reason \}\)/,
+    "expected the POST body to be exactly the two things a caller decides: which step, and why",
+  );
+  pin.doesNotMatch(
+    binding,
+    /attested_by|attested_at/,
+    "expected NO attester and NO timestamp on the body -- a claim about who said what, dated by the client, is not an attestation",
+  );
+
+  // A REVOCATION IS A SIGNED ACT TOO, with a reason of its own.
+  const revokeAt = api.indexOf("export async function revokeCalibrationStepAttestation(");
+  assert.ok(revokeAt > 0, "slice sanity: the revocation binding must exist");
+  const revoke = api.slice(revokeAt, revokeAt + 900);
+  pin.match(revoke, /JSON\.stringify\(\{ reason: params\.reason \}\)/, "expected a revocation to carry its own reason");
+});
+
+contractTest("unit #53: a reason is mandatory on both acts, and the form states what signing records", (pin) => {
+  const page = read("app/calibration/page.tsx");
+  const surface = withoutFolds(withoutComments(page));
+
+  // The server refuses an empty reason by name; the form must not let a reader
+  // discover that by round trip. Both the disabled submit and the sentence that
+  // explains the disablement are on the surface.
+  pin.match(
+    surface,
+    /disabled=\{busy \|\| reason\.trim\(\)\.length === 0\}/,
+    "expected the submit to be disabled until a reason is typed -- an empty one is a named refusal server-side",
+  );
+  pin.match(
+    surface,
+    /\{t\("이유를 적어야 합니다\.", "A reason is required\.", "理由の記入が必要です。"\)\}/,
+    "expected the form to say WHY the button is disabled, in all three languages",
+  );
+
+  // WHAT THE ACT RECORDS, beside the control that performs it -- the 현시도
+  // confirm form's own sentence, one screen over. This is an act statement, not
+  // doctrine: it describes what this button does to this project's files. Why a
+  // signature is never 완료 is the knowledge file's business (/docs), and the
+  // #50-d eviction sweep is what holds that line.
+  pin.match(
+    surface,
+    /로그인한 사용자의 이름과 시각, 그리고 지금 네트워크 파일의 해시가 함께 기록됩니다/,
+    "expected the signing form to state what is recorded, on the surface",
+  );
+  pin.match(
+    surface,
+    /철회해도 기록은 지워지지 않습니다/,
+    "expected the revocation form to state that nothing is deleted -- append-only is a promise a reader is entitled to before withdrawing",
+  );
+  for (const sentence of [
+    "Confirming records the signed-in user's name",
+    "Revoking deletes nothing",
+    "確認すると、ログイン中の利用者名",
+    "撤回しても記録は消えません",
+  ]) {
+    pin.match(surface, literalPattern(sentence), `expected the ${sentence.slice(0, 18)}… sentence in every language`);
+  }
+});
+
+contractTest("unit #53: the signature row shows who signed and folds only its provenance", (pin) => {
+  const page = read("app/calibration/page.tsx");
+  const surface = withoutFolds(withoutComments(page));
+
+  // WHO, WHEN, AND THEIR OWN WORDS -- on the surface. The reason is the
+  // justification of the state beside it, which is exactly why `step.basis`
+  // stayed on the surface in #50-c; a signature whose reason was folded away
+  // would be a name and a date, which is the tick this record type replaces.
+  pin.match(surface, /<b>\{attestation\.attested_by\}<\/b>/, "expected the attester's name on the surface, in bold");
+  pin.match(surface, /\{attestation\.attested_at\}/, "expected the date it was signed on the surface");
+  pin.match(surface, /\{attestation\.reason\}/, "expected the signer's own stated reason on the surface");
+
+  // 재확인 필요 -- the SERVER's staleness answer, rendered as a state a reader
+  // acts on. Never computed here: `stale` is the server comparing the .inpx it
+  // was signed against with the one on disk now.
+  pin.match(
+    surface,
+    /attestation\?\.stale &&/,
+    "expected the stale state to be read off the server's flag",
+  );
+  pin.match(
+    surface,
+    /\{t\("재확인 필요", "Re-confirm", "再確認が必要"\)\}/,
+    "expected a stale signature to say so where the control to renew it is",
+  );
+
+  // PROVENANCE FOLDS, the same split #50-c made everywhere else on this screen.
+  pin.doesNotMatch(
+    surface,
+    /inpx_sha256/,
+    "expected the network hash to live inside the fold -- it is provenance, and a mono hash on the surface is the exact shape the user's 2026-08-20 decision evicted",
+  );
+  pin.match(
+    withoutComments(page),
+    /\{t\("자세히 \(서명 이력\)", "More \(the signing history\)", "詳細（署名の履歴）"\)\}/,
+    "expected the signing history to be reachable in one click -- append-only is worth nothing if nobody can read the appended events",
+  );
+});
+
+contractTest("unit #53: the 수동 확인 영역 promise survives the signature control", (pin) => {
+  // D9 IS THE ONE DOCTRINE SENTENCE THAT STAYS ON THIS SCREEN (the #50-d ③
+  // ledger below owns that rule). #53 adds a control to the very station it
+  // belongs to, which is exactly the edit that would drop it by accident -- so
+  // it is pinned again HERE, inside the station branch this unit rewrote,
+  // together with the rows that now sit under it.
+  const page = withoutComments(read("app/calibration/page.tsx"));
+  const manualAt = page.indexOf('activeStation === "manual" && (');
+  assert.ok(manualAt > 0, "slice sanity: the manual station's branch must exist");
+  const manual = page.slice(manualAt, manualAt + 1600);
+
+  pin.match(
+    withoutFolds(manual),
+    /이 제품은 위 단계들을 측정하지 않습니다 — 완료로 표시하지 않습니다/,
+    "expected the manual station's promise to stay UNFOLDED above the new controls -- a signature does not make this product measure anything",
+  );
+  pin.match(
+    manual,
+    /<StepSignatures\b/,
+    "expected the six manual-check steps to carry the signature rows -- they are the steps with the least evidence and the most need to say a person did the work",
+  );
+  const promiseAt = manual.indexOf("이 제품은 위 단계들을 측정하지 않습니다");
+  assert.ok(
+    promiseAt >= 0 && promiseAt < manual.indexOf("<StepSignatures"),
+    "the promise must be read BEFORE the control it qualifies, not underneath it",
+  );
+});
+
+/**
+ * One entry of FlowRail's `STATUS_LABELS` / `STATUS_CHIP` tables, as SOURCE TEXT.
+ *
+ * Reading the entries out instead of regex-ing for a literal is what makes the
+ * DIFFERENCE assertions below possible: a pin can only say "this string is
+ * still here", and the claim that actually matters — that two statuses do not
+ * render the same — is a comparison between two entries, so both have to be
+ * extracted before either can be checked.
+ *
+ * Fails closed: a renamed table, a missing status, or a table whose closing
+ * `};` moved all raise here by name rather than yielding an empty string that
+ * would make every comparison downstream vacuously true.
+ */
+function statusTableEntry(source: string, table: string, status: string): string {
+  const at = source.indexOf(`const ${table}`);
+  assert.ok(at > 0, `slice sanity: FlowRail.tsx must declare ${table}`);
+  const end = source.indexOf("\n};", at);
+  assert.ok(end > at, `slice sanity: ${table} must close with a line-leading };`);
+  const match = new RegExp(`^\\s*${status}: (.+?),?\\s*$`, "m").exec(source.slice(at, end));
+  assert.ok(match, `${table} carries no entry for ${status}`);
+  return match![1].replace(/,$/, "").trim();
+}
+
+/** The double-quoted strings in one such entry, unescaped-as-written. */
+function tsStringsIn(entry: string): string[] {
+  return [...entry.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]);
+}
+
+contractTest("unit #53: the sixth status word is not a second spelling of 완료", (pin) => {
+  // AUTHORITY: the refuter, 2026-08-24. MEASURED, on a suite that was green:
+  //
+  //   * relabelling CONFIRMED_BY_PERSON to ["완료됨", "Done", "完了"] -- en and
+  //     ja BYTE-IDENTICAL to DONE's own labels -- passed 195/195;
+  //   * separately, refilling its chip with DONE's tint passed 195/195 too.
+  //
+  // Every pin this unit shipped asserted the KEY existed. A key is not a word.
+  // The entire reason CONFIRMED_BY_PERSON exists rather than reusing DONE is
+  // that a reader must never mistake "a person signed for this" for "an
+  // artifact proved this" -- and that distinction lives nowhere in the code
+  // except the label a reader reads and the colour it sits in. Both are pinned
+  // LITERALLY here, and both are additionally asserted DIFFERENT from DONE's,
+  // because a literal pin alone is satisfied by an edit that updates the pin
+  // and the label together into the same word DONE already uses.
+  const rail = withoutComments(read("components/calibration/FlowRail.tsx"));
+  const done = tsStringsIn(statusTableEntry(rail, "STATUS_LABELS", "DONE"));
+  const confirmed = tsStringsIn(statusTableEntry(rail, "STATUS_LABELS", "CONFIRMED_BY_PERSON"));
+
+  assert.equal(done.length, 3, "slice sanity: DONE must be a ko/en/ja triple to compare against");
+  assert.deepEqual(
+    confirmed,
+    ["확인됨(사람 증언)", "Confirmed (human attestation)", "確認済み（人の証言）"],
+    "the sixth status word's label triple is the whole distinction this unit ships -- it says WHOSE claim it is, in every language",
+  );
+
+  // PER LANGUAGE, never per triple. The refuter's mutation left ko different
+  // and made en and ja identical to DONE's, so a whole-triple comparison would
+  // have passed it in two of the three languages a client reads this in.
+  for (const [index, language] of (["ko", "en", "ja"] as const).entries()) {
+    assert.notEqual(
+      confirmed[index],
+      done[index],
+      `CONFIRMED_BY_PERSON and DONE render the SAME ${language} label (${confirmed[index]}). ` +
+        "A signature is not a measurement, and a status word a reader cannot tell from 완료 is the " +
+        "false completion this whole screen is arranged against",
+    );
+  }
+
+  // THE OTHER DIRECTION. Difference alone is satisfied by two different words
+  // neither of which says a PERSON is behind this one, so each language must
+  // still carry the term that names the attester's involvement.
+  pin.match(
+    rail,
+    /"DONE",\s*"CONFIRMED_BY_PERSON",/,
+    "expected STATUS_ORDER to keep the SERVER's order (calibration_rail.STATUSES lists the signature word straight after DONE) -- the tally is printed in it",
+  );
+  assert.match(confirmed[0], /사람/, "the ko label must name that a PERSON is the source of this status");
+  assert.match(confirmed[1], /attestation/i, "the en label must name that this is an attestation, not a verdict");
+  assert.match(confirmed[2], /証言/, "the ja label must name that this is testimony, not a measurement");
+});
+
+// Style pin in a test of its own, per this file's rule about keeping brittle
+// restyle pins away from behavioural ones.
+contractTest("unit #53: the CONFIRMED_BY_PERSON chip is emerald, and is NOT DONE's chip", (pin) => {
+  // The second of the refuter's two surviving mutations (2026-08-24): refilling
+  // this chip with `bg-emerald-50` -- DONE's own tint -- made the two statuses
+  // visually identical and failed nothing. At chip size the FILL is what a
+  // reader distinguishes, so the fill is compared on its own as well as the
+  // whole class string: an edit that changes only the border would otherwise
+  // converge the two while keeping the strings unequal.
+  const rail = withoutComments(read("components/calibration/FlowRail.tsx"));
+  const done = statusTableEntry(rail, "STATUS_CHIP", "DONE");
+  const confirmed = statusTableEntry(rail, "STATUS_CHIP", "CONFIRMED_BY_PERSON");
+
+  assert.equal(
+    confirmed,
+    '"border-emerald-200 bg-surface text-emerald-700"',
+    "the signed-step chip is emerald UNFILLED -- the pass family (three-colour rule) told apart from DONE by weight, never by a fourth hue",
+  );
+  pin.match(
+    confirmed,
+    /emerald/,
+    "expected the signed-step chip to stay in the emerald family -- it is a positive state, and this screen has exactly one hue for that",
+  );
+  assert.notEqual(
+    confirmed,
+    done,
+    "CONFIRMED_BY_PERSON and DONE render the SAME chip. A person's signature must not be paintable as a measured completion",
+  );
+
+  const fill = (chip: string) => (/\bbg-[a-z0-9-]+/.exec(chip) ?? ["(no bg- token)"])[0];
+  assert.notEqual(
+    fill(confirmed),
+    fill(done),
+    `CONFIRMED_BY_PERSON and DONE share the fill ${fill(done)} -- the tint is what a reader tells them apart by at chip size`,
+  );
 });
 
 contractTest(
@@ -11013,6 +11387,13 @@ const DOCTRINE_ITEM_IDS = [
   // comes from and why one can be missing). The knowledge file registered it as
   // its own item rather than widening D6, and it was evicted with the rest.
   "D17",
+  // D18 arrived with unit #53 (2026-08-24) rather than being evicted by #50-d:
+  // it is the RULE behind the sixth status word (확인됨(사람 증언) is not 완료),
+  // and it was written straight into the knowledge file instead of onto the
+  // screen. The eviction sweep below therefore covers it exactly as it covers
+  // the seventeen that were moved -- what a signature RECORDS is stated beside
+  // the button that makes one; why it is never 완료 is read once, at /docs.
+  "D18",
 ] as const;
 
 /** The one item whose sentence is a VERDICT and stays on the screen. */
@@ -11416,7 +11797,14 @@ contractTest("unit #50-d ②: no card on the calibration surface carries more th
   // which is the point -- the shape the user's 2026-08-20 decision named was a
   // panel with seven of them.
   const expected: [string, number, string][] = [
-    ["app/calibration/page.tsx", 1, "the step box (one per step row, one fold each)"],
+    [
+      "app/calibration/page.tsx",
+      2,
+      "the step box (one per step row, one fold each), plus #53's SIGNATURE row -- a separate card, " +
+        "below the station's own action, carrying the signing history and the .inpx hash. Its surface " +
+        "is who signed, when, and their reason; what folds is provenance, which is exactly the split " +
+        "the step box makes",
+    ],
     [
       "components/calibration/FlowRail.tsx",
       3,

@@ -489,6 +489,20 @@ export function calibrationHelpEntries(t: Translate): HelpEntry[] {
         "探索産出物は Table 5-6 の産出物より一段低い証拠であり、根拠文（台帳の digest・ホールドアウトの seed を含む）が自ら明示します。この文章はサーバーが合成し、承認カードの表面に表示され続けます — 承認判断に必要な誠実さであるため、#50-d でも撤去されていません。",
       ),
     },
+    {
+      // D18 (unit #53, 2026-08-24). The sixth status word's RULE, and the one
+      // sentence the calibration screen must never carry: the screen states
+      // what the act records (name, time, network hash) beside the button that
+      // performs it, and WHY a signature is not 완료 lives here. Byte-identical
+      // to docs/product/calibration-doctrine.md's D18 — the contract suite
+      // compares the two files' triples as sets, in all three languages.
+      title: t("사람 증언은 완료가 아니다", "A human attestation is not Done", "人の証言は完了ではない"),
+      body: t(
+        "확인됨(사람 증언)은 완료가 아닙니다 — 사람이 서명한 단계이지 이 제품이 측정한 단계가 아니며, 서명한 네트워크가 바뀌면 다시 확인해야 합니다.",
+        "Confirmed (human attestation) is not Done — it means a named person signed for the step, not that this product measured it, and it must be made again once the network they signed against changes.",
+        "確認済み（人の証言）は完了ではありません — 人が署名した段階であり、本製品が測定した段階ではありません。署名した時点のネットワークが変われば、改めて確認が必要です。",
+      ),
+    },
   ];
 }
 

@@ -126,6 +126,8 @@ import {
   fetchCalibrationRail,
   fetchCalibrationRealityCheck,
   fetchScenarios,
+  postCalibrationStepAttestation,
+  revokeCalibrationStepAttestation,
   type ActiveDataset,
   type CalibrationAppliedRows,
   type CalibrationRail,
@@ -134,6 +136,38 @@ import {
   type CalibrationRealityNode,
   type ScenarioMeta,
 } from "@/lib/api";
+
+type Translate = (ko: string, en: string, ja?: string) => string;
+
+// #53's station actions reach the drawer the same way app/health/page.tsx,
+// components/dashboard/CurationBar.tsx and components/calibration/NodeScoreTable.tsx
+// already do -- the globally-mounted FloatingAssistant (components/AppShell.tsx)
+// listens for this window event. Declared here rather than imported for the
+// reason all three of those files state in their own comments: the event NAME is
+// the contract between independent dispatchers, and a cross-file test
+// (dashboard-contract.test.ts) is what holds the four spellings together.
+const ASSISTANT_HANDOFF_EVENT = "vissim:assistant-handoff";
+
+function requestAgentHandoff(prompt: string) {
+  window.dispatchEvent(new CustomEvent(ASSISTANT_HANDOFF_EVENT, { detail: { prompt } }));
+}
+
+/** The assistant prompt ⑪'s station opens with.
+ *
+ * The step's NUMBER and the step's LABEL are the server's (`stepLabel` reads
+ * `label_ko`/`label`/`label_ja`, which the payload marks `label_source`); the
+ * wrapper sentence is the only thing added, in all three languages, so the
+ * drawer opens already knowing which guideline step the user is standing on.
+ * Same construction as NodeScoreTable's `buildNextActionPrompt`. */
+function buildRouteSplitPrompt(step: CalibrationRailStep, lang: string, t: Translate): string {
+  const label = stepLabel(step, lang);
+  const number = circledStep(step.number);
+  return t(
+    `보정 ${number} ${label} 단계를 진행하려고 합니다. 이번 실행에서 경로 분할(route split)을 어떻게 확인하고 조정해야 하는지 알려주세요.`,
+    `I am working on calibration step ${number} ${label}. Tell me how to check and adjust the route splits on this run.`,
+    `補正の${number} ${label}段階を進めます。今回の実行で経路分割(route split)をどう確認し調整すべきか教えてください。`,
+  );
+}
 
 /** The reads with no parameters still carry a request key — `resolve` answers
  * "is what I hold the answer to THIS request", and a mount-only read is just
@@ -945,7 +979,62 @@ export default function CalibrationWorkspacePage() {
               product, the step's own basis line above is about this run, and
               only one of those changes when a reader comes back. All three are
               verbatim at /docs (calibrationHelpEntries) and in
-              docs/product/calibration-doctrine.md. */}
+              docs/product/calibration-doctrine.md.
+
+              #53 gives all three what #50-d left them without: an ACTION. Each
+              carries the one control its evidence gap actually needs, plus the
+              [사람 확인] row that every step with no machine evidence now has. */}
+
+          {activeStation === "transit" && (
+            <div className="mt-3 flex flex-col gap-2">
+              {/* ⑨'s gap is not a missing screen, it is a missing MEASUREMENT:
+                  this product reads a PT line count and nothing else about
+                  transit, so the only honest links are the rule that says so
+                  and the signature that answers it. */}
+              <div className="flex flex-wrap gap-2">
+                <Link href="/docs" className="ui-button-ghost inline-flex h-9 items-center px-3 text-[14px]">
+                  {t("보정 원칙 문서 열기", "Open the calibration doctrine", "補正の原則ドキュメントを開く")}
+                </Link>
+              </div>
+              <StepSignatures steps={stationSteps} onChanged={handleProposalResolved} />
+            </div>
+          )}
+
+          {activeStation === "demand" && (
+            <div className="mt-3 flex flex-col gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  href="/genesis/demand"
+                  className="ui-button-ghost inline-flex h-9 items-center px-3 text-[14px]"
+                >
+                  {t("수요 입력으로 →", "Go to demand inputs →", "需要入力へ →")}
+                </Link>
+              </div>
+              <StepSignatures steps={stationSteps} onChanged={handleProposalResolved} />
+            </div>
+          )}
+
+          {activeStation === "assignment" && (
+            <div className="mt-3 flex flex-col gap-2">
+              <div className="flex flex-wrap gap-2">
+                {/* ⑪ has no screen of its own in this product and no proposal
+                    unless a scored run raised one, so the action that fits is
+                    the drawer -- prefilled with THIS step, through the same
+                    window event three other surfaces already dispatch. */}
+                {stationSteps.map((step) => (
+                  <button
+                    key={step.number}
+                    type="button"
+                    onClick={() => requestAgentHandoff(buildRouteSplitPrompt(step, lang, t))}
+                    className="ui-button-ghost inline-flex h-9 items-center px-3 text-[14px]"
+                  >
+                    {t("AI에게 물어보기", "Ask the AI", "AIに聞く")}
+                  </button>
+                ))}
+              </div>
+              <StepSignatures steps={stationSteps} onChanged={handleProposalResolved} />
+            </div>
+          )}
 
           {/* THE ONE THAT STAYS. 수동 확인 영역's one-line verdict is not
               background a reader may skip: it is this screen's PROMISE that it
@@ -953,7 +1042,7 @@ export default function CalibrationWorkspacePage() {
               education. The paragraph that used to sit folded beneath it is at
               /docs. */}
           {activeStation === "manual" && (
-            <div className="mt-3">
+            <div className="mt-3 flex flex-col gap-2.5">
               <p className="text-[15px] font-semibold leading-6 text-slate-800">
                 {t(
                   "이 제품은 위 단계들을 측정하지 않습니다 — 완료로 표시하지 않습니다.",
@@ -961,6 +1050,11 @@ export default function CalibrationWorkspacePage() {
                   "本製品は上記の段階を測定しません — 完了と表示することはありません。",
                 )}
               </p>
+              {/* AND THE PROMISE STILL HOLDS AFTER #53. A signature here does
+                  not make this product measure anything, and the sentence above
+                  is unchanged: what a signed step reads is 확인됨(사람 증언),
+                  which is a different word from 완료 and is the server's. */}
+              <StepSignatures steps={stationSteps} onChanged={handleProposalResolved} />
             </div>
           )}
 
@@ -1090,6 +1184,226 @@ function NodeContext({
       {activeNode && ids.includes(activeNode.node_id) && (
         <div className="mt-2">
           <NodeScoreDetail node={activeNode} threshold={report?.geh_threshold} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Unit #53 — the [사람 확인] rows: the ACTION a step with no machine evidence owes.
+ *
+ * THE PROBLEM. Nine of the thirteen steps have no artifact this product can
+ * read, so their station said "증거 없음" and offered nothing to do about it.
+ * The modeller who HAD done the step in Vissim had no way to say so, and the
+ * screen could not tell "nobody did this" from "somebody did it and this tool
+ * cannot see it" — the exact shape of the user's 2026-08-20 complaint that a
+ * screen owes an action, not an education.
+ *
+ * WHAT IT IS NOT. It is not a "mark as done" checkbox. The POST records a
+ * SIGNATURE — the signed-in name, the server's clock, a mandatory reason and
+ * the hash of the network it was made against — and the STATUS that comes back
+ * is the rail's, re-derived server-side on the next read (`onChanged` bumps the
+ * rail's request key). Nothing in this file assigns a status word, which is why
+ * `attestable` is read off the step rather than from a list kept here.
+ */
+function StepSignatures({
+  steps,
+  onChanged,
+}: {
+  steps: CalibrationRailStep[];
+  onChanged: () => void;
+}) {
+  const signable = steps.filter((step) => step.attestable);
+  if (signable.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-2">
+      {signable.map((step) => (
+        <li key={step.number}>
+          <StepSignature step={step} onChanged={onChanged} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StepSignature({
+  step,
+  onChanged,
+}: {
+  step: CalibrationRailStep;
+  onChanged: () => void;
+}) {
+  const { t, lang } = useLanguage();
+  // One form, two acts. `null` is closed; both open acts demand a reason, and
+  // the button that submits says which act it is rather than a generic 확인.
+  const [mode, setMode] = useState<"attest" | "revoke" | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const attestation = step.attestation ?? null;
+
+  const close = () => {
+    setMode(null);
+    setReason("");
+    setError(null);
+  };
+
+  // Opening either act CLEARS the box. A reason typed for a confirmation must
+  // not be able to arrive on a revocation (or the other way round) — they are
+  // two different statements and only one of them is being made.
+  const openForm = (next: "attest" | "revoke") => {
+    setMode((current) => (current === next ? null : next));
+    setReason("");
+    setError(null);
+  };
+
+  const submit = async () => {
+    if (!mode || !reason.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (mode === "revoke") {
+        if (!attestation) return;
+        await revokeCalibrationStepAttestation(attestation.id, { reason });
+      } else {
+        await postCalibrationStepAttestation({ stepNumber: step.number, reason });
+      }
+      close();
+      onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-surface px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[14px] font-semibold text-slate-500">
+          {circledStep(step.number)}
+        </span>
+        <span className="text-[14px] font-semibold text-slate-700">{stepLabel(step, lang)}</span>
+        {attestation?.stale && (
+          <span className="rounded-full border border-slate-300 bg-surface px-1.5 py-0.5 text-[14px] font-semibold text-slate-600">
+            {t("재확인 필요", "Re-confirm", "再確認が必要")}
+          </span>
+        )}
+        <span className="grow" />
+        <button
+          type="button"
+          onClick={() => openForm("attest")}
+          className="ui-button-ghost inline-flex h-9 shrink-0 items-center px-3 text-[14px]"
+        >
+          {attestation
+            ? t("다시 확인", "Confirm again", "再確認する")
+            : t("사람 확인", "Confirm as a person", "人による確認")}
+        </button>
+        {attestation && (
+          <button
+            type="button"
+            onClick={() => openForm("revoke")}
+            className="ui-button-ghost inline-flex h-9 shrink-0 items-center px-3 text-[14px]"
+          >
+            {t("확인 철회", "Revoke", "確認を撤回")}
+          </button>
+        )}
+      </div>
+
+      {/* THE SIGNATURE THAT STANDS — who, when, and their own words for why.
+          The reason is on the surface for the same reason `step.basis` is: it is
+          the justification of the state beside it, and this state's whole worth
+          is that somebody accountable stated one. The hash and the event history
+          are provenance and fold. */}
+      {attestation && (
+        <div className="mt-1.5 border-l border-slate-300 pl-2">
+          <p className="text-[14px] leading-6 text-slate-700">
+            <b>{attestation.attested_by}</b> · {attestation.attested_at}
+          </p>
+          <p className="mt-0.5 text-[14px] leading-6 text-slate-700">{attestation.reason}</p>
+          <details className="mt-1 text-[13px] leading-5 text-slate-500">
+            <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+              {t("자세히 (서명 이력)", "More (the signing history)", "詳細（署名の履歴）")}
+            </summary>
+            <ul className="mt-1 flex flex-col gap-1 border-l border-slate-300 pl-2">
+              {attestation.history.map((event, index) => (
+                <li key={`${event.event}-${index}`}>
+                  {event.event} · {event.by} · {event.at} · {event.reason}
+                </li>
+              ))}
+              <li className="font-mono text-[13px] text-slate-500">
+                inpx sha256 {attestation.inpx_sha256.slice(0, 16)}…
+              </li>
+            </ul>
+          </details>
+        </div>
+      )}
+
+      {mode && (
+        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+          <label className="block text-[14px] font-semibold text-slate-700" htmlFor={`reason-${step.number}`}>
+            {mode === "revoke"
+              ? t("철회 사유", "Why it no longer holds", "撤回の理由")
+              : t("확인 근거", "What you are attesting to", "確認の根拠")}
+          </label>
+          <textarea
+            id={`reason-${step.number}`}
+            value={reason}
+            rows={3}
+            onChange={(event) => setReason(event.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 bg-surface px-2 py-1.5 text-[14px] leading-6 text-slate-900"
+          />
+          {/* WHAT SIGNING DOES, beside the control that does it — the same
+              sentence the 현시도 confirm form carries, for the same reason: a
+              reader is about to put their name on something and has to know
+              what is recorded. It states the ACT, not the doctrine; why a
+              signature is never 완료 is at /docs. */}
+          <p className="mt-1 text-[14px] leading-6 text-slate-600">
+            {mode === "revoke"
+              ? t(
+                  "철회해도 기록은 지워지지 않습니다 — 누가 언제 왜 철회했는지가 원래 서명 옆에 남습니다.",
+                  "Revoking deletes nothing — who withdrew it, when, and why is kept beside the original signature.",
+                  "撤回しても記録は消えません — 誰がいつなぜ撤回したかが元の署名の横に残ります。",
+                )
+              : t(
+                  "확인하면 로그인한 사용자의 이름과 시각, 그리고 지금 네트워크 파일의 해시가 함께 기록됩니다. 네트워크가 바뀌면 이 확인은 재확인 대상이 됩니다.",
+                  "Confirming records the signed-in user's name, the time, and the hash of the network file as it stands now. If the network changes, this confirmation asks to be made again.",
+                  "確認すると、ログイン中の利用者名・時刻・現在のネットワークファイルのハッシュが記録されます。ネットワークが変わると、この確認は再確認の対象になります。",
+                )}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy || reason.trim().length === 0}
+              className="inline-flex h-9 items-center rounded-md border border-sky-300 bg-sky-50 px-3 text-[14px] font-semibold text-sky-600 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {mode === "revoke"
+                ? t("이 확인을 철회합니다", "I withdraw this confirmation", "この確認を撤回します")
+                : t("이 단계를 확인합니다", "I confirm this step", "この段階を確認します")}
+            </button>
+            <button
+              type="button"
+              onClick={close}
+              className="ui-button-ghost inline-flex h-9 items-center px-3 text-[14px]"
+            >
+              {t("취소", "Cancel", "キャンセル")}
+            </button>
+            {/* A reason is the server's requirement, not this form's opinion:
+                the POST refuses an empty one by name. The disabled button says
+                so before the round trip rather than instead of it. */}
+            {reason.trim().length === 0 && (
+              <span className="text-[14px] leading-6 text-slate-600">
+                {t("이유를 적어야 합니다.", "A reason is required.", "理由の記入が必要です。")}
+              </span>
+            )}
+          </div>
+          {error && (
+            <p className="mt-1.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[14px] leading-6 text-rose-700">
+              {error}
+            </p>
+          )}
         </div>
       )}
     </div>

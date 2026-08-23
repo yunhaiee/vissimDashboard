@@ -6,8 +6,9 @@ transcribed and cited there). This module answers ONE question per step:
 
     what does the evidence already in this workspace say about this step?
 
-and it is allowed exactly five answers — :data:`DONE`, :data:`IN_PROGRESS`,
-:data:`NEXT`, :data:`NOT_APPLICABLE`, :data:`NO_EVIDENCE`.
+and it is allowed exactly six answers — :data:`DONE`,
+:data:`CONFIRMED_BY_PERSON`, :data:`IN_PROGRESS`, :data:`NEXT`,
+:data:`NOT_APPLICABLE`, :data:`NO_EVIDENCE`.
 
 WHY THIS IS NOT CALIBRATION LOGIC
 ---------------------------------
@@ -22,6 +23,28 @@ verdict this module reads was produced elsewhere and is QUOTED, not re-derived:
 * ``services.agent.reality_check`` / ``services.agent.geh_ladder`` /
   ``services.agent.fixes.entrance_measurement`` -> the run's GEH outcome, the
   diagnosis rung, and the D4 entrance verdicts (steps 10 and 11)
+* ``services.calibration_attestation`` -> a NAMED HUMAN's signature on one of
+  the nine steps no artifact speaks to (unit #53)
+
+THE SIXTH WORD, AND THE RANK IT SITS AT (#53)
+----------------------------------------------
+A signature is evidence of a different KIND, so it gets a word of its own
+(:data:`CONFIRMED_BY_PERSON`) and one precedence rule, applied to all nine
+signable steps by :func:`_apply_attestation`:
+
+* it upgrades :data:`NO_EVIDENCE` and NOTHING ELSE. Every machine-evidence
+  state outranks testimony — a ``NEXT`` (a proposal is waiting) or an
+  ``IN_PROGRESS`` (an entrance is unverified) is a fact about this network that
+  a person's recollection cannot overrule, so the machine verdict stands and
+  the basis SAYS an attestation exists and was outranked;
+* :data:`DONE` likewise stands: a coexisting signature is provenance on the
+  basis line, never a change of status;
+* :data:`NOT_APPLICABLE` stands too (step ⑨ on a network with no PT lines) —
+  the network proved there is nothing to do, which a signature cannot undo;
+* a signature made against a DIFFERENT ``.inpx`` than the one on disk is STALE:
+  it never upgrades anything, and the step falls back to its underlying derived
+  status with the basis naming the stale signature — the same 재확인 필요
+  treatment 현시도 confirmations already get.
 
 :func:`derive_rail` is PURE: it takes a dict of already-gathered artifacts and
 returns a dict. It opens no file, makes no network call, and touches no COM.
@@ -32,12 +55,14 @@ THE ONE RULE THAT MATTERS
 -------------------------
 **A step is :data:`DONE` only when a named artifact carries a positive
 verdict, and the sentence that says so names the artifact.** There is no
-branch anywhere below that reaches ``DONE`` from an absence. Six of the
-thirteen steps have no evidence source in this product at all, and they are
-reported as :data:`NO_EVIDENCE` forever rather than being quietly dressed up —
-a rail that shows thirteen green ticks on an uncalibrated network would be the
-exact failure this codebase exists to prevent (CLAUDE.md: "a refused edit with
-a clear reason beats a completed edit with wrong numbers").
+branch anywhere below that reaches ``DONE`` from an absence, and — since #53 —
+none that reaches it from a SIGNATURE either. Six of the thirteen steps have no
+evidence source in this product at all; they are reported as
+:data:`NO_EVIDENCE`, or as :data:`CONFIRMED_BY_PERSON` when an accountable
+human has signed for one, and never as done — a rail that shows thirteen green
+ticks on an uncalibrated network would be the exact failure this codebase
+exists to prevent (CLAUDE.md: "a refused edit with a clear reason beats a
+completed edit with wrong numbers").
 
 THE DEFAULT-COINCIDENCE TRAP (steps 7 and 12)
 ----------------------------------------------
@@ -94,12 +119,47 @@ NOT_APPLICABLE = "NOT_APPLICABLE"
 #: Nothing in this workspace speaks to this step. A MANUAL-CHECK area, and the
 #: honest answer for the seven steps this product has no artifact for.
 NO_EVIDENCE = "NO_EVIDENCE"
+#: A NAMED HUMAN signed for this step (unit #53). The sixth word, and the only
+#: one no machine produced.
+#:
+#: WHY IT IS NOT ``DONE``, AND MUST NEVER BECOME IT. ``DONE`` means a named
+#: ARTIFACT carries a positive verdict — the generation gate, the 현시도
+#: attestations, ``verify_applied_row``, a D4 entrance measurement. This word
+#: means a person said so, and the two are not the same claim: an artifact can
+#: be re-read and disagreed with, a signature can only be believed or revoked.
+#: Nine of the thirteen steps have no artifact at all
+#: (:data:`ATTESTABLE_STEPS`), and before #53 they said :data:`NO_EVIDENCE`
+#: forever — true, and unable to distinguish "nobody did this" from "somebody
+#: did it and this tool cannot see it". This word draws that distinction
+#: WITHOUT letting it be mistaken for a measurement: the basis sentence names
+#: the attester and the date, the chip says 확인됨(사람 증언), and it falls back
+#: the moment the ``.inpx`` it was signed against changes
+#: (``services.calibration_attestation``).
+CONFIRMED_BY_PERSON = "CONFIRMED_BY_PERSON"
 
-STATUSES = (DONE, IN_PROGRESS, NEXT, NOT_APPLICABLE, NO_EVIDENCE)
+STATUSES = (DONE, CONFIRMED_BY_PERSON, IN_PROGRESS, NEXT, NOT_APPLICABLE, NO_EVIDENCE)
 
 #: Statuses that assert something POSITIVE about the step. Every one of them
-#: must be reachable only from a named artifact — pinned by the tests.
-POSITIVE_STATUSES = (DONE,)
+#: must be reachable only from a named artifact OR a named person — pinned by
+#: the tests, which walk an empty bundle and assert not one step reaches any of
+#: these.
+POSITIVE_STATUSES = (DONE, CONFIRMED_BY_PERSON)
+
+#: The steps a human may SIGN for (#53), and the four that are excluded.
+#:
+#: A step is signable exactly when this product has no evidence path that can
+#: prove or refuse it: the six permanent 수동 확인 영역 steps, plus ⑨ (whose
+#: only machine fact is the provable ABSENCE of PT lines) and ⑩⑪ (whose
+#: machine evidence exists only once a run has been scored, and speaks about
+#: that run rather than about the step).
+#:
+#: ①⑥⑦⑫ are excluded BY NAME rather than by omission: each has an artifact
+#: that answers — the generation gate / model inspection, the 현시도
+#: attestations, and ``verify_applied_row`` twice. A signature there would sit
+#: beside a measurement, and the first time the two disagreed this screen would
+#: have to pick one. ``calibration_attestation`` reads this tuple and refuses
+#: the other four with a sentence that names them, so the rule has one home.
+ATTESTABLE_STEPS = (2, 3, 4, 5, 8, 9, 10, 11, 13)
 
 #: The six §2.12.1 steps this product carries no evidence source for. Listed
 #: as data (not buried in a branch) so a future unit that BUILDS one of these
@@ -175,6 +235,156 @@ def _seq(value: Any) -> list[Any]:
 
 def _map(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+# ---------------------------------------------------------------------------
+# The human signature (#53) — read once, applied by ONE rule
+# ---------------------------------------------------------------------------
+
+
+def _attestation(evidence: Mapping[str, Any], number: int) -> Mapping[str, Any]:
+    """The signature that STANDS for step ``number``, or ``{}``.
+
+    ``evidence["step_attestations"]`` is
+    ``services.calibration_attestation.index_payload()`` — already one record
+    per step, already newest-wins, already free of revoked records. This
+    function re-checks ``revoked`` anyway: two guards, because deleting either
+    one must not silently restore a withdrawn claim, and a mutation that drops
+    the filter on one side dies against the other.
+
+    A step outside :data:`ATTESTABLE_STEPS` reads ``{}`` no matter what the
+    bundle carries, so a registry hand-edited to hold a signature on ① cannot
+    move ①.
+    """
+    if number not in ATTESTABLE_STEPS:
+        return {}
+    index = _map(evidence.get("step_attestations"))
+    entry = index.get(number)
+    if entry is None:
+        # A registry round-tripped through JSON keys its steps by string.
+        entry = index.get(str(number))
+    record = _map(entry)
+    if record.get("revoked") is True:
+        return {}
+    return record
+
+
+def _attester(record: Mapping[str, Any]) -> tuple[str, str] | None:
+    """``(who, when)``, or ``None`` when the record cannot name both.
+
+    An attestation this module cannot attribute is not treated as one: it
+    upgrades nothing and it is not mentioned on a basis line, because a sentence
+    saying "somebody confirmed this" is exactly the unaccountable tick the whole
+    record type exists to replace.
+    """
+    who = str(record.get("attested_by") or "").strip()
+    when = str(record.get("attested_at") or "").strip()
+    if not who or not when:
+        return None
+    return who, when
+
+
+def _with_note(verdict: dict[str, Any], record: Mapping[str, Any], note: dict[str, str]) -> dict[str, Any]:
+    """The same verdict, with one sentence appended to its basis in all three
+    languages, and the signature named in ``detail``."""
+    basis = _map(verdict.get("basis"))
+    detail = dict(_map(verdict.get("detail")))
+    detail["attestation"] = _attestation_detail(record)
+    return {
+        **verdict,
+        "basis": {
+            lang: f"{str(basis.get(lang) or '').rstrip()} {note[lang]}".strip()
+            for lang in ("ko", "en", "ja")
+        },
+        "detail": detail,
+    }
+
+
+def _attestation_detail(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record.get("id"),
+        "attested_by": record.get("attested_by"),
+        "attested_at": record.get("attested_at"),
+        "stale": bool(record.get("stale")),
+    }
+
+
+def _apply_attestation(
+    verdict: dict[str, Any], record: Mapping[str, Any]
+) -> dict[str, Any]:
+    """THE precedence rule, in one place, for all nine signable steps.
+
+    See the module docstring's "the sixth word" section for the ranking and why
+    it is that way round. Every branch here either leaves the machine verdict's
+    STATUS exactly as it was, or lifts a :data:`NO_EVIDENCE` to
+    :data:`CONFIRMED_BY_PERSON` — there is no path from a signature to
+    :data:`DONE`.
+    """
+    if not record:
+        return verdict
+    named = _attester(record)
+    if named is None:
+        return verdict
+    who, when = named
+
+    if record.get("stale") is not False:
+        # Stale, or a freshness this server could not establish (an unreadable
+        # ``.inpx`` reads as stale — unknown is not fresh). Never an upgrade.
+        return _with_note(
+            verdict,
+            record,
+            {
+                "ko": f"증언이 있으나 네트워크가 바뀜(재확인 필요) — {who}, {when}.",
+                "en": (
+                    f"An attestation exists but the network has changed since it was signed "
+                    f"(re-confirmation needed) — {who}, {when}."
+                ),
+                "ja": f"証言はありますがネットワークが変わりました(再確認が必要) — {who}、{when}。",
+            },
+        )
+
+    if verdict.get("status") == NO_EVIDENCE:
+        return {
+            "status": CONFIRMED_BY_PERSON,
+            "source": "calibration_attestation",
+            "basis": _text(
+                f"{who} 님이 {when}에 이 단계를 확인했다고 서명했습니다 — 기계 증거가 아니라 "
+                "사람의 증언입니다.",
+                f"{who} signed for this step on {when} — a named person's testimony, not machine "
+                "evidence.",
+                f"{who} が {when} にこの段階を確認したと署名しました — 機械の証拠ではなく人の"
+                "証言です。",
+            ),
+            "detail": {
+                **dict(_map(verdict.get("detail"))),
+                "attestation": _attestation_detail(record),
+                # What the step would say WITHOUT the signature, kept so nobody
+                # has to re-derive it to learn what the machine found (nothing).
+                "underlying_status": verdict.get("status"),
+                "underlying_source": verdict.get("source"),
+            },
+        }
+
+    if verdict.get("status") == DONE:
+        return _with_note(
+            verdict,
+            record,
+            {
+                "ko": f"사람 증언도 함께 기록되어 있습니다 — {who}, {when}.",
+                "en": f"A human attestation is also on record — {who}, {when}.",
+                "ja": f"人の証言も併せて記録されています — {who}、{when}。",
+            },
+        )
+
+    return _with_note(
+        verdict,
+        record,
+        {
+            "ko": f"사람 증언이 있으나 기계 증거가 우선합니다 — {who}, {when}.",
+            "en": f"A human attestation exists but machine evidence outranks it — {who}, {when}.",
+            "ja": f"人の証言はありますが機械の証拠が優先します — {who}、{when}。",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +567,19 @@ def _step_6(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _step_9(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """The network's own NOT_APPLICABLE, then a person's signature (#53).
+
+    The order is the whole content of this function. ``pt_line_count == 0`` is a
+    PROOF that there is nothing to calibrate, and a signature cannot overrule a
+    proof — so :func:`_step_9_machine` answers first and
+    :func:`_apply_attestation` only ever lifts its :data:`NO_EVIDENCE` (the
+    PT-carrying network, which this product measures nothing about) to
+    :data:`CONFIRMED_BY_PERSON`.
+    """
+    return _apply_attestation(_step_9_machine(evidence), _attestation(evidence, 9))
+
+
+def _step_9_machine(evidence: Mapping[str, Any]) -> dict[str, Any]:
     """Narrowed from "always NO_EVIDENCE" to step 6's own NOT_APPLICABLE rule.
 
     Why only a PROVABLE zero earns :data:`NOT_APPLICABLE`, and nothing else:
@@ -696,6 +919,18 @@ def _entrance_verdicts(report: Mapping[str, Any]) -> list[str]:
 
 
 def _step_10(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """The scored run first, a person's signature only where it said nothing (#53).
+
+    Every machine state this step can reach — a waiting demand proposal, an
+    unverified entrance, a D4 measured verdict, a comparison that graded nodes —
+    is a fact about THIS run, and outranks a recollection about the network. So
+    the signature can only lift the branch where the report is absent or
+    unusable, and on every other branch it is named on the basis as outranked.
+    """
+    return _apply_attestation(_step_10_machine(evidence), _attestation(evidence, 10))
+
+
+def _step_10_machine(evidence: Mapping[str, Any]) -> dict[str, Any]:
     report = _map(evidence.get("reality_check"))
     if not _reality_check_usable(report):
         return _no_evidence(
@@ -779,6 +1014,18 @@ def _step_10(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _step_11(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Same rank as ⑩ (#53): the ladder's own answer first, testimony second.
+
+    Note which branch this makes signable, because it is the one that matters:
+    "this check raised no route-choice proposal and no route-choice diagnosis —
+    which is not evidence that route choice was confirmed" is exactly the
+    sentence a modeller who DID review the splits has been unable to answer.
+    Now they can sign it, and the sentence they replace it with names them.
+    """
+    return _apply_attestation(_step_11_machine(evidence), _attestation(evidence, 11))
+
+
+def _step_11_machine(evidence: Mapping[str, Any]) -> dict[str, Any]:
     report = _map(evidence.get("reality_check"))
     if not _reality_check_usable(report):
         return _no_evidence(
@@ -868,19 +1115,30 @@ def _no_evidence(
     }
 
 
-def _manual_area(number: int) -> dict[str, Any]:
-    """The honest answer for a step this product measures nothing for.
+def _manual_area(number: int, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """The honest answer for a step this product measures nothing for — unless
+    a NAMED PERSON has signed for it (#53).
 
     Not "not started" and not "unknown": a MANUAL-CHECK area. The modeller does
     this step in Vissim and records it outside this tool, and the rail says so
     rather than leaving a gap a reader would fill in with an assumption.
+
+    #53 stops this being evidence-BLIND rather than stopping it being honest.
+    "This product measures nothing for this step" is still true after a
+    signature — which is precisely why the signature produces
+    :data:`CONFIRMED_BY_PERSON` and never :data:`DONE`: what changed is that
+    somebody accountable said they did it, not that anything was measured. With
+    no signature (and with a stale one) the sentence below is unchanged, word
+    for word, from what it has always been.
     """
-    del number
-    return _no_evidence(
-        "none",
-        ko="증거 없음 — 수동 확인 영역입니다. 이 제품은 이 단계를 측정하지 않습니다.",
-        en="No evidence — a manual-check area. This product measures nothing for this step.",
-        ja="証拠なし — 手動確認領域です。本製品はこの段階を測定しません。",
+    return _apply_attestation(
+        _no_evidence(
+            "none",
+            ko="증거 없음 — 수동 확인 영역입니다. 이 제품은 이 단계를 측정하지 않습니다.",
+            en="No evidence — a manual-check area. This product measures nothing for this step.",
+            ja="証拠なし — 手動確認領域です。本製品はこの段階を測定しません。",
+        ),
+        _attestation(evidence, number),
     )
 
 
@@ -1040,6 +1298,11 @@ def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
         ``services.agent.search_job.job_card`` for the newest search THIS
         workspace started (#51's live runner), or ``None``. Read only by
         :func:`parameter_search_track`.
+    ``step_attestations``
+        ``services.calibration_attestation.index_payload()`` — ``{step number:
+        the signature that stands}`` for the nine :data:`ATTESTABLE_STEPS`
+        (#53). Gathered by the router for the same reason the search job is:
+        this module reads a bundle and never a registry.
 
     An absent key is an absent EVIDENCE SOURCE, and it produces
     :data:`NO_EVIDENCE` — never a tick and never a failure.
@@ -1048,9 +1311,10 @@ def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     for number, label_en, citation in mrwa_reference.CALIBRATION_STEPS_2_12_1:
         if number in STEPS_WITHOUT_EVIDENCE_SOURCE:
-            verdict = _manual_area(number)
+            verdict = _manual_area(number, bundle)
         else:
             verdict = _DERIVERS[number](bundle)
+        attestation = _attestation(bundle, number)
         step = {
             "number": number,
             "label": label_en,
@@ -1060,6 +1324,17 @@ def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
             "citation": citation,
             "anchor": _ANCHORS.get(number, _MANUAL_ANCHOR),
             "manual_area": number in STEPS_WITHOUT_EVIDENCE_SOURCE,
+            # #53. Whether this step may be SIGNED is the server's answer, not a
+            # list the browser keeps: a client-side copy of ATTESTABLE_STEPS
+            # would be a second opinion about which steps have machine evidence,
+            # and it would drift the first time one of them gained an artifact.
+            "attestable": number in ATTESTABLE_STEPS,
+            # The signature that STANDS, whatever it did to the status — a stale
+            # one is here too, so the screen can show the record and offer to
+            # revoke it rather than reporting 재확인 필요 about nothing visible.
+            # ``None`` when there is none; a REVOKED one is never here (it is
+            # history, and history lives in the store).
+            "attestation": dict(attestation) if attestation else None,
             **verdict,
         }
         if number == 12:
@@ -1085,6 +1360,8 @@ def derive_rail(evidence: Mapping[str, Any] | None = None) -> dict[str, Any]:
 
 
 __all__ = [
+    "ATTESTABLE_STEPS",
+    "CONFIRMED_BY_PERSON",
     "DONE",
     "IN_PROGRESS",
     "NEXT",

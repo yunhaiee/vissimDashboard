@@ -142,14 +142,30 @@ def test_the_rail_is_the_guidelines_own_order_and_labels():
         assert "translation" in step["label_source"]
 
 
-def test_the_status_vocabulary_has_exactly_five_words():
+def test_the_status_vocabulary_has_exactly_six_words():
+    """Five until #53; six since, and the sixth is a signature — never a tick.
+
+    The word was added because nine steps had no way to say "a person did this",
+    and it is pinned HERE (rather than only where it is derived) so that a
+    seventh word cannot arrive without somebody deciding it should exist. The
+    frontend pins the same set against its own union type.
+    """
     assert calibration_rail.STATUSES == (
         calibration_rail.DONE,
+        calibration_rail.CONFIRMED_BY_PERSON,
         calibration_rail.IN_PROGRESS,
         calibration_rail.NEXT,
         calibration_rail.NOT_APPLICABLE,
         calibration_rail.NO_EVIDENCE,
     )
+    # CONFIRMED_BY_PERSON asserts something positive and is NOT the same claim
+    # as DONE. Both properties are load-bearing: the first makes the
+    # empty-bundle guard cover it, the second is why it exists at all.
+    assert calibration_rail.POSITIVE_STATUSES == (
+        calibration_rail.DONE,
+        calibration_rail.CONFIRMED_BY_PERSON,
+    )
+    assert calibration_rail.CONFIRMED_BY_PERSON != calibration_rail.DONE
     rail = calibration_rail.derive_rail({})
     assert set(rail["counts"]) == set(calibration_rail.STATUSES)
 
@@ -167,6 +183,14 @@ def test_a_manual_area_step_stays_no_evidence_whatever_else_is_in_the_bundle(num
     and the rail says so rather than leaving a gap a reader fills in with an
     assumption. (Step 9 left this list in #50's follow-up and is pinned
     separately below — see the "Step 9" section.)
+
+    SCOPE, since #53: "every ARTIFACT this product has" is still every artifact,
+    and a signature is not one — it is a named human's claim, deliberately a
+    different kind of evidence and a different status word. The bundle below
+    therefore carries no ``step_attestations`` key, and this test keeps asserting
+    what it always did: no machine artifact moves these six. What a signature
+    does to them is pinned in the #53 section at the end of this file, where it
+    also proves the result is never :data:`DONE`.
     """
     rail = _rail(
         gate={"verdict": _PASSED_VERDICT, "counts": {"pass": 9, "fail": 0}},
@@ -767,3 +791,299 @@ def test_every_step_names_a_section_to_scroll_to():
         assert step["anchor"].startswith("station-"), (
             f"step {step['number']} has no work area to click through to"
         )
+
+
+# ===========================================================================
+# Unit #53 — the sixth word: a NAMED PERSON's signature
+#
+# The rail gained one evidence kind no machine produced, and exactly one
+# precedence rule for it (``_apply_attestation``). Everything below executes a
+# branch of that rule, because every one of them is a way the word could have
+# become a tick:
+#
+#   * it upgrades NO_EVIDENCE and nothing else — DONE, NEXT, IN_PROGRESS and
+#     NOT_APPLICABLE all outrank testimony, and say so on their basis line;
+#   * it never reaches DONE, on any step, from any bundle;
+#   * a STALE signature (the ``.inpx`` moved) upgrades nothing at all;
+#   * a REVOKED one is not evidence, and neither is one on a step that carries
+#     machine evidence (①⑥⑦⑫).
+# ===========================================================================
+
+_FRESH_SHA = "a" * 64
+_OTHER_SHA = "b" * 64
+
+
+def _signature(
+    step: int,
+    *,
+    by: str = "윤하",
+    at: str = "2026-08-23T09:00:00+00:00",
+    stale: bool = False,
+    revoked: bool = False,
+    reason: str = "현장에서 직접 확인함",
+):
+    """One entry of ``calibration_attestation.index_payload()``, by hand.
+
+    Hand-built rather than produced by the store, for the same reason the
+    reality-check bundles above are: this file tests the RULE over a payload
+    shape, and the store's own tests
+    (``tests/test_calibration_attestation_store.py``) prove that shape is what
+    it emits — including that ``stale`` is computed there and never here.
+    """
+    return {
+        "id": f"sig-{step}",
+        "step_number": step,
+        "attested_by": by,
+        "attested_at": at,
+        "reason": reason,
+        "inpx_sha256": _FRESH_SHA,
+        "current_inpx_sha256": _OTHER_SHA if stale else _FRESH_SHA,
+        "stale": stale,
+        "revoked": revoked,
+        "history": [],
+    }
+
+
+def _signatures(*records):
+    return {record["step_number"]: record for record in records}
+
+
+def test_the_signable_steps_are_the_ones_with_no_machine_evidence_path():
+    """The tuple is data, and it must keep agreeing with the branches.
+
+    Signable = the six permanent manual areas, plus ⑨⑩⑪ (whose machine
+    evidence speaks about a RUN, or about a provable absence, rather than about
+    the step). ①⑥⑦⑫ are excluded because each carries an artifact that can
+    prove or refuse it.
+    """
+    assert set(calibration_rail.ATTESTABLE_STEPS) == set(
+        calibration_rail.STEPS_WITHOUT_EVIDENCE_SOURCE
+    ) | {9, 10, 11}
+    assert set(calibration_rail.ATTESTABLE_STEPS) & {1, 6, 7, 12} == set()
+    rail = calibration_rail.derive_rail({})
+    for step in rail["steps"]:
+        assert step["attestable"] is (step["number"] in calibration_rail.ATTESTABLE_STEPS)
+
+
+def test_a_signature_never_reaches_done_on_any_step():
+    """The #53 half of this file's central guard.
+
+    Sign every signable step at once, on a bundle carrying nothing else. Nine
+    steps go to CONFIRMED_BY_PERSON and NOT ONE reaches DONE — that separation
+    is the entire reason the sixth word exists rather than reusing the fifth.
+    """
+    rail = calibration_rail.derive_rail(
+        {
+            "step_attestations": _signatures(
+                *[_signature(number) for number in calibration_rail.ATTESTABLE_STEPS]
+            )
+        }
+    )
+    assert rail["counts"][calibration_rail.DONE] == 0
+    assert rail["counts"][calibration_rail.CONFIRMED_BY_PERSON] == len(
+        calibration_rail.ATTESTABLE_STEPS
+    )
+    for step in rail["steps"]:
+        if step["number"] in calibration_rail.ATTESTABLE_STEPS:
+            assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+            assert step["source"] == "calibration_attestation"
+        else:
+            assert step["status"] == calibration_rail.NO_EVIDENCE
+
+
+@pytest.mark.parametrize("number", calibration_rail.STEPS_WITHOUT_EVIDENCE_SOURCE)
+def test_a_manual_area_step_is_confirmed_by_a_fresh_signature(number):
+    step = _rail(step_attestations=_signatures(_signature(number)))[number]
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+    # It is STILL a manual area — what changed is that somebody accountable
+    # said they did it, not that anything was measured.
+    assert step["manual_area"] is True
+    assert step["detail"]["attestation"]["id"] == f"sig-{number}"
+
+
+@pytest.mark.parametrize("number", calibration_rail.STEPS_WITHOUT_EVIDENCE_SOURCE)
+def test_the_basis_names_the_attester_and_the_date_in_three_languages(number):
+    step = _rail(step_attestations=_signatures(_signature(number)))[number]
+    for language in ("ko", "en", "ja"):
+        sentence = step["basis"][language]
+        assert "윤하" in sentence, f"{language} basis does not name who signed: {sentence}"
+        assert "2026-08-23T09:00:00+00:00" in sentence, (
+            f"{language} basis does not carry the date it was signed: {sentence}"
+        )
+
+
+def test_a_stale_signature_falls_back_and_says_the_network_moved():
+    """The 재확인 필요 rule, borrowed from 현시도 confirmations.
+
+    The step goes back to its underlying status — NOT to a quieter version of
+    confirmed — and the sentence names the signature that no longer applies, so
+    a reader can act on it instead of wondering where the tick went.
+    """
+    step = _rail(step_attestations=_signatures(_signature(2, stale=True)))[2]
+    assert step["status"] == calibration_rail.NO_EVIDENCE
+    assert "재확인 필요" in step["basis"]["ko"]
+    assert "re-confirmation needed" in step["basis"]["en"]
+    assert "윤하" in step["basis"]["ko"]
+    # The underlying sentence survives in front of the note — the step still
+    # says what this product does and does not measure.
+    assert "수동 확인 영역" in step["basis"]["ko"]
+
+
+def test_a_revoked_signature_is_not_evidence_at_all():
+    """Belt and braces: ``index_payload`` never emits a revoked record, and the
+    rail refuses one anyway. Deleting either guard must not restore the claim."""
+    step = _rail(step_attestations=_signatures(_signature(3, revoked=True)))[3]
+    assert step["status"] == calibration_rail.NO_EVIDENCE
+    assert step["attestation"] is None
+    assert "attestation" not in step["detail"]
+
+
+@pytest.mark.parametrize("number", [1, 6, 7, 12])
+def test_a_signature_on_a_step_that_carries_machine_evidence_is_inert(number):
+    """The store refuses to WRITE one; the rail refuses to READ one.
+
+    Two independent guards, because the failure they prevent is a human opinion
+    silently overriding the generation gate or ``verify_applied_row``.
+    """
+    forged = {**_signature(2), "step_number": number}
+    step = _rail(step_attestations={number: forged})[number]
+    assert step["status"] == calibration_rail.NO_EVIDENCE
+    assert step["attestable"] is False
+    assert step["attestation"] is None
+
+
+def test_a_signature_that_cannot_name_its_attester_changes_nothing():
+    for broken in ({"attested_by": ""}, {"attested_at": ""}):
+        record = {**_signature(4), **broken}
+        step = _rail(step_attestations={4: record})[4]
+        assert step["status"] == calibration_rail.NO_EVIDENCE, (
+            "an unattributable signature must not confirm anything — 'somebody confirmed this' "
+            "is the unaccountable tick this record type exists to replace"
+        )
+
+
+def test_the_index_may_arrive_keyed_by_string():
+    """A registry round-tripped through JSON keys its steps by string. The rail
+    must not silently see zero signatures because of it."""
+    step = _rail(step_attestations={"5": _signature(5)})[5]
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+
+
+def test_the_step_carries_the_signature_for_the_screen_to_render():
+    fresh = _rail(step_attestations=_signatures(_signature(8)))[8]
+    assert fresh["attestation"]["id"] == "sig-8"
+    assert fresh["attestation"]["reason"] == "현장에서 직접 확인함"
+    # A STALE one is carried too — the screen has to show the record it is
+    # asking a human to re-confirm or revoke.
+    stale = _rail(step_attestations=_signatures(_signature(8, stale=True)))[8]
+    assert stale["attestation"]["stale"] is True
+
+
+# --- Step ⑨: the network's proof outranks the person -----------------------
+
+
+def test_step_9_not_applicable_beats_a_signature():
+    """Zero PT lines is a PROOF that there is nothing to calibrate, and a
+    signature cannot undo a proof — it is named on the basis instead."""
+    step = _rail(pt_line_count=0, step_attestations=_signatures(_signature(9)))[9]
+    assert step["status"] == calibration_rail.NOT_APPLICABLE
+    assert "기계 증거가 우선" in step["basis"]["ko"]
+    assert "outranks" in step["basis"]["en"]
+
+
+def test_step_9_is_confirmed_by_a_signature_on_a_pt_carrying_network():
+    step = _rail(pt_line_count=3, step_attestations=_signatures(_signature(9)))[9]
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+    assert step["source"] == "calibration_attestation"
+
+
+def test_step_9_stale_signature_returns_to_the_pt_line_count_sentence():
+    step = _rail(pt_line_count=3, step_attestations=_signatures(_signature(9, stale=True)))[9]
+    assert step["status"] == calibration_rail.NO_EVIDENCE
+    assert "대중교통 노선 3개" in step["basis"]["ko"]
+    assert "재확인 필요" in step["basis"]["ko"]
+
+
+# --- Steps ⑩ and ⑪: the scored run outranks the person ---------------------
+
+
+def test_step_10_a_waiting_demand_proposal_outranks_a_signature():
+    step = _rail(
+        reality_check=_reality_check(
+            nodes=[_node("5", outcome="PROPOSAL", scope=geh_ladder.DEMAND_LEVEL)]
+        ),
+        step_attestations=_signatures(_signature(10)),
+    )[10]
+    assert step["status"] == calibration_rail.NEXT
+    assert "기계 증거가 우선" in step["basis"]["ko"]
+    assert "승인을 기다리고" in step["basis"]["ko"], "the machine's own sentence must survive intact"
+
+
+def test_step_10_an_unverified_entrance_outranks_a_signature():
+    step = _rail(
+        reality_check=_reality_check(nodes=[_node("5", entrance="unverified")]),
+        step_attestations=_signatures(_signature(10)),
+    )[10]
+    assert step["status"] == calibration_rail.IN_PROGRESS
+    assert "기계 증거가 우선" in step["basis"]["ko"]
+
+
+def test_step_10_a_graded_comparison_outranks_a_signature():
+    """The evidence-less IN_PROGRESS ("nodes reproduce the counts but no D4
+    verdict") is still MACHINE evidence about this run, so it wins too. Decided
+    2026-08-23: only NO_EVIDENCE upgrades, with no exceptions carved out."""
+    step = _rail(
+        reality_check=_reality_check(nodes=[_node("5")], compared=4),
+        step_attestations=_signatures(_signature(10)),
+    )[10]
+    assert step["status"] == calibration_rail.IN_PROGRESS
+    assert "기계 증거가 우선" in step["basis"]["ko"]
+
+
+def test_step_10_done_keeps_a_coexisting_signature_as_provenance():
+    step = _rail(
+        reality_check=_reality_check(nodes=[_node("5", entrance="measured")]),
+        step_attestations=_signatures(_signature(10)),
+    )[10]
+    assert step["status"] == calibration_rail.DONE
+    assert step["source"] == "fixes.entrance_measurement"
+    assert "사람 증언도 함께 기록" in step["basis"]["ko"]
+    assert "also on record" in step["basis"]["en"]
+
+
+def test_step_10_is_confirmed_by_a_signature_when_no_run_was_scored():
+    step = _rail(step_attestations=_signatures(_signature(10)))[10]
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+
+
+def test_step_11_a_waiting_route_split_proposal_outranks_a_signature():
+    step = _rail(
+        reality_check=_reality_check(
+            nodes=[_node("5", outcome="PROPOSAL", scope=geh_ladder.ROUTING_SPLIT)]
+        ),
+        step_attestations=_signatures(_signature(11)),
+    )[11]
+    assert step["status"] == calibration_rail.NEXT
+    assert "기계 증거가 우선" in step["basis"]["ko"]
+
+
+def test_step_11_the_diagnosis_rung_outranks_a_signature():
+    step = _rail(
+        reality_check=_reality_check(nodes=[_node("5")], by_rung={geh_ladder.ROUTING_SPLIT: ["5"]}),
+        step_attestations=_signatures(_signature(11)),
+    )[11]
+    assert step["status"] == calibration_rail.IN_PROGRESS
+    assert "기계 증거가 우선" in step["basis"]["ko"]
+
+
+def test_step_11_silence_is_what_a_signature_answers():
+    """The branch #53 exists for. "This check raised no route-choice proposal
+    and no route-choice diagnosis — which is not evidence that route choice was
+    confirmed" is exactly the sentence a modeller who DID review the splits had
+    no way to answer."""
+    step = _rail(
+        reality_check=_reality_check(nodes=[_node("5")]),
+        step_attestations=_signatures(_signature(11)),
+    )[11]
+    assert step["status"] == calibration_rail.CONFIRMED_BY_PERSON
+    assert step["detail"]["underlying_status"] == calibration_rail.NO_EVIDENCE

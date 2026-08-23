@@ -2467,13 +2467,53 @@ export function healthCheckDownloadUrl(): string {
 // app.
 // ---------------------------------------------------------------------------
 
-/** One of the five words the flow rail is allowed to say about a step. */
+/** One of the six words the flow rail is allowed to say about a step.
+ *
+ * The list is `services/calibration_rail.STATUSES`, in its order, and it is a
+ * WIRE type: nothing on the client may produce one of these, and a seventh word
+ * here would be a status no backend rule can emit.
+ *
+ * `CONFIRMED_BY_PERSON` arrived with unit #53 and is deliberately NOT `DONE`.
+ * `DONE` means a named ARTIFACT carries a positive verdict; this means a named
+ * PERSON signed for the step. Nine of the thirteen steps have no artifact at
+ * all, so before #53 they said "no evidence" forever — true, and unable to tell
+ * "nobody did this" from "somebody did it and this tool cannot see it". The
+ * server draws that distinction; this file only spells it. */
 export type CalibrationStepStatus =
   | "DONE"
+  | "CONFIRMED_BY_PERSON"
   | "IN_PROGRESS"
   | "NEXT"
   | "NOT_APPLICABLE"
   | "NO_EVIDENCE";
+
+/** One named human's signature on a §2.12.1 step (#53), as the server keeps it.
+ *
+ * `attested_by` and `attested_at` come from the session and the server clock —
+ * there is deliberately no way to send either (see
+ * `postCalibrationStepAttestation`). `stale` is the SERVER's comparison of the
+ * `.inpx` this claim was signed against with the one on disk now, never a
+ * client-side date or revision check. */
+export interface CalibrationStepAttestation {
+  id: string;
+  step_number: number;
+  attested_by: string;
+  attested_at: string;
+  reason: string;
+  inpx_sha256: string;
+  /** `null` when the server could not read the active network at all — which
+   * the server itself treats as stale, because unknown is not fresh. */
+  current_inpx_sha256: string | null;
+  /** The network moved (or could not be read) since this was signed: the step
+   * falls back to its derived status and asks for a re-confirmation. */
+  stale: boolean;
+  revoked: boolean;
+  revoked_by?: string | null;
+  revoked_at?: string | null;
+  revoked_reason?: string | null;
+  /** Append-only: the signing event, and the revocation if there was one. */
+  history: { event: string; at: string; by: string; reason: string }[];
+}
 
 /** One driving behaviour a search could be run on: all three searched
  * parameters readable off it, so a baseline vector exists and a write could be
@@ -2660,6 +2700,13 @@ export interface CalibrationRailStep {
   detail: Record<string, unknown>;
   /** Unit #51's second track. Present on step 12 only. */
   tracks?: CalibrationRailTrack[];
+  /** Whether a human may SIGN for this step (#53) — the server's answer, from
+   * `calibration_rail.ATTESTABLE_STEPS`. A client-side copy of that list would
+   * be a second opinion about which steps carry machine evidence. */
+  attestable?: boolean;
+  /** The signature that STANDS, or null. A stale one is here too, so the screen
+   * can show the record it is asking about; a revoked one never is. */
+  attestation?: CalibrationStepAttestation | null;
 }
 
 export interface CalibrationRail {
@@ -2674,6 +2721,9 @@ export interface CalibrationRail {
     gate: boolean;
     health: boolean;
     phase_diagrams: boolean;
+    /** Whether the SIGNATURE STORE could be read — distinct from it holding
+     * nothing, which is the normal state and reads as no evidence. */
+    step_attestations: boolean;
     shadow_model: boolean;
     reality_check: boolean;
     scenario_id: string | null;
@@ -2883,6 +2933,50 @@ export async function fetchParameterSearchJob(jobId: string): Promise<ParameterS
   const r = await apiFetch(`/api/calibration/parameter-search/jobs/${encodeURIComponent(jobId)}`, {
     cache: "no-store",
   });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** Sign for ONE calibration step (#53).
+ *
+ * WHAT IS DELIBERATELY NOT ON THIS BODY: `attested_by` and `attested_at`. The
+ * server takes the attester from the session and the timestamp from its own
+ * clock, and its request model forbids extra fields — so sending either is a
+ * 422 at the door rather than somebody else's name against a step. Same
+ * discipline as `confirmPhaseDiagram`, which is the act this is modelled on.
+ *
+ * The response carries the RECORD and no status: what the step now says is the
+ * rail's answer, re-derived on the next `fetchCalibrationRail`. */
+export async function postCalibrationStepAttestation(params: {
+  stepNumber: number;
+  reason: string;
+}): Promise<CalibrationStepAttestation> {
+  const r = await apiMutationFetch("/api/calibration/step-attestations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step_number: params.stepNumber, reason: params.reason }),
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** Withdraw one signature, with a reason of its own (#53).
+ *
+ * Nothing is deleted: the revoker's name, time and reason are appended beside
+ * the original signing event, so "who signed this, and who later said it was
+ * wrong" survives. The step then falls back to whatever its evidence says. */
+export async function revokeCalibrationStepAttestation(
+  attestationId: string,
+  params: { reason: string },
+): Promise<CalibrationStepAttestation> {
+  const r = await apiMutationFetch(
+    `/api/calibration/step-attestations/${encodeURIComponent(attestationId)}/revoke`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: params.reason }),
+    },
+  );
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
 }

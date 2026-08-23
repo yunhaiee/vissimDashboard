@@ -1,5 +1,7 @@
-"""``/api/calibration`` — the calibration workspace's read side (#50) and, since
-2026-08-21, the ONE control on it: ``POST /parameter-search/start`` (#51).
+"""``/api/calibration`` — the calibration workspace's read side (#50), the search
+control added 2026-08-21 (``POST /parameter-search/start``, #51), and the signed
+human attestation added 2026-08-23 (``POST /step-attestations`` and its
+revocation, #53).
 
 Every route here was a GET, every one of them pure with respect to this
 product's state, and not one of them decided anything about a network. They
@@ -32,8 +34,9 @@ what they say:
 
 WHAT THIS MODULE DELIBERATELY DOES NOT DO
 ------------------------------------------
-**It adds no write path and no second approval machine.** The calibration
-screen approves through the endpoint that already exists,
+**It adds no second approval machine** — and, until #51, no write path at all.
+Approving a machine's proposed EDIT is still not something this router can do:
+the calibration screen approves through the endpoint that already exists,
 ``POST /api/assistant/agent/approve`` — same single-use file, same
 ``require_approver`` identity check, same re-minted grant. All this module adds
 is the ability to SEE that a pause is waiting without having been the browser
@@ -67,6 +70,28 @@ worth stating because each of them is a way this route could have gone wrong:
 * **No COM runs in this handler.** The handler validates and returns; the job
   thread owns every Vissim call (CLAUDE.md: COM goes through the job queue,
   never a request handler).
+
+WHAT #53's SIGNED ATTESTATION ADDED
+------------------------------------
+Two more POSTs, and they are the first ones on this router that write something
+a human said rather than something a machine will do:
+``POST /step-attestations`` records ONE named person's claim that a §2.12.1 step
+is done, and ``POST /step-attestations/{id}/revoke`` withdraws it. Three
+properties, each of them a way this could have gone wrong:
+
+* **Neither route can decide a status.** They write to
+  ``services.calibration_attestation``; ``GET /rail`` re-derives every step from
+  that store on the next read. The POST responses carry the RECORD and no status
+  word at all, so there is exactly one place a step's state is decided.
+* **The attester is the session and the clock is the server's** — the request
+  models forbid extra fields, so a body carrying ``attested_by`` is a 422 rather
+  than somebody else's name against a step. Same rule as
+  ``routers/genesis.confirm_phase_diagram``, which is the act this is modelled
+  on.
+* **A signature never becomes ``DONE``.** ``CONFIRMED_BY_PERSON`` is its own
+  word, it upgrades only ``NO_EVIDENCE``, and it expires when the ``.inpx`` it
+  was signed against changes. That ranking lives in ``calibration_rail``, not
+  here.
 """
 from __future__ import annotations
 
@@ -74,10 +99,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from services import calibration_rail, genesis_jobs, workspaces
+from routers.auth import current_user
+from services import calibration_attestation, calibration_rail, genesis_jobs, workspaces
 from services.agent import mrwa_reference, saturation_flow, search_job, tools_network
 from services.datasets import get_active_dataset, get_active_inpx_path
 
@@ -182,6 +208,24 @@ def _phase_diagram_index() -> list[dict[str, Any]] | None:
         return _phase_diagram_store().index_payload()
     except Exception as exc:  # noqa: BLE001
         logger.info("calibration: phase diagrams unavailable (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
+def _step_attestation_index() -> dict[int, dict[str, Any]] | None:
+    """This workspace's signed step attestations, or ``None`` if unreadable (#53).
+
+    Same shape and the same failure rule as :func:`_phase_diagram_index`: a
+    deferred import, and any failure degrades to ``None`` — which the rail reads
+    as "no signature", i.e. exactly the answer this screen gave before #53. The
+    other direction (an unreadable store inventing a signature) is the one that
+    must not exist, and this cannot produce it.
+    """
+    try:
+        return calibration_attestation.index_payload()
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "calibration: step attestations unavailable (%s: %s)", type(exc).__name__, exc
+        )
         return None
 
 
@@ -435,10 +479,15 @@ def get_flow_rail(
 
     signals = shadow.get("signals") if isinstance(shadow, dict) else None
     pt_lines = shadow.get("pt_lines") if isinstance(shadow, dict) else None
+    attestations = _step_attestation_index()
     evidence = {
         "gate": gate,
         "health": health,
         "phase_diagrams": _phase_diagram_index(),
+        # #53. The nine signable steps' human attestations, gathered here for
+        # the same reason the search job is: ``calibration_rail`` stays a pure
+        # function of a bundle and never reaches into a registry.
+        "step_attestations": attestations,
         "signal_controller_count": len(signals) if isinstance(signals, list) else None,
         "pt_line_count": len(pt_lines) if isinstance(pt_lines, list) else None,
         "applied_rows": _applied_rows(shadow),
@@ -461,6 +510,9 @@ def get_flow_rail(
         "phase_diagrams": evidence["phase_diagrams"] is not None,
         "shadow_model": shadow is not None,
         "reality_check": report is not None,
+        # Whether the SIGNATURE STORE could be read at all — distinct from "it
+        # holds nothing", which is the normal state and reads as no evidence.
+        "step_attestations": attestations is not None,
         "scenario_id": scenario_id or None,
     }
     return rail
@@ -559,6 +611,12 @@ def start_parameter_search(request: Request, body: ParameterSearchStartRequest):
             "gate": gate,
             "health": health,
             "phase_diagrams": _phase_diagram_index(),
+            # Gathered here too (#53) so this rail and the screen's rail cannot
+            # describe the same nine steps differently. The gate itself reads
+            # only step 6, which is not signable — but a rail built from a
+            # SMALLER bundle than the one on screen is exactly how two opinions
+            # about one project start.
+            "step_attestations": _step_attestation_index(),
             "signal_controller_count": len(signals) if isinstance(signals, list) else None,
             "pt_line_count": len(pt_lines) if isinstance(pt_lines, list) else None,
             "applied_rows": applied,
@@ -632,6 +690,131 @@ def get_parameter_search_job(job_id: str):
     if record is None or str(record.get("workspace_id") or "") != workspaces.current_workspace_id():
         raise HTTPException(status_code=404, detail="No such parameter-search job.")
     return search_job.job_card(record)
+
+
+# ---------------------------------------------------------------------------
+# #53 — the signed human attestation, the one write this screen owns
+# ---------------------------------------------------------------------------
+
+
+class StepAttestationRequest(BaseModel):
+    """Which step, and why. NOT who, and NOT when.
+
+    ``extra="forbid"`` is load-bearing exactly as it is on
+    :class:`ParameterSearchStartRequest`: a body carrying ``attested_by`` or
+    ``attested_at`` is a 422 AT THE DOOR rather than a field that quietly does
+    nothing, so "the attester is the session and the clock is the server's" is a
+    property a caller can verify rather than a promise. Same rule, same reason,
+    as ``routers/genesis.ConfirmPhaseDiagramRequest``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    step_number: int = Field(..., description="One of the nine signable §2.12.1 steps")
+    reason: str = Field(
+        ...,
+        description=(
+            "Why this person is signing. Mandatory and non-empty after stripping — a "
+            "signature with no stated reason is a tick."
+        ),
+    )
+
+
+class RevokeStepAttestationRequest(BaseModel):
+    """Why the signature is being withdrawn. Mandatory, for the same reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., description="Why this attestation no longer holds")
+
+
+@router.post("/step-attestations")
+def create_step_attestation(
+    body: StepAttestationRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Record ONE human's signature on one calibration step. The load-bearing act.
+
+    The attester is the signed-in user and the timestamp is the server's; the
+    ``.inpx`` hash the claim is bound to is read off disk here, not sent. So the
+    only things a caller decides are WHICH step and WHY — everything that makes
+    the record accountable comes from the server side of the request.
+
+    ``current_user``, not ``require_approver``: this is the 현시도 analogue
+    (``POST /api/genesis/phase-diagrams/{id}/confirmation``), where any named
+    modeller may attest what they did. Approving an EDIT the machine proposed is
+    a different act and still goes through ``POST /api/assistant/agent/approve``
+    with its reviewer check.
+
+    WHAT THIS RESPONSE DOES NOT CONTAIN: a status. The rail re-derives every
+    step from the store on the next read, so this returns the record it wrote
+    and the client re-reads ``GET /rail`` — a status word on this response would
+    be a second place a step's state is decided.
+    """
+    try:
+        return calibration_attestation.record_attestation(
+            step_number=body.step_number,
+            reason=body.reason,
+            attested_by=str(user.get("username") or user.get("id") or "").strip(),
+        )
+    except calibration_attestation.StepAttestationRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+    except calibration_attestation.RegistryUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The signature could not be written because this project's existing ones could "
+                f"not be read. Nothing was recorded. [{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The signature could not be written. Nothing was recorded. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+
+@router.post("/step-attestations/{attestation_id}/revoke")
+def revoke_step_attestation(
+    attestation_id: str,
+    body: RevokeStepAttestationRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Withdraw one signature, with a reason. Nothing is deleted.
+
+    ANY signed-in user may revoke, and the store records who did and why beside
+    the original signing event (see ``calibration_attestation``'s own note on
+    why the two acts are deliberately asymmetric). The step then falls back to
+    whatever its evidence says on the next rail read, which for a manual-check
+    area is the sentence it always had.
+    """
+    try:
+        return calibration_attestation.revoke_attestation(
+            attestation_id,
+            revoked_by=str(user.get("username") or user.get("id") or "").strip(),
+            reason=body.reason,
+        )
+    except calibration_attestation.StepAttestationRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+    except calibration_attestation.RegistryUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The revocation could not be written because this project's signatures could not "
+                f"be read. Nothing was changed. [{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The revocation could not be written. Nothing was changed. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
 
 
 @router.get("/pending-approvals")

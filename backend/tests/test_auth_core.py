@@ -1080,6 +1080,36 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
     route that mints a ``MappingAttestation`` is still
     ``POST …/{review_id}/confirmation`` above.
 
+    **Unit #53 adds exactly two, and they are the calibration screen's own
+    attestation pair.** 단계별 서명 증언 gives the nine §2.12.1 steps this
+    product measures nothing for (②③④⑤⑧⑨⑩⑪⑬) a way for a named modeller to
+    say they did the work — a SECOND SPECIES of attestation, stored in
+    ``services/calibration_attestation.py`` and rendered by the rail as
+    ``CONFIRMED_BY_PERSON``, which is never ``DONE``:
+
+    * ``POST /api/calibration/step-attestations`` — **the load-bearing one**,
+      and the exact analogue of ``POST …/phase-diagrams/{id}/confirmation``
+      above. The record's whole worth is WHO says the step is done and why, so
+      the attester is taken from the session and the timestamp from the server
+      clock; the request model forbids extra fields, so a body carrying
+      ``attested_by`` is a 422 rather than somebody else's name against a step.
+      A caller with no identity cannot make one at all.
+    * ``POST /api/calibration/step-attestations/{attestation_id}/revoke`` —
+      withdrawing one is a signed act too. Nothing is deleted; the revoker's
+      name, time and reason are appended beside the original signing event, so
+      "who signed this, and who later said it was wrong" survives in the
+      project's tree. An anonymous caller must not be able to strip a named
+      person's claim off a project any more than they can add one.
+
+    ``current_user`` and not ``require_approver`` for both, for the same reason
+    the 현시도 confirmation is: attesting what YOU did is not approving what the
+    MACHINE proposed. The latter is still ``POST /api/assistant/agent/approve``
+    and still checks for a reviewer.
+
+    The rest of ``/api/calibration`` stays open, unchanged: those routes return
+    the record of a decision (the rail, the score, the Table 5-6 verdicts, the
+    pauses waiting), which is the same parity the genesis reads sit in.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1102,6 +1132,8 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
     assert guarded == {
         "/api/auth/whoami",
         "/api/assistant/agent/approve",
+        "/api/calibration/step-attestations",
+        "/api/calibration/step-attestations/{attestation_id}/revoke",
         "/api/workspaces",
         "/api/genesis/uploads",
         "/api/genesis/side-inputs",
