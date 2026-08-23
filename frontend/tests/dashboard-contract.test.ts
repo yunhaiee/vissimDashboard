@@ -10243,6 +10243,197 @@ contractTest("unit #50-c: the scoring surface is a TILE GRID, and the movement c
   pin.match(grid, /movements_ungradable \?\? 0/, "expected the ungradable count to stay beside the compared count");
 });
 
+contractTest(
+  "unit #50-e: every tile in the scoring grid reserves the same TWO-LINE footer, capped so a wrapped label cannot grow it",
+  (pin) => {
+    const table = read("components/calibration/NodeScoreTable.tsx");
+    const grid = table.slice(
+      table.indexOf("export default function NodeScoreTable"),
+      table.indexOf("export function NodeScoreDetail"),
+    );
+
+    // AUTHORITY: #50-e (2026-08-23), CORRECTED same day by the refuter's own
+    // measurement on the live app: at 1280x900 the tile column is ~97px wide
+    // (rail split x report/map split x xl:grid-cols-3), and at that width
+    // EVERY rung label wraps -- ko/ja run two lines, en up to three ("Turn
+    // distribution ->"). A bare min-h floored a PASS tile up to a one-line
+    // FAIL tile, but nothing capped a FAIL tile that wrapped past one line,
+    // so a wrapped tile grew past its unwrapped neighbours anyway -- the
+    // uniform-height claim was false at the width that matters. Reserve AND
+    // cap must hold TOGETHER, on the SAME element, so this is one regex
+    // spanning both classes rather than two separate string checks a rewrite
+    // could satisfy by putting them on different elements.
+    pin.match(
+      grid,
+      /<span\s+className="mt-1\.5 block min-h-\[40px\] line-clamp-2 text-\[14px\] leading-5"/,
+      "expected the SAME element to both reserve two lines (min-h-[40px]) and cap at two (line-clamp-2) -- either alone reproduces the refuter's measured break",
+    );
+
+    // THE FULL LABEL SURVIVES THE CLAMP. A rung label is an action a reader
+    // must be able to read in full even when the box only shows two lines of
+    // it -- title for a mouse, aria-label for assistive tech, neither of
+    // which line-clamp's CSS-only truncation provides on its own.
+    pin.match(
+      grid,
+      /title=\{rungFooterText \|\| undefined\}/,
+      "expected the clamped label's full text to survive as a title, for when two lines still is not enough",
+    );
+    pin.match(
+      grid,
+      /aria-label=\{rungFooterText \|\| undefined\}/,
+      "expected the clamped label's full text to survive for assistive tech too, not only sighted hover",
+    );
+
+    // ONE COMPUTATION per node, so the visible (possibly clamped) text and
+    // its title/aria fallback can never fall out of sync with each other.
+    pin.match(
+      grid,
+      /const rungFooterText =\s*passes === false && node\.diagnosis\s*\? `\$\{rungLabel\(node\.diagnosis\.rung, t\)\} →`\s*: passes === null\s*\? t\("등급 불가", "ungradable", "評価不可"\)\s*: "";/,
+      "expected the footer text computed once per node, not recomputed separately for the visible span and its title/aria",
+    );
+
+    // UNCONDITIONAL -- the reserving/capping span itself is not a third
+    // branch of a ternary that only renders for fail/ungradable, which would
+    // bring back exactly the mismatch this test exists to catch. Comments
+    // stripped first so the check is about the CODE, not whichever prose
+    // happens to precede the span this week.
+    const surface = withoutComments(grid);
+    const footerAt = surface.indexOf('className="mt-1.5 block min-h-[40px] line-clamp-2');
+    pin.doesNotMatch(
+      surface.slice(Math.max(0, footerAt - 80), footerAt),
+      /passes/,
+      "expected the footer row to render unconditionally -- gating it behind `passes` reintroduces the height mismatch between a pass and a fail/ungradable tile",
+    );
+
+    // The two states that fill it are unchanged -- one line each, inside the
+    // reserved footer rather than each defining its own.
+    pin.match(grid, /passes === false && node\.diagnosis && \(/, "expected the rung link only where the node FAILED");
+    pin.match(grid, /passes === null && \(/, "expected the ungradable label inside the same reserved footer");
+  },
+);
+
+contractTest(
+  "unit #50-e: the assistant-handoff event name agrees across FloatingAssistant's receiver and all three dispatchers",
+  (pin) => {
+    // AUTHORITY: the refuter, 2026-08-23 -- MEASURED: mutating
+    // FloatingAssistant.tsx's addEventListener/removeEventListener string by
+    // ONE CHARACTER fails ZERO existing tests while silently breaking all
+    // three dispatchers (app/health/page.tsx, CurationBar.tsx, and this
+    // unit's own node-detail CTA) -- the drawer simply never opens, with no
+    // error anywhere a reader would see it. Each side declares the string
+    // independently BY DESIGN (see each file's own comment on why this is not
+    // a shared import -- the event NAME is the contract), which is exactly
+    // why nothing but a cross-file test can catch the two drifting apart.
+    const EVENT_NAME = "vissim:assistant-handoff";
+
+    const listener = withoutComments(read("components/FloatingAssistant.tsx"));
+    pin.match(
+      listener,
+      new RegExp(`window\\.addEventListener\\("${EVENT_NAME}", handleAssistantHandoff\\);`),
+      "expected FloatingAssistant's REGISTER call to use the exact event name every dispatcher sends",
+    );
+    pin.match(
+      listener,
+      new RegExp(`window\\.removeEventListener\\("${EVENT_NAME}", handleAssistantHandoff\\);`),
+      "expected FloatingAssistant's UNREGISTER call to use the exact SAME event name as the register call -- a mismatch here leaks the listener without even breaking the handoff loudly",
+    );
+
+    const dispatchers: [string, string][] = [
+      ["app/health/page.tsx", "the finding/report handoff buttons"],
+      ["components/dashboard/CurationBar.tsx", "the insight-card handoff button"],
+      ["components/calibration/NodeScoreTable.tsx", "the next-action CTA this unit (#50-e) added"],
+    ];
+    for (const [file, what] of dispatchers) {
+      pin.match(
+        withoutComments(read(file)),
+        new RegExp(`const ASSISTANT_HANDOFF_EVENT = "${EVENT_NAME}";`),
+        `expected ${file} (${what}) to declare the exact same event name FloatingAssistant listens for`,
+      );
+    }
+  },
+);
+
+contractTest("unit #50-e: the next-action box hands the user to the assistant, prefilled and node-specific", (pin) => {
+  const table = read("components/calibration/NodeScoreTable.tsx");
+  const detail = table.slice(table.indexOf("export function NodeScoreDetail"));
+
+  // AUTHORITY: #50-e (2026-08-23) -- the next-action box used to be advice
+  // with nowhere to go. MEASURED, not invented: this reuses the SAME
+  // window-event handoff app/health/page.tsx and
+  // components/dashboard/CurationBar.tsx already use to reach the
+  // globally-mounted FloatingAssistant (components/AppShell.tsx) -- no new
+  // mechanism, no new route.
+  pin.match(
+    table,
+    /const ASSISTANT_HANDOFF_EVENT = "vissim:assistant-handoff";/,
+    "expected the SAME handoff event name app/health/page.tsx and CurationBar.tsx dispatch -- a different string would not reach FloatingAssistant's listener",
+  );
+  pin.match(
+    table,
+    /window\.dispatchEvent\(new CustomEvent\(ASSISTANT_HANDOFF_EVENT, \{ detail: \{ prompt \} \}\)\);/,
+    "expected the exact event shape FloatingAssistant listens for",
+  );
+
+  // THE CTA ITSELF, on the surface, inside the next-action box.
+  pin.match(
+    detail,
+    /onClick=\{\(\) => requestAgentHandoff\(buildNextActionPrompt\(node\.node_id, nextAction\.text, t\)\)\}/,
+    "expected the CTA to hand off through the shared mechanism, built from THIS node's id and THIS node's own next action",
+  );
+  pin.match(
+    withoutFolds(detail),
+    /\{t\("AI에게 물어보기", "Ask the AI", "AIに聞く"\)\}/,
+    "expected the CTA to sit on the surface and reuse the health page's own handoff label, not a new one",
+  );
+
+  // NODE ID INTERPOLATED, not hardcoded -- the prompt builder must actually
+  // splice `nodeId` into all three language templates, or a CTA opened from
+  // node 7 could ask the assistant about node 4.
+  const builderAt = table.indexOf("function buildNextActionPrompt");
+  const builder = table.slice(builderAt, table.indexOf("\n}", builderAt));
+  const nodeIdSplices = builder.match(/\$\{nodeId\}/g) ?? [];
+  assert.ok(
+    nodeIdSplices.length >= 3,
+    `expected the node id interpolated into the ko, en AND ja templates -- found ${nodeIdSplices.length} splice(s)`,
+  );
+  pin.match(builder, /text\.ko/, "expected the ko template to carry the server's own ko next-action text, not a paraphrase");
+  pin.match(builder, /text\.en/, "expected the en template to carry the server's own en next-action text");
+  pin.match(builder, /text\.ja/, "expected the ja template to carry the server's own ja next-action text");
+});
+
+contractTest(
+  "unit #50-e: diagnosis prose and delay evidence move behind the fold, and the next-action box stays on the surface",
+  (pin) => {
+    const table = read("components/calibration/NodeScoreTable.tsx");
+    const detail = table.slice(table.indexOf("export function NodeScoreDetail"));
+
+    // AUTHORITY: the user, 2026-08-23 -- "diagnosis prose duplicates the
+    // next-action box; delay evidence is developer info." BOTH DIRECTIONS, per
+    // moved string, same shape as the #50-c ledger above: still in the file,
+    // and no longer on the surface.
+    const moved = (pattern: RegExp, what: string) => {
+      pin.match(detail, pattern, `${what} must still exist in the node detail -- #50-e moved it, it did not delete it`);
+      pin.doesNotMatch(
+        withoutFolds(detail),
+        pattern,
+        `${what} must not render on the surface -- #50-e (2026-08-23): diagnosis prose duplicates the next-action box; delay evidence is developer info`,
+      );
+    };
+
+    moved(/pick\(node\.diagnosis\.why, lang\)/, "the diagnosis.why paragraph");
+    moved(/\{t\("지체 증거", "Delay evidence", "遅延の根拠"\)\}/, "the delay-evidence line");
+
+    // THE NEXT-ACTION BOX IS THE EXCEPTION -- it is the ACTION, not developer
+    // info or duplicated prose, so #50-e keeps it on the surface (and gives it
+    // the CTA pinned above).
+    pin.match(
+      withoutFolds(detail),
+      /\{pick\(nextAction\.text, lang\)\}/,
+      "expected the next-action sentence to stay ON the surface -- unlike diagnosis.why and delay evidence, it is the thing a reader acts on",
+    );
+  },
+);
+
 contractTest("unit #50-c: the rail's chips are the step chips, and a zero badge renders nothing", (pin) => {
   const rail = read("components/calibration/FlowRail.tsx");
 

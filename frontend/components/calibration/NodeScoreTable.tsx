@@ -143,6 +143,19 @@ export default function NodeScoreTable({
           const passes = nodeGehPasses(node, threshold);
           const active = activeNodeId === node.node_id;
           const selected = selectedNodeIds.includes(node.node_id);
+          // #50-e (2026-08-23), corrected after the refuter's measurement on
+          // the live app: at the tile grid's real width (xl:grid-cols-3
+          // inside the report/map split inside the rail split -- ~97px at
+          // 1280x900) every rung label WRAPS -- ko/ja run two lines, en runs
+          // up to three ("Turn distribution →"). Computed once so the
+          // clamped span below and its title/aria fallback can never
+          // disagree with each other.
+          const rungFooterText =
+            passes === false && node.diagnosis
+              ? `${rungLabel(node.diagnosis.rung, t)} →`
+              : passes === null
+                ? t("등급 불가", "ungradable", "評価不可")
+                : "";
           return (
             <li key={node.node_id}>
               <button
@@ -175,17 +188,35 @@ export default function NodeScoreTable({
                 {/* A FAILING tile carries its own next rung — #43's own
                     classification, so the tile answers "and then what" without
                     being opened. A passing tile says nothing extra: there is
-                    nothing to climb. */}
-                {passes === false && node.diagnosis && (
-                  <span className="mt-1.5 block text-[14px] font-semibold text-slate-700">
-                    {rungLabel(node.diagnosis.rung, t)} →
-                  </span>
-                )}
-                {passes === null && (
-                  <span className="mt-1.5 block text-[14px] text-slate-500">
-                    {t("등급 불가", "ungradable", "評価不可")}
-                  </span>
-                )}
+                    nothing to climb.
+
+                    #50-e (2026-08-23), CORRECTED same day: min-h-[20px] alone
+                    floored a pass tile up to a one-line fail tile, but it did
+                    not CAP a fail tile that wrapped past one line -- and at
+                    this grid's real column width every rung label wraps (ko
+                    "회전 배분 →" 2 lines, ja 2 lines, en up to 3 for "Turn
+                    distribution →"), so a wrapped tile grew past its
+                    unwrapped neighbours anyway. The wrapper now reserves TWO
+                    lines (min-h-[40px]) on every tile, pass included, AND
+                    caps at two with line-clamp-2, so height is identical
+                    regardless of verdict or wrap. A clamped label is still an
+                    ACTION a reader must be able to read in full -- so the
+                    untruncated text rides along as `title` (mouse hover) and
+                    `aria-label` (assistive tech), never silently cut. */}
+                <span
+                  className="mt-1.5 block min-h-[40px] line-clamp-2 text-[14px] leading-5"
+                  title={rungFooterText || undefined}
+                  aria-label={rungFooterText || undefined}
+                >
+                  {passes === false && node.diagnosis && (
+                    <span className="font-semibold text-slate-700">
+                      {rungLabel(node.diagnosis.rung, t)} →
+                    </span>
+                  )}
+                  {passes === null && (
+                    <span className="text-slate-500">{t("등급 불가", "ungradable", "評価不可")}</span>
+                  )}
+                </span>
               </button>
             </li>
           );
@@ -228,6 +259,36 @@ export default function NodeScoreTable({
  * a report may not have loaded yet; without it the GEH is printed as a number
  * with no verdict, which is the honest rendering of "this pane was not told
  * what the bar is" — never a bar this file chose. */
+// #50-e (2026-08-23): the same window-event handoff app/health/page.tsx and
+// components/dashboard/CurationBar.tsx already use to reach the
+// globally-mounted FloatingAssistant (components/AppShell.tsx). Not a shared
+// import -- both of those files make the same choice for the same reason,
+// recorded in their own comments: the event NAME is the contract between
+// independent dispatchers, not a module either side needs to import.
+const ASSISTANT_HANDOFF_EVENT = "vissim:assistant-handoff";
+
+function requestAgentHandoff(prompt: string) {
+  window.dispatchEvent(new CustomEvent(ASSISTANT_HANDOFF_EVENT, { detail: { prompt } }));
+}
+
+/** The assistant prompt for the next-action CTA. `text` is next_action's own
+ * server words (never a diagnosis this file composes -- see the file-top
+ * comment on what this pane refuses to compute); the wrapper sentence and the
+ * node id are the only things added, in all three languages, so the
+ * assistant opens already knowing which node and which action without the
+ * user retyping either. */
+function buildNextActionPrompt(
+  nodeId: string,
+  text: { ko: string; en: string; ja: string },
+  t: Translate,
+): string {
+  return t(
+    `노드 ${nodeId}의 다음 조치: "${text.ko}" 지금 도와줘.`,
+    `Node ${nodeId}'s next action: "${text.en}" Please help me do this now.`,
+    `ノード${nodeId}の次の対応: 「${text.ja}」今すぐ手伝ってください。`,
+  );
+}
+
 export function NodeScoreDetail({
   node,
   threshold,
@@ -293,18 +354,32 @@ export function NodeScoreDetail({
         </div>
       </dl>
 
-      {/* The one sentence a modeller acts on, in the app's proposal accent. Its
-          MRWA step and citation moved into the fold below (#50-c, the user's
-          2026-08-20 decision on mono provenance lines): the action is what a
-          reader acts on, the paragraph number is what an auditor checks. */}
-      {nextAction && (
-        <p className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-[14px] leading-6 text-slate-800">
-          {pick(nextAction.text, lang)}
-        </p>
-      )}
+      {/* The one sentence a modeller acts on, in the app's proposal accent,
+          now with a CTA rather than just advice. Its MRWA step and citation
+          still live in the fold below (#50-c, 2026-08-20): the action is what
+          a reader acts on, the paragraph number is what an auditor checks.
 
-      {node.diagnosis && (
-        <p className="mt-1.5 text-[14px] leading-6 text-slate-700">{pick(node.diagnosis.why, lang)}</p>
+          #50-e (2026-08-23): this box used to end at the sentence. Reusing
+          the SAME window-event handoff app/health/page.tsx and
+          CurationBar.tsx already use to reach the globally-mounted
+          FloatingAssistant (components/AppShell.tsx, mounted once for every
+          route including this one) -- no new mechanism, no invented route.
+          The prompt is built from the SERVER's own next_action.text (this
+          file never composes a diagnosis of its own -- see the header
+          comment on what this pane refuses to compute) plus the node id, so
+          the assistant opens already knowing which node and which action. */}
+      {nextAction && (
+        <div className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5">
+          <p className="text-[14px] leading-6 text-slate-800">{pick(nextAction.text, lang)}</p>
+          <button
+            type="button"
+            onClick={() => requestAgentHandoff(buildNextActionPrompt(node.node_id, nextAction.text, t))}
+            className="mt-1 inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-[14px] font-semibold text-accent-deep transition hover:border-accent/60 hover:bg-accent/15"
+          >
+            {t("AI에게 물어보기", "Ask the AI", "AIに聞く")}
+            <span aria-hidden>→</span>
+          </button>
+        </div>
       )}
 
       {/* D4: "unverified" is not "unmeasured", and the card must not blur the
@@ -317,35 +392,44 @@ export function NodeScoreDetail({
         </p>
       )}
 
-      {/* Delay/queue coverage — the evidence the capacity rungs rest on. The
-          COVERAGE is stated alongside the worst value, because "no delay row"
-          is not "no delay" (a starved approach is graded not at all). */}
-      {Object.keys(congestion).length > 0 && (
-        <p className="mt-1.5 text-[14px] leading-6 text-slate-700">
-          <span className="font-semibold">{t("지체 증거", "Delay evidence", "遅延の根拠")}: </span>
-          <span className="font-mono">{String(congestion.availability ?? "-")}</span>
-          {typeof congestion.worst_delay_s === "number" && (
-            <span className="font-mono">
-              {" · "}
-              {t("최악", "worst", "最悪")} {congestion.worst_delay_s}s
-              {congestion.worst_los ? ` (LOS ${String(congestion.worst_los)})` : ""}
-            </span>
-          )}
-          {approaches.length > 0 && (
-            <span className="font-mono">
-              {" · "}
-              {t("접근로", "approaches", "流入路")} {approaches.length}
-            </span>
-          )}
-        </p>
-      )}
+      {/* #41 doctrine: raw material behind a fold, never in the reader's face.
 
-      {/* #41 doctrine: raw material behind a fold, never in the reader's face. */}
+          #50-e (2026-08-23 — user authority): the diagnosis.why paragraph and
+          the delay-evidence line used to sit HERE on the surface, directly
+          under the next-action box above -- restating in prose the verdict
+          the box already acts on, plus a line of developer-facing coverage
+          data a modeller does not need to read in order to act. Neither
+          sentence is deleted: both are now the first two things behind this
+          same fold, one click from the numbers they explain -- the #50-c
+          "nothing is deleted, one click away" doctrine applied a second
+          time, to a second surface. */}
       <details className="mt-2 text-[13px] leading-5 text-slate-600">
         <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
           {t("자세히 (근거·출처·코드)", "More (evidence, citation, codes)", "詳細（根拠・出典・コード）")}
         </summary>
         <div className="mt-1.5 flex flex-col gap-1.5 border-l border-slate-300 pl-3">
+          {node.diagnosis && (
+            <p className="text-[14px] leading-6 text-slate-700">{pick(node.diagnosis.why, lang)}</p>
+          )}
+          {Object.keys(congestion).length > 0 && (
+            <p className="text-[14px] leading-6 text-slate-700">
+              <span className="font-semibold">{t("지체 증거", "Delay evidence", "遅延の根拠")}: </span>
+              <span className="font-mono">{String(congestion.availability ?? "-")}</span>
+              {typeof congestion.worst_delay_s === "number" && (
+                <span className="font-mono">
+                  {" · "}
+                  {t("최악", "worst", "最悪")} {congestion.worst_delay_s}s
+                  {congestion.worst_los ? ` (LOS ${String(congestion.worst_los)})` : ""}
+                </span>
+              )}
+              {approaches.length > 0 && (
+                <span className="font-mono">
+                  {" · "}
+                  {t("접근로", "approaches", "流入路")} {approaches.length}
+                </span>
+              )}
+            </p>
+          )}
           {nextAction && (
             <p className="font-mono text-[13px] text-slate-500">
               {nextAction.mrwa_step != null
