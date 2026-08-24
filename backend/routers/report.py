@@ -16,6 +16,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from services.report.spine import spine_payload
 from services.report_builder import build_report, geh_validation_csv_rows
 from services.report_exports import flow_geh_csv_rows, los_summary_csv_rows, travel_chart_specs
 
@@ -80,6 +81,28 @@ def list_blocks():
         {"type": "travel-time-charts", "label": "통행시간 차트"},
         {"type": "text", "label": "자유 텍스트 단락"},
     ]
+
+
+@router.get("/spine")
+def spine():
+    """The MRWA-required report section structure (Track R unit R-1).
+
+    Read-only and parameterless: it returns the same declared structure on
+    every call, because it IS a transcription of the guideline plus this
+    build's honest availability audit — no run, dataset or workspace enters
+    into it. ``services/report/spine.py`` owns the data; this route only
+    serves it, so the future /report UI (R-5) and the DOCX builder read one
+    spine rather than each keeping their own idea of the section list.
+
+    Deliberately UNAUTHENTICATED, in parity with every other route on this
+    router and with the genesis reads: it discloses the regulation's own
+    sentences, the names of the modules that would fill each section, and
+    which Table 5-15 outputs this product cannot extract. No client data, no
+    project data, and no decision is made by reading it. (The workspace
+    boundary in ``main.WorkspaceScopeMiddleware`` still applies, as it does to
+    every route.)
+    """
+    return spine_payload()
 
 
 @router.post("/build")
