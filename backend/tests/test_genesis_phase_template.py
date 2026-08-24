@@ -244,6 +244,183 @@ def test_one_bad_row_takes_only_its_own_intersection_down():
     assert [item.intersection for item in refused] == ["탄방역네거리"]
 
 
+# ---------------------------------------------------------------------------
+# §2b The export's own memo rows come back as notes, not refusals
+# (chip task_114c3f1a, docs/phase2/DECISIONS.md 2026-08-24 "인터페이스 갭")
+# ---------------------------------------------------------------------------
+
+
+def test_a_note_row_with_no_phase_or_approach_becomes_an_intersection_note():
+    """Empty 현시번호, empty 접근로, a non-empty 비고 — exactly the shape
+    ``build_export``'s own :625/:682/:701 rows write. It is the export's own
+    memo coming back, not a malformed assignment row someone mistyped, so it
+    is not refused and does not poison the intersection it belongs to."""
+    parsed = pt.parse_template(
+        workbook(
+            GOOD_ROWS
+            + [["1234", "둔산네거리", "", "", "", "", "", "메모: 신호시간은 별도 표에 있습니다"]]
+        ),
+        source_file="notes.xlsx",
+    )
+    assert parsed.refusals == []
+    entry = next(item for item in parsed.intersections if item.name == "둔산네거리")
+    assert entry.notes == [
+        "신호시간은 별도 표에 있습니다"
+    ], "the 메모: prefix is stripped, the rest kept verbatim"
+    proposal = entry.to_proposal(source_file="notes.xlsx", uploaded_by="tester")
+    assert proposal.notes == ["신호시간은 별도 표에 있습니다"]
+
+
+def test_a_note_row_with_no_memo_prefix_is_kept_verbatim():
+    """Not every note row carries ``build_export``'s ``메모: `` prefix — its
+    own refused/missing-proposal reason row (:682) does not — so the prefix
+    must be stripped only when present, never assumed."""
+    parsed = pt.parse_template(
+        workbook(
+            GOOD_ROWS
+            + [["1234", "둔산네거리", "", "", "", "", "", "판독 없음 — 직접 입력하십시오"]]
+        ),
+        source_file="notes-no-prefix.xlsx",
+    )
+    entry = next(item for item in parsed.intersections if item.name == "둔산네거리")
+    assert entry.notes == ["판독 없음 — 직접 입력하십시오"]
+
+
+def test_a_bad_phase_row_with_an_approach_still_refuses_even_with_a_note():
+    """A non-empty 접근로 means this really is a malformed assignment row, not
+    an intersection memo — a filled 비고 does not rescue it, and it still
+    takes its whole intersection down exactly as an approach-less bad row
+    always has."""
+    parsed = pt.parse_template(
+        workbook(
+            GOOD_ROWS
+            + [["", "탄방역네거리", "", "대덕대로(서)", "", "", "", "메모: 뭔가 적혀 있습니다"]]
+        ),
+        source_file="mixed-note.xlsx",
+    )
+    codes = [refusal.code for refusal in parsed.refusals]
+    assert "phase_template_row_bad_phase" in codes
+    assert pt.REFUSED_INTERSECTION in codes
+    assert [entry.name for entry in parsed.intersections] == [
+        "둔산네거리"
+    ], "탄방역네거리 is still poisoned"
+
+
+def test_an_intersection_with_only_note_rows_refuses_instead_of_becoming_a_phantom():
+    """No phase-assignment row at all — exactly ``build_export``'s :682
+    reason row for an intersection whose reading was refused or missing.
+    Must not silently vanish, and must not import as an empty (phantom)
+    intersection either."""
+    parsed = pt.parse_template(
+        workbook(
+            [["", "판독없음교차로", "", "", "", "", "", "메모: 판독 없음 — 직접 입력하십시오"]]
+        ),
+        source_file="notes-only.xlsx",
+    )
+    assert parsed.intersections == []
+    refusal = next(item for item in parsed.refusals if item.intersection == "판독없음교차로")
+    assert refusal.code == "phase_template_intersection_empty"
+
+
+# -- 교차로 ID conflicts: first-non-empty-silently-wins is the same lie an
+# amber conflict is (refuter finding B.2) — a memo row pasted above, below, or
+# copied from another intersection's export block must not hand a real
+# intersection a wrong ID with zero refusals. -------------------------------
+
+
+def test_a_note_row_before_the_phase_rows_with_a_conflicting_id_is_refused():
+    """Note-row-FIRST ordering: the note states 999, the real rows state
+    1234. Pre-fix this silently adopted 999 (first non-empty wins); it must
+    now refuse instead of importing under the wrong ID."""
+    rows = [
+        ["999", "둔산네거리", "", "", "", "", "", "메모: 먼저 온 메모"],
+    ] + GOOD_ROWS
+    parsed = pt.parse_template(workbook(rows), source_file="conflict-note-first.xlsx")
+    codes = [refusal.code for refusal in parsed.refusals]
+    assert "phase_template_row_intersection_no_conflict" in codes
+    assert pt.REFUSED_INTERSECTION in codes
+    assert [entry.name for entry in parsed.intersections] == [
+        "탄방역네거리"
+    ], "둔산네거리 is poisoned by the ID conflict; the untouched intersection survives"
+
+
+def test_a_note_row_after_the_phase_rows_with_a_conflicting_id_is_refused():
+    """Note-row-LAST ordering, the symmetric case: the real rows state 1234
+    first, a memo row copied from another intersection's block states 999
+    afterwards."""
+    rows = list(GOOD_ROWS) + [
+        ["999", "둔산네거리", "", "", "", "", "", "메모: 나중에 온 메모"],
+    ]
+    parsed = pt.parse_template(workbook(rows), source_file="conflict-note-last.xlsx")
+    codes = [refusal.code for refusal in parsed.refusals]
+    assert "phase_template_row_intersection_no_conflict" in codes
+    assert pt.REFUSED_INTERSECTION in codes
+    assert [entry.name for entry in parsed.intersections] == ["탄방역네거리"]
+
+
+def test_agreeing_ids_across_a_note_row_and_phase_rows_import_fine():
+    """The positive case: a note row and its intersection's phase rows STATE
+    the same ID. No conflict, no refusal, and the note survives alongside
+    it."""
+    rows = [
+        ["1234", "둔산네거리", "", "", "", "", "", "메모: 동일한 ID"],
+    ] + GOOD_ROWS
+    parsed = pt.parse_template(workbook(rows), source_file="agree.xlsx")
+    assert parsed.refusals == []
+    entry = next(item for item in parsed.intersections if item.name == "둔산네거리")
+    assert entry.intersection_no == "1234"
+    assert entry.notes == ["동일한 ID"]
+
+
+def test_two_phase_rows_with_conflicting_ids_are_refused_too():
+    """The class this closes is not note-rows-only: an ordinary phase row
+    disagreeing with an earlier phase row's ID was ALSO a silent first-wins
+    before this fix, with no note row involved anywhere."""
+    rows = list(GOOD_ROWS) + [
+        ["9999", "둔산네거리", "Φ2", "둔산로(남)", "우회전", "", "", ""],
+    ]
+    parsed = pt.parse_template(workbook(rows), source_file="phase-conflict.xlsx")
+    codes = [refusal.code for refusal in parsed.refusals]
+    assert "phase_template_row_intersection_no_conflict" in codes
+    assert pt.REFUSED_INTERSECTION in codes
+    assert [entry.name for entry in parsed.intersections] == ["탄방역네거리"]
+
+
+def test_an_empty_id_cell_never_conflicts_with_a_stated_one():
+    """COL_INTERSECTION_NO is 선택 (optional): rows that leave it blank must
+    never be the source of a conflict, before OR after the row that actually
+    states the ID."""
+    rows = [
+        ["", "새터네거리", "Φ1", "새터로(북)", "직진", "", "", ""],
+        ["5555", "새터네거리", "Φ1", "새터로(남)", "직진", "", "", ""],
+        ["", "새터네거리", "Φ2", "새터로(북)", "좌회전", "", "", ""],
+    ]
+    parsed = pt.parse_template(workbook(rows), source_file="empty-ids.xlsx")
+    assert parsed.refusals == []
+    entry = next(item for item in parsed.intersections if item.name == "새터네거리")
+    assert entry.intersection_no == "5555"
+
+
+def test_a_memo_only_note_cell_produces_no_note():
+    """Cosmetic defect B.4: ``_cell`` right-strips every cell, so a 비고 of
+    exactly ``"메모: "`` (the marker and nothing else) arrives at the parser
+    as the bare ``"메모:"`` — and either form must strip down to nothing, not
+    survive as a literal stub note reading '메모:'."""
+    parsed = pt.parse_template(
+        workbook(
+            GOOD_ROWS
+            + [
+                ["1234", "둔산네거리", "", "", "", "", "", "메모: "],
+                ["1234", "둔산네거리", "", "", "", "", "", "메모:"],
+            ]
+        ),
+        source_file="empty-memo.xlsx",
+    )
+    assert parsed.refusals == []
+    entry = next(item for item in parsed.intersections if item.name == "둔산네거리")
+    assert entry.notes == [], "a 비고 that is only the 메모: marker records no note, in either form"
+
+
 def test_a_workbook_with_no_stamp_or_the_wrong_stamp_is_refused_by_name():
     with pytest.raises(pd.PhaseDiagramRefused) as missing:
         pt.parse_template(workbook(GOOD_ROWS, version=None), source_file="nostamp.xlsx")
@@ -816,6 +993,79 @@ def test_an_exported_draft_parses_when_it_is_uploaded_again():
         "left",
     ], "the ko movement words the export writes are the ones the parser reads"
     assert "판독하지 못했습니다" in (proposal.phases[0].movements[0].note or "")
+
+
+def test_an_exported_draft_with_notes_round_trips_them_without_poisoning_real_intersections():
+    """The gap docs/phase2/DECISIONS.md's 2026-08-24 '인터페이스 갭' entry
+    measured: a real review's export carries THREE kinds of empty-현시번호
+    note row (``ExportEntry.notes``, ``proposal.notes``, and the
+    refused/missing-proposal reason row), and a round trip through the same
+    upload door must not turn any of them into an intersection-level poison.
+    """
+    entry_level_note_proposal = vision_proposal(0)
+    proposal_level_note = pd.PhaseProposal(
+        outcome="proposed",
+        model="claude-test-vision",
+        image_sha256="e" * 64,
+        source_file="sheet-2.pdf",
+        proposed_at="2026-08-24T00:00:00+00:00",
+        read_intersection_no="2000",
+        approaches=[pd.ProposedApproach(label="2로(북)", side="top")],
+        phases=[
+            pd.ProposedPhase(
+                phase_id="Φ1",
+                movements=[pd.ProposedMovement(approach_label="2로(북)", turn="through")],
+            ),
+        ],
+        notes=["모델이 확인하지 못한 부분: 보행신호 존재 여부"],
+    )
+    entries = [
+        pt.ExportEntry(
+            intersection_name="0번교차로",
+            intersection_no="1000",
+            proposal=entry_level_note_proposal,
+            notes=["대전 시트 4-1: 신호시간은 별도 표에 있습니다"],
+        ),
+        pt.ExportEntry(
+            intersection_name="2번교차로", intersection_no="2000", proposal=proposal_level_note
+        ),
+        # No proposal at all -> build_export's own :682 reason row, with
+        # nothing else naming a phase for this intersection.
+        pt.ExportEntry(intersection_name="9번교차로", intersection_no="9000", proposal=None),
+    ]
+    parsed = pt.parse_template(pt.build_export(entries), source_file="draft.xlsx")
+
+    imported = {item.name: item for item in parsed.intersections}
+    assert set(imported) == {"0번교차로", "2번교차로"}, "9번교차로 had no phase row and must not phantom-import"
+
+    entry_level = imported["0번교차로"]
+    assert entry_level.notes == [
+        "대전 시트 4-1: 신호시간은 별도 표에 있습니다"
+    ], "ExportEntry.notes (:625) survives the round trip, 메모: prefix stripped"
+    proposal_one = entry_level.to_proposal(source_file="draft.xlsx", uploaded_by="tester")
+    assert proposal_one.phase_ids == ["Φ1", "Φ2"], "movement-set equality even with a note row mixed in"
+    assert proposal_one.notes == ["대전 시트 4-1: 신호시간은 별도 표에 있습니다"]
+
+    proposal_level = imported["2번교차로"]
+    assert proposal_level.notes == [
+        "모델이 확인하지 못한 부분: 보행신호 존재 여부"
+    ], "proposal.notes (:701) survives the round trip too"
+    proposal_two = proposal_level.to_proposal(source_file="draft.xlsx", uploaded_by="tester")
+    assert proposal_two.phase_ids == ["Φ1"]
+    assert [
+        movement.turn for phase in proposal_two.phases for movement in phase.movements
+    ] == ["through"]
+
+    # Zero refusals for either surviving intersection — the notes did not cost
+    # them anything.
+    assert [
+        item for item in parsed.refusals if item.intersection in ("0번교차로", "2번교차로")
+    ] == []
+
+    # The notes-only intersection (:682's reason row, and nothing else) is
+    # refused by name rather than silently dropped or imported empty.
+    refusal = next(item for item in parsed.refusals if item.intersection == "9번교차로")
+    assert refusal.code == "phase_template_intersection_empty"
 
 
 def test_the_export_routes_serve_one_review_and_all_of_them(client, headers, store):

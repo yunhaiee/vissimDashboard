@@ -6823,6 +6823,20 @@ no phase-less rows. Verified: all 22 re-parse with 0 refusals and movement-set e
 against the corrections ledger. The parser-side fix (accept memo rows as intersection-level
 notes + round-trip tests WITH notes) is registered as chip **task_114c3f1a**.
 
+**Resolved 2026-08-24 (unit 55a):** `_read_rows` now accepts the empty-현시번호 row shapes
+`build_export` itself writes. A row with empty phase AND empty approach AND non-empty 비고 is
+an intersection-level note (leading `메모:` stripped; empty-after-strip records nothing),
+threaded into the stored proposal — proven through the HTTP upload door. An intersection with
+ONLY note rows refuses via the previously-dead `phase_template_intersection_empty` instead of
+becoming a phantom reading; a malformed assignment row (empty phase, non-empty approach)
+still refuses `phase_template_row_bad_phase`. The refuter then caught a hole the fix itself
+opened — a note row arriving before the phase rows could silently donate its 교차로 ID to the
+intersection — closed with a new amber-idiom conflict refusal
+`phase_template_row_intersection_no_conflict`: any two disagreeing non-empty IDs for one
+intersection refuse it, note or phase rows, in any order (this also closes the pre-existing
+silent first-wins between ordinary phase rows). The 23 Daejeon workbooks re-parse unchanged
+(0 refusals, 0 notes — their Φ1-비고 fold from the workaround above remains valid as data).
+
 ## 2026-08-24 — 사용자 결정: 현시도 화면은 엑셀 업로드로 통합, 판독 확인 클릭은 제거 (#55)
 
 User's words (verbatim intent): "아예 엑셀 올리는걸로 통합하자 — user uploads excel in the

@@ -177,6 +177,22 @@ TIMING_REQUIRED_COLUMNS: tuple[str, ...] = (
 #: what this module does not do.
 EXAMPLE_PREFIX = "예시)"
 
+#: How ``build_export`` marks a 비고 cell that carries an intersection-level
+#: note (:func:`build_export`'s own ``entry.notes``/``proposal.notes`` rows)
+#: rather than a per-movement remark. ``_read_rows`` strips it back off on the
+#: way in — see the round trip this constant makes possible, chip
+#: task_114c3f1a / docs/phase2/DECISIONS.md 2026-08-24 "인터페이스 갭".
+_MEMO_PREFIX = "메모: "
+
+#: The TOLERANT form ``_strip_memo_prefix`` matches on the way in.
+#: ``build_export`` always writes the colon-space form above, but ``_cell``
+#: right-strips every cell it reads, so a 비고 of EXACTLY ``"메모: "`` (the
+#: marker and nothing else) arrives back here as ``"메모:"`` — the trailing
+#: space already gone before this module ever sees it. Matching only the
+#: colon-space form would leave that bare colon unmatched, and the "no
+#: content" case would round-trip as a literal stub note reading "메모:".
+_MEMO_PREFIX_RE = re.compile(r"^메모:[ \t]*")
+
 #: The movement vocabulary, in the words a Korean sheet prints. Maps onto
 #: ``phase_diagram.Turn``'s closed set; anything else becomes ``unknown`` AND
 #: keeps its verbatim text as the movement's note, so a word this table does not
@@ -322,6 +338,10 @@ class ParsedIntersection:
     declared_amber_s: float | None = None
     amber_note: str | None = None
     amber_row: int | None = None
+    #: Intersection-level notes — rows with an empty 현시번호 AND an empty
+    #: 접근로 but a 비고, in row order. ``to_proposal`` carries these onto
+    #: ``PhaseProposal.notes`` verbatim (the ``메모: `` prefix ``build_export``
+    #: writes is already stripped by the time a note lands here).
     notes: list[str] = field(default_factory=list)
     rows: list[int] = field(default_factory=list)
     #: (수준, 계획ID) -> its typed timing. Empty when the 신호시간 sheet carries
@@ -622,7 +642,7 @@ def build_export(entries: Sequence[ExportEntry]) -> bytes:
         intersection_no = entry.intersection_no
         proposal = entry.proposal
         for note in entry.notes:
-            rows.append([intersection_no or "", name, "", "", "", "", "", f"메모: {note}"])
+            rows.append([intersection_no or "", name, "", "", "", "", "", f"{_MEMO_PREFIX}{note}"])
         for plan in entry.plans:
             phases = list(plan.get("phases") or [])
             for index, phase in enumerate(phases):
@@ -698,7 +718,7 @@ def build_export(entries: Sequence[ExportEntry]) -> bytes:
                     )
                 )
         for note in proposal.notes:
-            rows.append(mapping_row("", "", "", f"메모: {note}"))
+            rows.append(mapping_row("", "", "", f"{_MEMO_PREFIX}{note}"))
     return _build_workbook(rows, marked=True, example=False, timing_rows=timing_rows)
 
 
@@ -876,13 +896,71 @@ def _read_rows(sheet: Any, header: dict[str, int], *, source_file: str) -> Parse
         entry = by_name.setdefault(name, ParsedIntersection(name=name))
         entry.rows.append(row_no)
 
-        phase_id = _phase_id(value(cells, COL_PHASE))
+        # 교차로 ID rides on every row build_export writes for this
+        # intersection — mapping rows AND its note rows alike (:625/:682/:701
+        # all carry ``intersection_no or ""``) — so it is read here
+        # unconditionally rather than only off rows that turn out to carry a
+        # phase assignment. COL_INTERSECTION_NO is 선택 (optional): an EMPTY
+        # cell never disagrees with anything, so only a non-empty value is
+        # checked, exactly like the amber check below. But two DIFFERENT
+        # non-empty values for the same 교차로명 is the same lie an amber
+        # conflict is — first-non-empty-silently-wins would let a memo row
+        # pasted above (or below, or copied from another intersection's
+        # block) hand a real intersection a wrong ID no refusal ever named,
+        # and a wrong 교차로 ID can misattribute a whole confirmed mapping
+        # downstream. So this refuses and poisons exactly like an amber
+        # conflict does, whichever row — note or phase — states the second
+        # value.
+        intersection_no = value(cells, COL_INTERSECTION_NO)
+        if intersection_no:
+            if entry.intersection_no is not None and entry.intersection_no != intersection_no:
+                parsed.refusals.append(
+                    RowRefusal(
+                        code="phase_template_row_intersection_no_conflict",
+                        reasons=[
+                            f"{row_no}행: 같은 교차로({name})에 교차로 ID가 두 값으로 적혀 있습니다 "
+                            f"({entry.intersection_no!r}, {intersection_no!r}). 어느 쪽이 맞는지 이 "
+                            "앱은 고르지 않습니다."
+                        ],
+                        row=row_no,
+                        intersection=name,
+                    )
+                )
+                refused_names.add(name)
+                continue
+            entry.intersection_no = intersection_no
+
+        raw_phase = value(cells, COL_PHASE)
+        phase_id = _phase_id(raw_phase)
+        approach = value(cells, COL_APPROACH)
+        note_text = value(cells, COL_NOTE)
+
         if phase_id is None:
+            if not approach and note_text:
+                # Empty 현시번호, empty 접근로, a non-empty 비고: exactly the
+                # shape build_export's own :625 (entry.notes), :682 (the
+                # refused/missing-proposal reason) and :701 (proposal.notes)
+                # rows write. That is the export's own memo coming back, not a
+                # malformed assignment row someone mistyped — an
+                # intersection-level NOTE, attached to the record rather than
+                # refused, and it must not poison the intersection the way a
+                # genuinely bad row does. A row with a non-empty 접근로 falls
+                # through to the refusal below instead: that really is a
+                # malformed assignment row. See docs/phase2/DECISIONS.md,
+                # 2026-08-24 "인터페이스 갭: 현시도 수출의 메모 행을 업로드
+                # 문이 거부한다". A stripped result of "" (a 비고 that was
+                # ONLY the 메모: marker, no content after it) is not recorded
+                # — a stub note reading literally "메모:" would be noise, not
+                # information.
+                memo = _strip_memo_prefix(note_text)
+                if memo:
+                    entry.notes.append(memo)
+                continue
             parsed.refusals.append(
                 RowRefusal(
                     code="phase_template_row_bad_phase",
                     reasons=[
-                        f"{row_no}행: 현시번호 {value(cells, COL_PHASE)!r}을(를) 읽을 수 없습니다. "
+                        f"{row_no}행: 현시번호 {raw_phase!r}을(를) 읽을 수 없습니다. "
                         f"'Φ1' 또는 '1' 형식으로, 1–{MAX_PHASE_NO} 사이여야 합니다."
                     ],
                     row=row_no,
@@ -892,7 +970,6 @@ def _read_rows(sheet: Any, header: dict[str, int], *, source_file: str) -> Parse
             refused_names.add(name)
             continue
 
-        approach = value(cells, COL_APPROACH)
         if not approach:
             parsed.refusals.append(
                 RowRefusal(
@@ -942,15 +1019,11 @@ def _read_rows(sheet: Any, header: dict[str, int], *, source_file: str) -> Parse
                 continue
             entry.declared_amber_s = amber
             entry.amber_row = row_no
-            note = value(cells, COL_AMBER_NOTE)
-            if note and not entry.amber_note:
-                entry.amber_note = note
+            amber_note = value(cells, COL_AMBER_NOTE)
+            if amber_note and not entry.amber_note:
+                entry.amber_note = amber_note
 
-        intersection_no = value(cells, COL_INTERSECTION_NO)
-        if intersection_no and not entry.intersection_no:
-            entry.intersection_no = intersection_no
-
-        note = value(cells, COL_NOTE)
+        note = note_text
         turns = _movements(value(cells, COL_MOVEMENTS))
         if approach not in entry.approaches:
             entry.approaches.append(approach)
@@ -972,12 +1045,20 @@ def _read_rows(sheet: Any, header: dict[str, int], *, source_file: str) -> Parse
         )
 
     for name, entry in list(by_name.items()):
-        # Defensive, and unreachable on today's paths: a row that reaches
-        # `entry.phases` has already cleared the phase-id and approach checks, so
-        # an intersection with rows and no phases cannot exist. It stays because
-        # the alternative shape of that bug is `to_proposal()` raising inside
-        # pydantic (a 500 with no code), and a named refusal is the failure this
-        # module is supposed to have.
+        # No longer only defensive (chip task_114c3f1a): an intersection whose
+        # every row was a note (empty 현시번호, empty 접근로, non-empty 비고 —
+        # see the branch above) reaches here with `entry.phases` empty and
+        # without ever having been added to `refused_names`, exactly the shape
+        # build_export's own :682 reason row produces for an intersection that
+        # had no proposal at all. That must not silently vanish (it is named
+        # below) and must not become a phantom intersection with zero phases
+        # either — a proposal with no phase assigned is not a reading of
+        # anything, it is the absence of one. The same branch also still
+        # catches the original defensive case: a bug that let a row reach
+        # `entry.phases` without clearing the phase-id/approach checks would
+        # otherwise surface as `to_proposal()` raising inside pydantic (a 500
+        # with no code), and a named refusal is the failure this module is
+        # supposed to have instead.
         if not entry.phases:
             by_name.pop(name)
             parsed.refusals.append(
@@ -1373,6 +1454,19 @@ def _movements(text: str) -> list[tuple[Turn, str | None]]:
 def _movement_note(note: str, verbatim: str | None) -> str | None:
     parts = [part for part in (note or "", f"원문: {verbatim}" if verbatim else "") if part]
     return " / ".join(parts) or None
+
+
+def _strip_memo_prefix(text: str) -> str:
+    """An intersection-level note cell, minus ``build_export``'s own memo
+    marker if it wrote one — tolerating both the colon-space form it actually
+    writes and the bare-colon form ``_cell``'s right-strip can leave behind
+    (see :data:`_MEMO_PREFIX_RE`). Not every note row carries the marker at
+    all — the refused/missing-proposal reason row (:682) does not — so this
+    only strips it when present, and keeps everything else verbatim rather
+    than reformatting a sentence nobody asked this parser to rewrite. A cell
+    that was ONLY the marker strips down to ``""`` — the caller's job, not
+    this function's, to decide that an empty result is not a note."""
+    return _MEMO_PREFIX_RE.sub("", text, count=1)
 
 
 def _phase_sort_key(item: tuple[str, Any]) -> tuple[int, str]:
