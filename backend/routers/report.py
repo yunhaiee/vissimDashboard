@@ -13,9 +13,10 @@ import csv
 import io
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from services.report import figures as report_figures
 from services.report.spine import spine_payload
 from services.report_builder import build_report, geh_validation_csv_rows
 from services.report_exports import flow_geh_csv_rows, los_summary_csv_rows, travel_chart_specs
@@ -103,6 +104,56 @@ def spine():
     every route.)
     """
     return spine_payload()
+
+
+@router.get("/figures")
+def report_figures_route(
+    scenario_id: str | None = Query(None, description="Run to score for the GEH node table"),
+    period: str | None = Query(None, description="AM/PM window for the base counts workbook"),
+    observation_set_id: str | None = Query(
+        None, description="Score the GEH table against a stored observation set instead"
+    ),
+    observation_period: str | None = Query(None, description="Window within the observation set"),
+    session_id: str | None = Query(
+        None, description="Agent session to pull the approval-history table from"
+    ),
+    language: str = Query("ko", description="ko (default) / en / ja — gate check codes only"),
+):
+    """Track R unit R-2's four table figures (Track R layer 2), gathered in one
+    call — the same "one section, one bundle" shape ``GET /spine`` (R-1) and
+    ``GET /api/calibration/rail`` already use, so the future DOCX builder and
+    the /report UI (R-5) read one list instead of assembling it themselves
+    from four separate round trips.
+
+    Each figure is gathered INDEPENDENTLY (``services.report.figures.
+    all_figures``): a request naming no ``session_id`` still returns three
+    real figures and one named absence for the approval-history table, never
+    a 4xx for the whole set — a missing input is data on this route, exactly
+    as it is on ``GET /api/calibration/reality-check``.
+
+    Deliberately UNAUTHENTICATED, in parity with every other route already on
+    this router: ``GET /spine`` states the parity rule for the section
+    structure, and ``GET /data/{block_type}`` above it is the parity
+    precedent for the DATA itself — it already serves this exact class of
+    material (GEH validation rows, LoS rows, travel-time chart series) over
+    HTTP with no auth dependency. These figures are new VIEWS of readers
+    (``build_reality_check_report``, the audit ledger, the applied-rows
+    verdicts, the gate payload) that ``/api/calibration``'s own GETs already
+    expose unauthenticated too — ``tests/test_auth_core.py``'s route-scope
+    test states outright that "the rail, the score, the Table 5-6 verdicts"
+    stay open on that router. This route is not a first exposure of any of
+    that data, so it follows the existing parity rather than gating fresh.
+    """
+    return {
+        "figures": report_figures.all_figures(
+            scenario_id=scenario_id,
+            period=period,
+            observation_set_id=observation_set_id,
+            observation_period=observation_period,
+            session_id=session_id,
+            language=language,
+        )
+    }
 
 
 @router.post("/build")
