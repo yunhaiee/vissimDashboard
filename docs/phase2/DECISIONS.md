@@ -6858,3 +6858,53 @@ The page's new job: 템플릿 다운로드 + 엑셀 업로드 → per-intersecti
 diagram (Φ columns, movement arrows) from the parsed rows. The template (v1) has no
 approach-side column, so rendered placement is layout, not geography — the card must say so
 rather than pretend bearings.
+
+## 2026-08-24 — 인터페이스 갭 측정: 화면은 실행의 `name`을, 도구는 `id`를 쓴다 (#56 근거 정정)
+
+사용자가 어시스턴트에 `agent_run_fe342b88`을 주었고 도구가 `RUN_NOT_FOUND`로 거부했다.
+1차·2차 핸드오프는 원인을 "`parse_runtime_scenario_id`가 `SIM_` 접두사만 파싱하므로 화면
+픽커 값 `agent_run_…`이 즉시 실패한다"로 기록했다. **측정 결과 그 기전은 틀렸다** — 픽커의
+값은 이미 올바른 `SIM_…`이다.
+
+측정(워크스페이스 `87c51893caa2` 바인딩, in-process):
+
+- `simulation_runs.py:305` — `scenario_id = record["scenario_result_id"] or runtime_scenario_id(id)`.
+  레코드 `fe342b88`은 `scenario_result_id='SIM_fe342b88'`, `name='agent_run_fe342b88'`.
+  `list_completed_runtime_scenarios`는 `id`에 전자를, `name`에 후자를 담는다 — 그래서
+  **화면은 `agent_run_…`을 보여주고 option value로는 `SIM_…`을 보낸다.** 페이지의 채점이
+  정상 동작한 이유가 이것이다.
+- `SIM_fe342b88` → `get_runtime_result_dir_for_scenario` / `tools_metrics._resolve_result_dir`
+  둘 다 `runtime\simulations\fe342b88`로 해석. `agent_run_fe342b88` → 둘 다 `None`.
+- **제2 차단 후보로 지목됐던 `:331` dataset_revision 동일성 검사는 이 실행에서 통과한다**
+  (record == active, 문자열 동일). 배제 — #56은 이 경로를 "고치면" 안 된다.
+
+따라서 결함은 기계의 거부가 아니라 **어휘**다: 사람이 읽을 수 있는 유일한 문자열이 어떤
+도구도 받지 않는 이름이고, 거부는 올바른 id를 알고 있으면서(`detail.candidates`가
+`list_scenarios()`의 id 전체를 담는다) 그것을 말해주지 않는다. #56의 수정은 (1) 페이지
+컨텍스트에 선택 실행의 **도구 어휘 id** 탑재, (2) 표시 이름을 받았을 때 **유일하게** 해석되면
+번역을 공시하며 받아들이고(#54의 only-unique-candidate 관용구) 아니면 올바른 id를 **명명하며**
+거부, (3) 화면이 사람에게 보여주는 문자열과 도구가 받는 문자열의 관계를 표면화 — 셋 다
+"조용한 실패 대신 명명된 이유" 독트린 안에 있다.
+
+### 같은 날 추가 측정 — CTA는 후보 0 노드에 불가능한 행동을 지시한다 (#56 (b) 근거)
+
+`derive_targets`를 두 데모 워크스페이스에 그대로 돌린 결과(in-process, 라우터와 동일한
+`_derive_all` 인자 형태):
+
+| 워크스페이스 | 노드 | reason | 후보 수 |
+|---|---|---|---|
+| `4dcf09f7604a` (demo0821) | 1 · 2 · **4** | `NO_VEHICLE_INPUT_ON_APPROACH` | **0** |
+| 〃 | 3 | `MULTIPLE_VEHICLE_INPUT_CANDIDATES` | 3 |
+| 〃 | 5 | 〃 | 9 |
+| 〃 | 8 | 〃 | 6 |
+| `87c51893caa2` (demo0824L) | 5 | 〃 | 9 | 
+| 〃 | **8** | 〃 | **6** |
+
+사용자 스크린샷의 노드 4는 후보가 **0개**다. 그런데 카드의 다음 행동은
+"`get_vehicle_inputs`로 이 노드에 유입되는 차량 인풋(번호·현재 교통량·링크)을 지정해 다시
+대조하십시오"였다 — **답이 존재할 수 없는 행동을 지시한 것**이고, 어시스턴트는 그 지시를
+수행하려다 같은 도구를 반복 호출해 중복 가드에 걸리고 6회 한도를 소진했다. 두 reason은
+서로 다른 사람의 행동을 요구한다: `MULTIPLE_VEHICLE_INPUT_CANDIDATES`(≥2)는 #54 픽커가
+정답이고, `NO_VEHICLE_INPUT_ON_APPROACH`(0)는 관측 지점·site→node 매핑 보완이 정답이다.
+#56은 CTA를 이 둘로 분기해야 하며, 후보 0에 픽커를 제안해서도 안 된다(#54의 픽커는 이미
+후보 존재를 조건으로 렌더된다 — 카드 문구만 그 규칙을 어기고 있었다).
