@@ -650,18 +650,39 @@ def test_the_route_returns_the_spine():
     assert response.json() == spine.spine_payload()
 
 
-def test_the_spine_route_is_open_like_every_other_route_on_this_router():
+def test_the_spine_route_is_open_like_every_other_read_on_this_router():
     """Auth parity with its neighbours, asserted here as well as in
     ``tests/test_auth_core.py``'s exact-set ledger.
 
-    Nothing on ``/api/report`` takes a session, and this route discloses less
-    than any of them: the regulation's own sentences, the names of the modules
-    that would fill each section, and which Table 5-15 outputs this build
-    cannot extract. No client data, no project data, no decision made by
-    reading it.
+    ``GET /api/report/spine`` takes no session, and this route discloses less
+    than any read on this router: the regulation's own sentences, the names of
+    the modules that would fill each section, and which Table 5-15 outputs
+    this build cannot extract. No client data, no project data, no decision
+    made by reading it.
+
+    This is no longer "nothing on ``/api/report`` is guarded" -- Track R unit
+    R-4 (``routers/report.py``'s own module docstring carries the reasoning)
+    deliberately guards exactly two routes that WRITE a durable, named,
+    provenance-bearing record: uploading a style profile and correcting one.
+    Every READ, including the two new ``GET .../style-profiles*`` routes,
+    stays open in the same parity this test has always asserted. Pinned as an
+    EXACT set (not "guarded == set()") so a route added later to this router
+    with an auth dependency is a deliberate edit here, exactly the discipline
+    ``tests/test_auth_core.py``'s own scope guard uses for ``/api/genesis``.
     """
+    #: The only two routes on this router that create or mutate a durable,
+    #: named record — see routers/report.py's module docstring for why these
+    #: two and not the reads beside them.
+    expected_guarded = {
+        "/api/report/style-profiles",
+        "/api/report/style-profiles/{profile_id}",
+    }
+
     guarded = set()
     for route in main.app.routes:
+        path = getattr(route, "path", None)
+        if not path or not path.startswith("/api/report"):
+            continue
         dependant = getattr(route, "dependant", None)
         if dependant is None:
             continue
@@ -673,6 +694,6 @@ def test_the_spine_route_is_open_like_every_other_route_on_this_router():
                 calls.add(node.call)
             pending.extend(node.dependencies)
         if auth_router.current_user in calls or auth_router.optional_current_user in calls:
-            guarded.add(getattr(route, "path", str(route)))
+            guarded.add(path)
 
-    assert not any(path.startswith("/api/report") for path in guarded)
+    assert guarded == expected_guarded

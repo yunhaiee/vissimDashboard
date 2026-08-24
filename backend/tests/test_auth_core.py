@@ -1191,4 +1191,6 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/admin/users/{user_id}/role",
         "/api/admin/workspaces/{workspace_id}/members",
         "/api/admin/workspaces/{workspace_id}/members/{user_id}",
+        "/api/report/style-profiles",
+        "/api/report/style-profiles/{profile_id}",
     }

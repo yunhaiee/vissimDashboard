@@ -6,17 +6,60 @@ functions the corresponding .docx section renders from (see
 ``services/report_builder.py`` / ``services/report_exports.py``) so the CSV
 numbers are guaranteed to match the exported document, never a second
 computation of the same quantities.
+
+``/style-profiles/*`` (Track R unit R-4) is the DOCX style-profile extractor +
+per-workspace store — see ``services/report/style_profile.py``'s module
+docstring for the extraction/storage doctrine. This file only adds the HTTP
+boundary over it.
+
+**Auth decision for ``POST /style-profiles`` (and ``PATCH .../{id}``), and the
+precedent it was measured against.** This backend does not apply one uniform
+auth rule to every upload route — two real, differently-decided precedents
+exist side by side:
+
+* ``POST /api/genesis/phase-diagrams/upload`` (``routers/genesis.py``) takes
+  ``Depends(current_user)``. Its own docstring states why: the upload becomes
+  a REVIEW RECORD immediately, and "the uploader's name is [stamped as]
+  provenance" — the record persists past the request, and "who built this"
+  has to be answerable later.
+* ``POST /api/observations/upload`` (``routers/observations.py``) takes NO
+  auth dependency at all — checked directly, and confirmed by
+  ``routers/observations.py``'s own module docstring: it only STAGES bytes
+  under a bare token; nothing durable is created until a SEPARATE
+  ``POST /ingest`` call (also unauthenticated in this build) names that
+  token. There is no persisted, named record at upload time for an identity
+  to attach to.
+
+The rule that reconciles them, not stated explicitly anywhere before this
+unit but consistent across both: **auth tracks whether the call durably
+creates a named, provenance-bearing record, not whether the call is spelled
+"upload".** ``POST /style-profiles`` is the phase-diagrams shape, not the
+observations shape — it does not stage a token for a later step; it
+extracts and WRITES a per-workspace registry entry (id, name, source file,
+created_at) in the same request, exactly like a phase-diagram review. So it
+takes ``Depends(current_user)``, consistent with that rule rather than
+copied from either route by surface resemblance. ``PATCH .../{id}`` follows
+for the identical reason ``StepAttestationRequest``/``DemandTargetRequest``
+already establish in this codebase: a correction is stamped with WHO made
+it, so it cannot be anonymous either. The two ``GET`` routes stay
+unauthenticated, in parity with every other read already on this router
+(``GET /spine``, ``GET /figures``) — reading a stored proposal is not making
+one.
 """
 from __future__ import annotations
 
 import csv
 import io
-from urllib.parse import quote
+from typing import Any
+from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from routers.auth import current_user
+from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
 from services.report import figures as report_figures
+from services.report import style_profile
 from services.report.spine import spine_payload
 from services.report_builder import build_report, geh_validation_csv_rows
 from services.report_exports import flow_geh_csv_rows, los_summary_csv_rows, travel_chart_specs
@@ -267,3 +310,129 @@ def block_data(block_type: str):
         media_type=_CSV_MEDIA,
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"},
     )
+
+
+# --- style profiles (R4.3) ---------------------------------------------------
+
+
+class StyleProfileCorrectionRequest(BaseModel):
+    """A human correction to an extracted style profile. Nothing else.
+
+    ``extra="forbid"`` is load-bearing exactly as it is on
+    ``routers.calibration.StepAttestationRequest``: a body carrying
+    ``edited_by``/``edited_at`` is a 422 at the door rather than a field that
+    quietly does nothing, so "the editor is the session and the clock is the
+    server's" is a property a caller can verify rather than a promise.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    fields: dict[str, Any] = Field(
+        ...,
+        description=(
+            "Partial profile fields to correct, deep-merged onto the current profile "
+            "(e.g. {'palette': {'emphasis': 'FF0000'}}). Must not be empty."
+        ),
+    )
+    reason: str | None = Field(default=None, max_length=style_profile.MAX_REASON_CHARS)
+
+    @field_validator("fields")
+    @classmethod
+    def _fields_not_empty(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("fields must not be empty -- a correction that changes nothing is not one")
+        return value
+
+
+@router.post("/style-profiles", status_code=201)
+async def upload_style_profile(
+    request: Request,
+    x_filename: str | None = Header(None),
+    name: str | None = Query(None, description="Human label; default: the source filename's stem."),
+    user: dict[str, Any] = Depends(current_user),
+):
+    """One styled DOCX -> one extracted, stored style-profile PROPOSAL.
+
+    Raw body + ``X-Filename``/``?filename=``, the two-step-upload SHAPE (not a
+    second step here -- extraction and storage happen in this one request)
+    ``routers/observations.py`` and ``routers/genesis.py`` already document:
+    this backend carries no ``python-multipart``, so ``multipart/form-data``
+    is not an option. ``services.report.style_profile.extract_style_profile``
+    bomb-guards the bytes before ``python-docx`` ever opens them -- see that
+    module's docstring for the refusal order.
+
+    Returns the FULL stored record (``GET .../{id}``'s shape), so the caller
+    sees ``not_extracted`` in the same response rather than a second round
+    trip -- the extraction is a proposal, and the proposal is what this
+    returns.
+    """
+    filename = unquote(request.query_params.get("filename") or x_filename or "")
+    if not filename:
+        raise HTTPException(
+            status_code=400,
+            detail="No filename given (X-Filename header or ?filename= query param).",
+        )
+    _reject_oversized_body(request)
+    content = await request.body()
+    # Second check on the bytes actually received: a chunked upload carries no
+    # Content-Length, so the header check cannot be the only gate.
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=_TOO_LARGE_DETAIL)
+
+    try:
+        summary = style_profile.store_profile(content=content, source_file=filename, name=name)
+    except style_profile.StyleProfileRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not write the style profile to disk. Nothing was stored. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+    return style_profile.get_profile(summary["id"])
+
+
+@router.get("/style-profiles")
+def list_style_profiles():
+    """Every stored profile's index entry in this workspace, newest first.
+
+    Deliberately UNAUTHENTICATED, in parity with every other read on this
+    router (``GET /spine``, ``GET /figures``): reading the record of a
+    decision is not making one. See this file's module docstring for the
+    full auth reasoning.
+    """
+    return {"profiles": style_profile.list_profiles()}
+
+
+@router.get("/style-profiles/{profile_id}")
+def get_style_profile(profile_id: str):
+    """One profile's full record: the untouched original extraction, every
+    correction ever applied (never overwritten), and the resolved profile a
+    report-assembly step would actually use today."""
+    try:
+        return style_profile.get_profile(profile_id)
+    except style_profile.StyleProfileRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+
+
+@router.patch("/style-profiles/{profile_id}")
+def correct_style_profile(
+    profile_id: str,
+    body: StyleProfileCorrectionRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Record ONE human correction. Appends a new revision; never rewrites
+    the original extraction -- see ``services.report.style_profile``'s
+    module docstring ("틀리면 사람이 고친다")."""
+    try:
+        return style_profile.apply_correction(
+            profile_id,
+            fields=body.fields,
+            edited_by=str(user.get("username") or user.get("id") or "").strip(),
+            reason=body.reason,
+        )
+    except style_profile.StyleProfileRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
