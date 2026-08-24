@@ -335,6 +335,8 @@ _ALLOWED_MUTATIONS = {
     "/api/calibration/parameter-search/start": "#51 live runner",
     "/api/calibration/step-attestations": "#53 signed human attestation",
     "/api/calibration/step-attestations/{attestation_id}/revoke": "#53 revocation",
+    "/api/calibration/demand-targets": "#54 human-named demand target",
+    "/api/calibration/demand-targets/{mapping_id}/revoke": "#54 revocation",
 }
 
 
@@ -346,11 +348,13 @@ def test_the_calibration_router_exposes_no_write_verb_but_the_named_controls():
     writes to no network; the winner it eventually produces still goes through
     ``POST /api/assistant/agent/approve`` with its own identity check. #53 adds
     two more, and they write something a HUMAN said rather than something a
-    machine will do: a step attestation and its revocation. Neither can approve
-    an edit and neither returns a status — the rail re-derives every step from
-    the store on the next read.
+    machine will do: a step attestation and its revocation. #54 adds the second
+    pair of that same species — a named demand-target mapping and its
+    revocation. None of the five can approve an edit and none returns a status:
+    the rail re-derives every step, and the report re-derives every node, from
+    the stores on the next read.
 
-    So the rule stays an ALLOWLIST rather than a blanket: a fourth mutating
+    So the rule stays an ALLOWLIST rather than a blanket: a sixth mutating
     route on this router, or an approval leg growing here, fails by name.
     """
     for route in main.app.routes:

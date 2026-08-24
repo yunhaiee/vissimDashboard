@@ -2515,6 +2515,81 @@ export interface CalibrationStepAttestation {
   history: { event: string; at: string; by: string; reason: string }[];
 }
 
+/** One named human's mapping of a vehicle input to a node's demand (#54).
+ *
+ * `named_by` and `named_at` come from the session and the server clock — there
+ * is deliberately no way to send either (see `postCalibrationDemandTarget`).
+ * `stale` is the SERVER's comparison of the `.inpx` this claim was named
+ * against with the one on disk now, never a client-side date check.
+ *
+ * WHAT THIS RECORD IS. Not a fact about the network: an ASSUMPTION with
+ * somebody's name on it. The proposal it eventually produces still carries
+ * `fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL`; naming makes that assumption
+ * attributed, never proven. */
+export interface CalibrationDemandTargetMapping {
+  id: string;
+  /** The record's append position in this workspace's registry. It is what "this
+   * node's latest word" is decided by on the server — a withdrawal of the newest
+   * record leaves NOTHING standing rather than resurrecting the one it replaced.
+   * Nothing on the client compares it; it is here because a bug report quotes it. */
+  seq: number;
+  node_id: string;
+  vehicle_input_no: string;
+  link_no: string;
+  named_by: string;
+  named_at: string;
+  reason: string;
+  inpx_sha256: string;
+  /** `null` when the server could not read the active network at all — which
+   * the server itself treats as stale, because unknown is not fresh. */
+  current_inpx_sha256: string | null;
+  /** The network moved (or could not be read) since this was named: the
+   * derivation ignores it and the node falls back to its honest refusal. */
+  stale: boolean;
+  revoked: boolean;
+  revoked_by?: string | null;
+  revoked_at?: string | null;
+  revoked_reason?: string | null;
+  history: { event: string; at: string; by: string; reason: string }[];
+}
+
+/** One vehicle input a modeller may name for a node — the SERVER's own list.
+ *
+ * `services/agent/reality_check_targets.py` computes it (the inputs whose link
+ * is among the node's counted approach links) and the store checks a choice
+ * against the same list, so the picker offers exactly what can be recorded. A
+ * client-side candidate list would be a second opinion that shows a modeller
+ * choices the server would then refuse. */
+export interface CalibrationDemandCandidate {
+  vehicle_input_no: string;
+  link_no: string;
+  /** `null` where the `.inpx` never stated one — printed as such, never as 0. */
+  current_volume: number | null;
+  name?: string | null;
+}
+
+/** Per node: why the derivation answered as it did, what could be named, and
+ * what stands. Everything here is derived server-side. */
+export interface CalibrationDemandTargetNode {
+  approach_links: string[];
+  /** `reality_check_targets.REASON_CODES` — including `HUMAN_NAMED_VEHICLE_INPUT`
+   * once somebody has named one. */
+  reason: string | null;
+  chosen: string | null;
+  candidates: CalibrationDemandCandidate[];
+  /** Why a mapping this workspace holds was NOT used (stale, revoked, or no
+   * longer a candidate). `null` when there is nothing to say. */
+  human_mapping_ignored?: string | null;
+  mapping: CalibrationDemandTargetMapping | null;
+}
+
+export interface CalibrationDemandTargets {
+  available: boolean;
+  reason: string | null;
+  nodes: Record<string, CalibrationDemandTargetNode>;
+  mappings: Record<string, CalibrationDemandTargetMapping>;
+}
+
 /** One driving behaviour a search could be run on: all three searched
  * parameters readable off it, so a baseline vector exists and a write could be
  * verified. The server lists them; the screen offers the CHOICE. Nothing picks
@@ -2971,6 +3046,81 @@ export async function revokeCalibrationStepAttestation(
 ): Promise<CalibrationStepAttestation> {
   const r = await apiMutationFetch(
     `/api/calibration/step-attestations/${encodeURIComponent(attestationId)}/revoke`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: params.reason }),
+    },
+  );
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** Which vehicle inputs may be named for each node, and what already is (#54).
+ *
+ * A READ of the derivation `GET /reality-check` already runs, exposed on its
+ * own so the picker can render the candidates a refusal was talking about. The
+ * report says "several inputs are candidates and this product will not pick
+ * between them"; this says WHICH several. */
+export async function fetchCalibrationDemandTargets(params?: {
+  period?: string | null;
+}): Promise<CalibrationDemandTargets> {
+  const query = new URLSearchParams();
+  if (params?.period) query.set("period", params.period);
+  const suffix = query.toString();
+  const r = await apiFetch(
+    `/api/calibration/demand-targets/candidates${suffix ? `?${suffix}` : ""}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** Name ONE vehicle input as the driver of ONE node's demand (#54).
+ *
+ * WHAT IS DELIBERATELY NOT ON THIS BODY: `named_by` and `named_at`. The server
+ * takes the namer from the session and the timestamp from its own clock, and
+ * its request model forbids extra fields — so sending either is a 422 at the
+ * door rather than an assumption filed under somebody else's name.
+ *
+ * The LINK is sent even though the server could look it up from the input
+ * number: the modeller is asserting a triple and the server checks all three of
+ * it against the candidate list. The response carries the RECORD and no status:
+ * what the node now says is re-derived on the next `fetchCalibrationRealityCheck`. */
+export async function postCalibrationDemandTarget(params: {
+  nodeId: string;
+  vehicleInputNo: string;
+  linkNo: string;
+  reason: string;
+  period?: string | null;
+}): Promise<CalibrationDemandTargetMapping> {
+  const body: Record<string, unknown> = {
+    node_id: params.nodeId,
+    vehicle_input_no: params.vehicleInputNo,
+    link_no: params.linkNo,
+    reason: params.reason,
+  };
+  if (params.period) body.period = params.period;
+  const r = await apiMutationFetch("/api/calibration/demand-targets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+/** Withdraw one mapping, with a reason of its own (#54).
+ *
+ * Nothing is deleted: the revoker's name, time and reason are appended beside
+ * the original naming event. The node then falls back to the honest refusal it
+ * had before anybody named anything. */
+export async function revokeCalibrationDemandTarget(
+  mappingId: string,
+  params: { reason: string },
+): Promise<CalibrationDemandTargetMapping> {
+  const r = await apiMutationFetch(
+    `/api/calibration/demand-targets/${encodeURIComponent(mappingId)}/revoke`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

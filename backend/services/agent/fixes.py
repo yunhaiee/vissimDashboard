@@ -1346,6 +1346,34 @@ def _emit(
 # ---------------------------------------------------------------------------
 
 
+def _human_named_block(target: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """``{named_by, named_at, assumption}`` when a person named this input (#54).
+
+    ``None`` otherwise, and the asymmetry is the point: absence means the target
+    came from an identity in the network (exactly one input feeds a counted
+    approach), presence means it came from a modeller choosing among several.
+    Both produce the same OBJECT; only one of them has somebody's name on it,
+    and the reader of an approval card is entitled to know which.
+
+    :data:`ASSUME_INPUT_DRIVES_NODE_TOTAL` rides inside the block rather than
+    replacing it. A demand PROPOSAL already carries that token in its
+    ``assumptions`` tuple; a demand REFUSAL has no such tuple, and the refusal is
+    the outcome a named mapping most often produces (unit D4 refuses a measured
+    entrance by name). Without this the attribution would be visible on the one
+    path and invisible on the other.
+    """
+    if not isinstance(target, Mapping):
+        return None
+    named_by = str(target.get("named_by") or "").strip()
+    if not named_by:
+        return None
+    return {
+        "named_by": named_by,
+        "named_at": str(target.get("named_at") or "") or None,
+        "assumption": ASSUME_INPUT_DRIVES_NODE_TOTAL,
+    }
+
+
 def _build_demand_proposal(
     *,
     node: Mapping[str, Any],
@@ -1420,6 +1448,14 @@ def _build_demand_proposal(
         # approval card and the audit DOCX (both of which render evidence
         # generically) carry "why this was, or was not, ours to edit".
         "entrance_measurement": entrance,
+        # Unit #54: WHO named this input, when the answer came from a person
+        # rather than from an identity in the network. ``None`` for every
+        # derived target -- so a non-None block means exactly one thing, and it
+        # carries the assumption token beside the name rather than instead of
+        # it. A signer does not make "this input drives this node's total"
+        # proven; a signer makes it attributed, and this is where the
+        # attribution is recorded for the card, the DOCX and the screen alike.
+        "human_named": _human_named_block(target),
     }
 
     if input_no not in (None, "") and entrance["status"] == ENTRANCE_MEASURED:

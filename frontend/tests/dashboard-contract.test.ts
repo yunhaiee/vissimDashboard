@@ -10480,7 +10480,7 @@ contractTest("unit #50-c: the scoring surface is a TILE GRID, and the movement c
   );
   pin.match(
     read("app/calibration/page.tsx"),
-    /<NodeScoreDetail node=\{activeNode\} threshold=\{report\.geh_threshold\} \/>/,
+    /<NodeScoreDetail\s+node=\{activeNode\}\s+threshold=\{report\.geh_threshold\}/,
     "expected the scoring station to hand the detail the report's own threshold",
   );
   // BOTH CALL SITES. The per-station node context holds the same report and
@@ -10490,7 +10490,7 @@ contractTest("unit #50-c: the scoring surface is a TILE GRID, and the movement c
   // with no verdict colour, which `nodeGehPasses` returns `null` for.)
   pin.match(
     read("app/calibration/page.tsx"),
-    /<NodeScoreDetail node=\{activeNode\} threshold=\{report\?\.geh_threshold\} \/>/,
+    /<NodeScoreDetail\s+node=\{activeNode\}\s+threshold=\{report\?\.geh_threshold\}/,
     "expected the per-station node context to hand the detail the same report's threshold",
   );
 
@@ -10655,6 +10655,187 @@ contractTest("unit #50-e: the next-action box hands the user to the assistant, p
   pin.match(builder, /text\.ko/, "expected the ko template to carry the server's own ko next-action text, not a paraphrase");
   pin.match(builder, /text\.en/, "expected the en template to carry the server's own en next-action text");
   pin.match(builder, /text\.ja/, "expected the ja template to carry the server's own ja next-action text");
+});
+
+// ---------------------------------------------------------------------------
+// Unit #54 — 사람이 지정하는 수요 대상: the node the derivation REFUSES to
+// resolve gets the one thing the refusal was asking for, a person's choice.
+//
+// AUTHORITY: the user, 2026-08-24, on the real client model — node 8 reads
+// 분류 불가 / NO_DEMAND_TARGET on the calibration screen while
+// backend/tools/calibration_loop_live_check.py reaches CAPACITY_LIMIT on the
+// same node, because the harness hardcodes one human's graph analysis
+// ({node 8 -> input 113, link 617}) that the product had nowhere to record.
+//
+// The failure THIS unit is one character away from is a picker that invents its
+// own candidates, or that decides a status once the choice is made. Four pins:
+//
+//   1. every candidate on the control is the SERVER's (reality_check_targets'
+//      own per-node list, the same one the store checks a choice against);
+//   2. WHEN the control appears is the server's too — geh_ladder's own
+//      NO_DEMAND_TARGET code, never a rung this file classified;
+//   3. submitting decides nothing: the report and the rail are re-read, and the
+//      node's new classification is whatever the server then says;
+//   4. the act is stated in ONE line beside the button, and it says the word
+//      that matters — this records an ASSUMPTION under your name.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #54: the demand-target picker offers the SERVER's candidates and invents none", (pin) => {
+  const table = read("components/calibration/NodeScoreTable.tsx");
+  const pickerAt = table.indexOf("function DemandTargetPicker");
+  assert.ok(pickerAt > 0, "expected the #54 picker to exist in the node detail's file");
+  const picker = table.slice(pickerAt);
+
+  // (1) THE CANDIDATES ARE THE SERVER'S. Rendered straight off the payload —
+  // no filter, no sort, no client-side derivation from the shadow model. A
+  // client-assembled list would show a modeller options the store then refuses,
+  // which is the two-opinions failure in its most user-hostile form.
+  pin.match(
+    picker,
+    /const candidates = demandTarget\?\.candidates \?\? \[\];/,
+    "expected the candidate list to come from the server payload, never from anything this file computed",
+  );
+  pin.match(
+    picker,
+    /candidates\.map\(\(candidate\) => \{/,
+    "expected every offered candidate to be rendered from the server's own list",
+  );
+  pin.match(
+    picker,
+    /candidate\.vehicle_input_no/,
+    "expected the input NUMBER on each option -- a modeller recognises it from Vissim",
+  );
+  pin.match(picker, /candidate\.link_no/, "expected the LINK on each option: the triple is what gets recorded");
+  // ...and the volume, which is what makes the list decidable rather than a set
+  // of bare numbers. `null` prints as a WORD, never as 0: a zero here would read
+  // as a measurement of no traffic.
+  pin.match(
+    picker,
+    /typeof candidate\.current_volume === "number"[\s\S]{0,200}?t\("교통량 미기재"/,
+    "expected an unstated volume to print as a word, never as a fabricated 0",
+  );
+
+  // (2) WHEN IT APPEARS is the server's answer. geh_ladder's own code, off
+  // `diagnosis.missing_evidence` -- not a rung this file classified, which would
+  // put the control on nodes whose gap is something else entirely.
+  pin.match(
+    table,
+    /const NO_DEMAND_TARGET = "NO_DEMAND_TARGET";/,
+    "expected the picker's trigger to be geh_ladder's own missing-evidence code",
+  );
+  pin.match(
+    picker,
+    /\(node\.diagnosis\?\.missing_evidence \?\? \[\]\)\.includes\(NO_DEMAND_TARGET\)/,
+    "expected the control to key off the server's missing-evidence list, never off a rung name",
+  );
+  // NO CANDIDATES, NO CONTROL -- a node whose rows do not resolve to a link
+  // cannot name anything, and a picker there would offer a control that cannot
+  // be used. An EXISTING mapping keeps the card alive after the gap closes, or a
+  // named assumption would have no way to be withdrawn.
+  pin.match(
+    picker,
+    /if \(candidates\.length === 0 \|\| \(!missingTarget && !mapping\)\) return null;/,
+    "expected no picker without candidates, and the card to survive once a mapping stands so it can still be revoked",
+  );
+
+  // (3) THE CLIENT DECIDES NOTHING. No status word is assigned here, and the
+  // only thing that happens after a successful POST is a re-read.
+  pin.match(picker, /await postCalibrationDemandTarget\(\{/, "expected the picker to POST through lib/api.ts");
+  pin.match(picker, /onChanged\?\.\(\);/, "expected the picker to ask the page to RE-READ rather than to update anything itself");
+  pin.doesNotMatch(
+    withoutComments(picker),
+    /CAPACITY_LIMIT|DEMAND_LEVEL|UNCLASSIFIABLE|setRung|rung =/,
+    "expected no rung or status to be decided in the picker -- the server re-derives the node on the next read",
+  );
+
+  // (4) THE ACT, IN ONE LINE, and it says ASSUMPTION. #50-d evicted doctrine
+  // paragraphs from this screen; what stays is what THIS button records, which a
+  // reader about to put their name on something is entitled to know.
+  const surface = withoutFolds(picker);
+  pin.match(
+    surface,
+    /이 인풋이 이 노드 총량을 좌우한다'는 가정이 로그인한 사용자의 이름·시각과 함께 기록됩니다/,
+    "expected the act statement to say that naming records an ASSUMPTION under the signed-in name",
+  );
+  pin.match(
+    surface,
+    /네트워크가 바뀌면 다시 묻습니다/,
+    "expected the act statement to say the mapping expires with the network -- the staleness rule the server enforces",
+  );
+  pin.match(
+    surface,
+    /t\("차량 인풋 지정", "Name the vehicle input", "車両インプットを指定"\)/,
+    "expected the control to carry the user's own words for it (차량 인풋 지정)",
+  );
+  // THE MAPPING THAT STANDS, on the surface: who and when, in their own words.
+  pin.match(surface, /\{mapping\.named_by\}/, "expected the standing mapping to name its author on the surface");
+  pin.match(surface, /\{mapping\.named_at\}/, "expected the standing mapping to carry its server timestamp");
+  pin.match(surface, /\{mapping\.reason\}/, "expected the author's own stated reason to stay on the surface");
+  pin.match(
+    surface,
+    /\{t\("지정 철회", "Revoke", "指定を撤回"\)\}/,
+    "expected a standing mapping to be withdrawable from the same card",
+  );
+
+  // AND THE #50-e CTA COEXISTS. The two are different acts on the same gap --
+  // assign the input directly, or hand the node to the assistant -- and #54 must
+  // not have replaced one with the other.
+  const detail = table.slice(table.indexOf("export function NodeScoreDetail"), pickerAt);
+  pin.match(
+    detail,
+    /\{t\("AI에게 물어보기", "Ask the AI", "AIに聞く"\)\}/,
+    "expected #50-e's next-action CTA to survive #54 -- the picker was added beside it, not over it",
+  );
+  pin.match(
+    detail,
+    /<DemandTargetPicker\s+node=\{node\}\s+demandTarget=\{demandTarget \?\? null\}/,
+    "expected the picker to render inside the node detail, from the payload the page threaded in",
+  );
+});
+
+contractTest("unit #54: one candidate list per screen, threaded down to both node-detail call sites", (pin) => {
+  const page = withoutComments(read("app/calibration/page.tsx"));
+
+  // ONE READ, threaded DOWN. The node detail renders in two places on this
+  // screen (the scoring grid and the per-station node context); a fetch inside
+  // the component would let the same node offer two different candidate lists.
+  pin.match(
+    page,
+    /fetchCalibrationDemandTargets\(\)/,
+    "expected the page to read the candidates once, not the detail component to fetch its own",
+  );
+  pin.doesNotMatch(
+    withoutComments(read("components/calibration/NodeScoreTable.tsx")),
+    /fetchCalibrationDemandTargets/,
+    "expected the detail to be HANDED its candidates -- two fetches is two lists",
+  );
+  for (const call of [
+    /demandTarget=\{demandTargets\?\.nodes\?\.\[activeNode\.node_id\] \?\? null\}\s*\n\s*onDemandTargetChanged=\{handleProposalResolved\}/,
+    /demandTarget=\{demandTargets\?\.nodes\?\.\[activeNode\.node_id\] \?\? null\}\s*\n\s*onDemandTargetChanged=\{onDemandTargetChanged\}/,
+  ]) {
+    pin.match(page, call, "expected BOTH node-detail call sites to thread the same candidate payload");
+  }
+
+  // THE RE-READ IS THE WHOLE MECHANISM. Naming an input changes the REPORT (the
+  // node's outcome, its D4 verdict and its rung), not only the rail -- so the
+  // nonce that a mapping bumps has to be part of the report's request key too.
+  // A screen that re-read only the rail would show the mapping recorded and the
+  // node still 분류 불가 beside it.
+  pin.match(
+    page,
+    /const reportKey = `\$\{scenarioId\}\|\$\{railNonce\}`;/,
+    "expected the report's request key to include the nonce a demand-target change bumps",
+  );
+  pin.match(
+    page,
+    /const demandKey = `demand\|\$\{railNonce\}`;/,
+    "expected the candidate list to be re-read on the same nonce",
+  );
+  pin.match(
+    page,
+    /resolve\(reportLoaded, reportKey, \{ idle: !scenarioId \}\)/,
+    "expected the report to be resolved against that key -- a stale key silently keeps the pre-naming report on screen",
+  );
 });
 
 // ---------------------------------------------------------------------------

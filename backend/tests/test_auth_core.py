@@ -1106,6 +1106,29 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
     MACHINE proposed. The latter is still ``POST /api/assistant/agent/approve``
     and still checks for a reviewer.
 
+    **Unit #54 adds exactly two more, and they are the same species again.**
+    사람이 지정하는 수요 대상 lets a named modeller answer the one question
+    ``reality_check_targets`` refuses to answer for them — which of a node's
+    several vehicle inputs drives its total — and the record is stored in
+    ``services/demand_target_map.py``:
+
+    * ``POST /api/calibration/demand-targets`` — **the load-bearing one.** What
+      it records is an ASSUMPTION with somebody's name on it (the proposal it
+      eventually produces still carries
+      ``fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL``), so an unsigned one would be an
+      assumption laundered into a derivation. The namer is the session, the
+      clock is the server's, and the request model forbids extra fields.
+    * ``POST /api/calibration/demand-targets/{mapping_id}/revoke`` — withdrawing
+      one is a signed act too, on exactly #53's terms: nothing is deleted, and an
+      anonymous caller must not be able to strip a named person's claim off a
+      project any more than they can add one.
+
+    ``GET /api/calibration/demand-targets/candidates`` is deliberately NOT in
+    this set. It is a READ of the derivation this router already exposes through
+    ``GET /reality-check`` — which inputs feed a node's counted approaches — and
+    guarding a read that the same workspace's other reads already contain would
+    be a distinction without one.
+
     The rest of ``/api/calibration`` stays open, unchanged: those routes return
     the record of a decision (the rail, the score, the Table 5-6 verdicts, the
     pauses waiting), which is the same parity the genesis reads sit in.
@@ -1134,6 +1157,8 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/assistant/agent/approve",
         "/api/calibration/step-attestations",
         "/api/calibration/step-attestations/{attestation_id}/revoke",
+        "/api/calibration/demand-targets",
+        "/api/calibration/demand-targets/{mapping_id}/revoke",
         "/api/workspaces",
         "/api/genesis/uploads",
         "/api/genesis/side-inputs",

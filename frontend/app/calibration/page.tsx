@@ -123,6 +123,7 @@ import {
 import {
   fetchActiveDataset,
   fetchCalibrationAppliedRows,
+  fetchCalibrationDemandTargets,
   fetchCalibrationRail,
   fetchCalibrationRealityCheck,
   fetchScenarios,
@@ -130,6 +131,7 @@ import {
   revokeCalibrationStepAttestation,
   type ActiveDataset,
   type CalibrationAppliedRows,
+  type CalibrationDemandTargets,
   type CalibrationRail,
   type CalibrationRailStep,
   type CalibrationRealityCheck,
@@ -237,6 +239,13 @@ export default function CalibrationWorkspacePage() {
   // Bumped when an approval lands, so the rail re-reads. A nonce rather than an
   // imperative reload call: the rail's request key is what decides whether what
   // we hold is current, so "please read again" has to be a change to that key.
+  //
+  // #54 widened what it drives, and had to: naming a vehicle input changes the
+  // REPORT (a node's outcome, its D4 verdict and its rung are all re-derived
+  // from the store on the next read), not only the rail. So the nonce is now
+  // part of the report's and the demand-target list's request keys too — a
+  // screen that re-read only the rail would show the mapping recorded and the
+  // node still 분류 불가 beside it.
   const [railNonce, setRailNonce] = useState(0);
 
   // Each remote resource is ONE piece of state carrying the request key it
@@ -248,12 +257,22 @@ export default function CalibrationWorkspacePage() {
   const [railLoaded, setRailLoaded] = useState<Loaded<CalibrationRail> | null>(null);
   const { data: rail, error: railError, loading: railLoading } = resolve(railLoaded, railKey);
 
+  const reportKey = `${scenarioId}|${railNonce}`;
   const [reportLoaded, setReportLoaded] = useState<Loaded<CalibrationRealityCheck> | null>(null);
   const {
     data: report,
     error: reportError,
     loading: reportLoading,
-  } = resolve(reportLoaded, scenarioId, { idle: !scenarioId });
+  } = resolve(reportLoaded, reportKey, { idle: !scenarioId });
+
+  // #54's picker data: which vehicle inputs each node's counted approaches
+  // carry, and which mapping stands. Read once per nonce and threaded DOWN to
+  // the node detail rather than fetched inside it — the detail renders in two
+  // places on this screen, and two independent fetches would let the same node
+  // offer two different candidate lists.
+  const demandKey = `demand|${railNonce}`;
+  const [demandLoaded, setDemandLoaded] = useState<Loaded<CalibrationDemandTargets> | null>(null);
+  const { data: demandTargets } = resolve(demandLoaded, demandKey);
 
   const [datasetLoaded, setDatasetLoaded] = useState<Loaded<ActiveDataset> | null>(null);
   const { data: dataset, error: datasetError } = resolve(datasetLoaded, DATASET_KEY);
@@ -412,15 +431,29 @@ export default function CalibrationWorkspacePage() {
     let cancelled = false;
     fetchCalibrationRealityCheck({ scenarioId })
       .then((payload) => {
-        if (!cancelled) setReportLoaded(ok(scenarioId, payload));
+        if (!cancelled) setReportLoaded(ok(reportKey, payload));
       })
       .catch((caught) => {
-        if (!cancelled) setReportLoaded(failed(scenarioId, caught));
+        if (!cancelled) setReportLoaded(failed(reportKey, caught));
       });
     return () => {
       cancelled = true;
     };
-  }, [scenarioId]);
+  }, [reportKey, scenarioId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCalibrationDemandTargets()
+      .then((payload) => {
+        if (!cancelled) setDemandLoaded(ok(demandKey, payload));
+      })
+      .catch((caught) => {
+        if (!cancelled) setDemandLoaded(failed(demandKey, caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [demandKey]);
 
   useEffect(() => {
     if (!compareId) return;
@@ -819,7 +852,12 @@ export default function CalibrationWorkspacePage() {
                         />
                         {activeNode && (
                           <div className="mt-3">
-                            <NodeScoreDetail node={activeNode} threshold={report.geh_threshold} />
+                            <NodeScoreDetail
+                              node={activeNode}
+                              threshold={report.geh_threshold}
+                              demandTarget={demandTargets?.nodes?.[activeNode.node_id] ?? null}
+                              onDemandTargetChanged={handleProposalResolved}
+                            />
                           </div>
                         )}
                       </div>
@@ -1070,6 +1108,8 @@ export default function CalibrationWorkspacePage() {
             mapNodes={mapNodes}
             activeNodeId={activeNodeId}
             activeNode={activeNode}
+            demandTargets={demandTargets}
+            onDemandTargetChanged={handleProposalResolved}
             onNodeClick={handleNodeClick}
             t={t}
           />
@@ -1113,6 +1153,8 @@ function NodeContext({
   mapNodes,
   activeNodeId,
   activeNode,
+  demandTargets,
+  onDemandTargetChanged,
   onNodeClick,
   t,
 }: {
@@ -1122,6 +1164,8 @@ function NodeContext({
   mapNodes: BaseValidationMapNode[];
   activeNodeId: string | null;
   activeNode: CalibrationRealityNode | null;
+  demandTargets: CalibrationDemandTargets | null;
+  onDemandTargetChanged: () => void;
   onNodeClick: (nodeId: string) => void;
   t: (ko: string, en: string, ja?: string) => string;
 }) {
@@ -1183,7 +1227,12 @@ function NodeContext({
           rendering of "this pane has not been told what the bar is". */}
       {activeNode && ids.includes(activeNode.node_id) && (
         <div className="mt-2">
-          <NodeScoreDetail node={activeNode} threshold={report?.geh_threshold} />
+          <NodeScoreDetail
+            node={activeNode}
+            threshold={report?.geh_threshold}
+            demandTarget={demandTargets?.nodes?.[activeNode.node_id] ?? null}
+            onDemandTargetChanged={onDemandTargetChanged}
+          />
         </div>
       )}
     </div>

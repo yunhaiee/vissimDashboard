@@ -46,6 +46,49 @@ states. Automating it would put this system's guess where a modeller's decision
 belongs, and the guess would be invisible on the approval card. Two candidates
 means no target, and the modeller names one.
 
+WHERE THE MODELLER NAMES ONE (unit #54, 2026-08-24)
+----------------------------------------------------
+"The modeller names one" was, until this unit, a sentence with nowhere to be
+carried out: the agent could pass a target on a turn, and the SCREEN could not.
+So the six-candidate node stayed 분류 불가 forever while the harness — which
+hardcodes one human's graph analysis, ``{node 8 -> input 113, link 617}`` —
+reached ``CAPACITY_LIMIT`` on the same node and the same run.
+
+``human_mappings`` is that answer, threaded in from
+``services.demand_target_map`` through the router. It WINS over the derivation
+for its node — but ONLY where the derivation had a choice to make.
+
+**Machine outranks testimony**, which is #53's rule and not a new one. On a node
+the derivation already resolved from the network alone
+(:data:`SINGLE_VEHICLE_INPUT` — exactly one input feeds its counted approaches),
+a mapping decides nothing and is recorded as ignored with
+:data:`HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE`. It cannot even DISAGREE there:
+with one candidate, the store's own check guarantees it names that same input.
+Reporting :data:`HUMAN_NAMED_VEHICLE_INPUT` on such a node would attribute a
+derivation to a modeller and put somebody's name on a fact that did not need
+one. A human mapping is for choosing among SEVERAL, and only there.
+
+The three properties that keep it from being a back door are:
+
+* it can only name a triple the derivation ITSELF vouched for. The store checks
+  the (node, input, link) against this module's own candidate list at naming
+  time, and :func:`derive_targets` checks it AGAIN here against the live one —
+  two guards, because a network that moved under a mapping must not keep it
+  alive, and because one guard being deleted must not silently restore a claim;
+* a STALE or REVOKED mapping is ignored and the node falls back to the exact
+  absence state it had before anybody named anything. Never to a half-state, and
+  never silently: ``nodes[id]["vehicle_input"]["human_mapping_ignored"]`` says
+  which;
+* the target it produces is labelled. ``reason`` becomes
+  :data:`HUMAN_NAMED_VEHICLE_INPUT`, the signer and the timestamp ride on the
+  target into ``evidence["target"]["human_named"]``, and the assumption token
+  ``fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL`` rides beside them. A signature does
+  not make "this input drives this node's total" PROVEN — it makes it
+  ATTRIBUTED, and the difference is the whole product.
+
+Every OTHER node is derived exactly as it was: this is a per-node override, not
+a mode.
+
 A derived demand target does NOT make the resulting proposal safe: it is still
 subject to unit D4 (a MEASURED entrance is refused outright) and any proposal it
 does produce still carries :data:`fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL`, the
@@ -97,6 +140,9 @@ NO_VEHICLE_INPUT_ON_APPROACH = "NO_VEHICLE_INPUT_ON_APPROACH"
 #: Several do. See the module docstring: this is where a dominance pick would
 #: have gone, and does not.
 MULTIPLE_VEHICLE_INPUT_CANDIDATES = "MULTIPLE_VEHICLE_INPUT_CANDIDATES"
+#: A named human chose one of this node's candidates (#54). Not a derivation:
+#: an attributed assumption, and the only reason code here that carries a name.
+HUMAN_NAMED_VEHICLE_INPUT = "HUMAN_NAMED_VEHICLE_INPUT"
 #: Exactly one static routing decision sits on this approach link.
 DECISION_IDENTIFIED = "DECISION_IDENTIFIED"
 #: One of that decision's routes ends on the link this movement exits by.
@@ -117,12 +163,42 @@ REASON_CODES = (
     SINGLE_VEHICLE_INPUT,
     NO_VEHICLE_INPUT_ON_APPROACH,
     MULTIPLE_VEHICLE_INPUT_CANDIDATES,
+    HUMAN_NAMED_VEHICLE_INPUT,
     DECISION_IDENTIFIED,
     ROUTE_IDENTIFIED,
     NO_DECISION_ON_APPROACH,
     MULTIPLE_DECISIONS_ON_APPROACH,
     ROUTE_NOT_IDENTIFIED,
     REL_FLOW_UNREADABLE,
+)
+
+# ---------------------------------------------------------------------------
+# Why a human mapping was NOT used — a different question from the above
+# ---------------------------------------------------------------------------
+#
+# These never appear as a ``reason``: the reason is what the node's derivation
+# concluded, and an ignored mapping leaves that conclusion exactly as it was.
+# They ride alongside it, so "I named an input and the screen still says 분류
+# 불가" has an answer other than silence.
+
+#: The network moved (or could not be read) since the mapping was named.
+HUMAN_MAPPING_STALE = "HUMAN_MAPPING_STALE"
+#: The mapping was withdrawn. It is history, not evidence.
+HUMAN_MAPPING_REVOKED = "HUMAN_MAPPING_REVOKED"
+#: The named input is no longer one of this node's candidates — the second of
+#: the two guards (the store checked the same thing at naming time).
+HUMAN_MAPPING_NOT_A_CANDIDATE = "HUMAN_MAPPING_NOT_A_CANDIDATE"
+#: The derivation had already resolved this node from the network alone, so the
+#: testimony had nothing to decide. See :func:`derive_targets` — this codebase's
+#: #53 rule is that a machine verdict outranks a human's account of the same
+#: fact, and a node with ONE candidate is a machine verdict.
+HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE = "HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE"
+
+IGNORED_MAPPING_CODES = (
+    HUMAN_MAPPING_STALE,
+    HUMAN_MAPPING_REVOKED,
+    HUMAN_MAPPING_NOT_A_CANDIDATE,
+    HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE,
 )
 
 
@@ -166,8 +242,16 @@ def _object_id_rows(node_id: str, evidence: Mapping[str, Any]) -> list[dict[str,
 
 def _vehicle_input_for(
     approach_links: list[str], shadow_model: Mapping[str, Any]
-) -> tuple[dict[str, Any] | None, str, list[str]]:
-    """``(input, reason, candidate ids)`` — the ONE input on these links, or none."""
+) -> tuple[dict[str, Any] | None, str, list[str], list[dict[str, Any]]]:
+    """``(input, reason, candidate ids, candidate rows)``.
+
+    The fourth member is unit #54's: the same candidates, as ROWS a picker can
+    render and a store can check a human's choice against — input number, the
+    link it feeds and its current volume. Emitted here rather than recomputed by
+    the router or the store, because "which inputs feed this node's counted
+    approaches" must have exactly one implementation; a second one is how a
+    screen comes to offer a choice this module would then refuse.
+    """
     candidates = [
         entry
         for entry in shadow_model.get("vehicle_inputs") or []
@@ -176,11 +260,51 @@ def _vehicle_input_for(
         and str(entry.get("no") or "")
     ]
     ids = [str(entry.get("no")) for entry in candidates]
+    rows = [
+        {
+            "vehicle_input_no": str(entry.get("no")),
+            "link_no": str(fixes.canonical_link_id(entry.get("link")) or ""),
+            # ``None`` passed through rather than defaulted: an input whose
+            # volume the .inpx never states has an unknown one, and the builder
+            # refuses EVIDENCE_INSUFFICIENT by name for it.
+            "current_volume": _number(entry.get("volume")),
+            "name": str(entry.get("name") or "") or None,
+        }
+        for entry in candidates
+    ]
     if not candidates:
-        return None, NO_VEHICLE_INPUT_ON_APPROACH, ids
+        return None, NO_VEHICLE_INPUT_ON_APPROACH, ids, rows
     if len(candidates) > 1:
-        return None, MULTIPLE_VEHICLE_INPUT_CANDIDATES, ids
-    return dict(candidates[0]), SINGLE_VEHICLE_INPUT, ids
+        return None, MULTIPLE_VEHICLE_INPUT_CANDIDATES, ids, rows
+    return dict(candidates[0]), SINGLE_VEHICLE_INPUT, ids, rows
+
+
+def _usable_human_mapping(
+    mapping: Mapping[str, Any] | None, candidate_rows: list[dict[str, Any]]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(mapping, None)`` if this claim still stands, else ``(None, why not)``.
+
+    THE SECOND OF TWO GUARDS. The router threads only fresh, unrevoked mappings
+    (``demand_target_map.fresh_index_payload``); this re-checks both flags and
+    re-checks the triple against the LIVE candidate list. Neither guard is
+    trusted alone — the store's check happened at naming time and the network
+    may have moved since, and a caller that forgot to filter must not be able to
+    resurrect a withdrawn claim.
+    """
+    if not isinstance(mapping, Mapping):
+        return None, None
+    if mapping.get("revoked") is True:
+        return None, HUMAN_MAPPING_REVOKED
+    if mapping.get("stale"):
+        return None, HUMAN_MAPPING_STALE
+    input_no = str(mapping.get("vehicle_input_no") or "").strip()
+    link_no = str(fixes.canonical_link_id(mapping.get("link_no")) or "")
+    if not input_no or not link_no:
+        return None, HUMAN_MAPPING_NOT_A_CANDIDATE
+    for row in candidate_rows:
+        if row["vehicle_input_no"] == input_no and row["link_no"] == link_no:
+            return {**row, "mapping": dict(mapping)}, None
+    return None, HUMAN_MAPPING_NOT_A_CANDIDATE
 
 
 def _decision_on(link: str, shadow_model: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
@@ -239,6 +363,7 @@ def derive_targets(
     *,
     observed: Mapping[str, Mapping[str, Any]] | None,
     shadow_model: Mapping[str, Any] | None,
+    human_mappings: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """``{"targets": [RealityCheckNodeTarget], "nodes": {node_id: why}}``.
 
@@ -248,13 +373,18 @@ def derive_targets(
     joins against are byte-for-byte the ones the report will join against.
     ``shadow_model`` is ``tools_network.build_shadow_model``'s offline parse.
 
+    ``human_mappings`` is ``{node_id: demand_target_map.summarize(...)}`` — unit
+    #54's per-node human override, described in this module's docstring. Absent
+    (the default) this function behaves exactly as it did before that unit.
+
     Either side missing yields no targets and no opinion — the caller's
     behaviour is then exactly what it was before this module existed.
 
     ``nodes`` is the audit half: one entry per node saying which links it was
-    counted entering from and, by :data:`REASON_CODES`, why each half of its
-    target does or does not exist. Nothing renders it today; it exists so the
-    answer "no target" is inspectable rather than a silence.
+    counted entering from, which vehicle inputs feed those links, and, by
+    :data:`REASON_CODES`, why each half of its target does or does not exist. It
+    is also what the demand-target picker renders and what the store checks a
+    human's choice against.
     """
     # Deferred, and for the reason every module in this package states at its
     # own deferred import of ``tools_metrics``: importing it pulls the whole
@@ -279,7 +409,12 @@ def derive_targets(
         why: dict[str, Any] = {
             "approach_links": list(approach_links),
             "object_id_rows": len(rows),
-            "vehicle_input": {"chosen": None, "candidates": [], "reason": NO_OBJECT_ID_ROWS},
+            "vehicle_input": {
+                "chosen": None,
+                "candidates": [],
+                "candidate_inputs": [],
+                "reason": NO_OBJECT_ID_ROWS,
+            },
             "routing": {},
         }
         result["nodes"][node_id] = why
@@ -287,12 +422,68 @@ def derive_targets(
             continue
 
         # -- the DEMAND half ------------------------------------------------
-        vehicle_input, reason, candidate_ids = _vehicle_input_for(approach_links, shadow_model)
+        vehicle_input, reason, candidate_ids, candidate_rows = _vehicle_input_for(
+            approach_links, shadow_model
+        )
         why["vehicle_input"] = {
             "chosen": None if vehicle_input is None else str(vehicle_input.get("no")),
             "candidates": candidate_ids,
+            "candidate_inputs": candidate_rows,
             "reason": reason,
         }
+
+        # #54: a named human's choice WINS over the derivation for this node —
+        # and only for this node, and only where the derivation had a choice to
+        # make. The auto answer above stays computed and stays visible in
+        # ``candidates``: the reader has to be able to see that six inputs were
+        # candidates and that a person picked one of them, which is a different
+        # claim from "the network says 113".
+        named, ignored = _usable_human_mapping(
+            (human_mappings or {}).get(node_id), candidate_rows
+        )
+        if named is not None and reason == SINGLE_VEHICLE_INPUT:
+            # MACHINE OUTRANKS TESTIMONY (#53's rule, applied here). Exactly one
+            # vehicle input feeds this node's counted approaches, so the network
+            # has ALREADY answered and there was nothing for a person to choose
+            # between. The mapping is not wrong — with one candidate the store's
+            # own check guarantees it names that same input — it is simply not
+            # what decided, and reporting HUMAN_NAMED here would attribute a
+            # derivation to a modeller and put an unnecessary name on a fact.
+            #
+            # It is recorded rather than dropped: the audit block below keeps the
+            # mapping's id and author beside the code saying why it did not
+            # decide, so "I named an input and the screen credits the network"
+            # has an answer.
+            why["vehicle_input"]["mapping_id"] = named["mapping"].get("id")
+            why["vehicle_input"]["named_by"] = str(named["mapping"].get("named_by") or "") or None
+            named, ignored = None, HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE
+        named_by: str | None = None
+        named_at: str | None = None
+        if ignored is not None:
+            why["vehicle_input"]["human_mapping_ignored"] = ignored
+        if named is not None:
+            mapping = named["mapping"]
+            named_by = str(mapping.get("named_by") or "") or None
+            named_at = str(mapping.get("named_at") or "") or None
+            vehicle_input = {
+                "no": named["vehicle_input_no"],
+                "link": named["link_no"],
+                "volume": named["current_volume"],
+            }
+            why["vehicle_input"].update(
+                {
+                    "chosen": named["vehicle_input_no"],
+                    "reason": HUMAN_NAMED_VEHICLE_INPUT,
+                    "named_by": named_by,
+                    "named_at": named_at,
+                    "mapping_id": mapping.get("id"),
+                    "mapping_reason": mapping.get("reason"),
+                    # A signer does not make this proven. The token that says so
+                    # travels with the target and lands on the approval card.
+                    "assumption": fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL,
+                }
+            )
+
         if vehicle_input is not None:
             result["targets"].append(
                 RealityCheckNodeTarget(
@@ -307,6 +498,11 @@ def derive_targets(
                     # Supplying it is what lets a MEASURED entrance be REFUSED
                     # instead of quietly relabelled a demand estimate.
                     vehicle_input_link_no=str(vehicle_input.get("link") or "") or None,
+                    # #54's provenance. ``None`` on every derived target, which
+                    # is what makes a non-None value mean exactly one thing:
+                    # a person put their name on this.
+                    vehicle_input_named_by=named_by,
+                    vehicle_input_named_at=named_at,
                 )
             )
 
@@ -354,6 +550,12 @@ def derive_targets(
 
 __all__ = [
     "DECISION_IDENTIFIED",
+    "HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE",
+    "HUMAN_MAPPING_NOT_A_CANDIDATE",
+    "HUMAN_MAPPING_REVOKED",
+    "HUMAN_MAPPING_STALE",
+    "HUMAN_NAMED_VEHICLE_INPUT",
+    "IGNORED_MAPPING_CODES",
     "MULTIPLE_DECISIONS_ON_APPROACH",
     "MULTIPLE_VEHICLE_INPUT_CANDIDATES",
     "NO_DECISION_ON_APPROACH",

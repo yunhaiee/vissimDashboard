@@ -218,6 +218,19 @@ class RealityCheckNodeTarget(BaseModel):
             "labelled a demand ESTIMATE for you to confirm or replace."
         ),
     )
+    vehicle_input_named_by: str | None = Field(
+        default=None,
+        description=(
+            "WHO named this input as the node's demand driver, when a person did (unit #54's "
+            "demand-target map). Leave it unset for a target the network itself vouched for: a "
+            "non-empty value means the mapping is an ATTRIBUTED assumption, not a derivation, and "
+            "the evidence on the approval card says so under that person's name."
+        ),
+    )
+    vehicle_input_named_at: str | None = Field(
+        default=None,
+        description="When that person named it — the SERVER's stamp, never a client's.",
+    )
     movement: str | None = Field(
         default=None,
         description=(
@@ -395,6 +408,13 @@ def _reality_check_targets(
                 # treat the volume as a free parameter.
                 "link_no": entry.vehicle_input_link_no,
                 "interval_no": entry.interval_no,
+                # Unit #54: passed through, absence and all. ``fixes`` renders
+                # the pair as ``evidence["target"]["human_named"]`` when it is
+                # present and as ``None`` when it is not, which is what lets an
+                # approval card tell "the network vouched for this input" from
+                # "a named person chose it out of six candidates".
+                "named_by": entry.vehicle_input_named_by,
+                "named_at": entry.vehicle_input_named_at,
             }
         if entry.movement is not None:
             if entry.movement_object_id is not None:

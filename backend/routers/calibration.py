@@ -92,6 +92,33 @@ properties, each of them a way this could have gone wrong:
   word, it upgrades only ``NO_EVIDENCE``, and it expires when the ``.inpx`` it
   was signed against changes. That ranking lives in ``calibration_rail``, not
   here.
+
+WHAT #54's NAMED DEMAND TARGET ADDED
+------------------------------------
+Two more POSTs and one GET, and they answer a question this router had been
+ASKING a modeller with no way for them to reply. ``reality_check_targets``
+refuses to pick between several vehicle inputs feeding one node — on the real
+client model node 8 has six — so the report came back ``NO_TARGET_OBJECT``, the
+ladder could not establish whether that entrance was measured, and the node read
+분류 불가 forever. ``POST /demand-targets`` records a named person's CHOICE among
+those candidates, ``GET /demand-targets/candidates`` is the list they choose
+from, and ``POST /demand-targets/{id}/revoke`` withdraws it.
+
+* **The candidate list is the server's, on both legs.** The picker renders
+  ``_derive_all``'s own per-node output, and the POST re-derives it here to check
+  the choice against — never against a list the request asserted. A client
+  cannot offer, or claim, a candidate the derivation does not vouch for.
+* **The namer is the session and the clock is the server's**, the same door
+  ``StepAttestationRequest`` closes, for the same reason.
+* **Naming does not decide a classification.** These routes return the RECORD.
+  ``GET /reality-check`` and ``GET /rail`` re-derive the node from the store on
+  the next read, and the mapping is threaded through ``_derived_targets`` — the
+  one seam all three reality-check call sites and the search gate share — so a
+  named input cannot be visible on one of those surfaces and absent from
+  another.
+* **A named mapping does not make the assumption true.** The target it produces
+  still carries ``fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL``, now beside the name of
+  the person who made it.
 """
 from __future__ import annotations
 
@@ -103,7 +130,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from routers.auth import current_user
-from services import calibration_attestation, calibration_rail, genesis_jobs, workspaces
+from services import (
+    calibration_attestation,
+    calibration_rail,
+    demand_target_map,
+    genesis_jobs,
+    workspaces,
+)
 from services.agent import mrwa_reference, saturation_flow, search_job, tools_network
 from services.datasets import get_active_dataset, get_active_inpx_path
 
@@ -253,25 +286,43 @@ def _language(request: Request) -> str:
     return value if value in {"ko", "en", "ja"} else "ko"
 
 
-def _derived_targets(
+def _demand_target_index() -> dict[str, dict[str, Any]] | None:
+    """This workspace's human-named demand targets, or ``None`` if unreadable (#54).
+
+    FRESH and UNREVOKED only — the same shape and the same failure rule as
+    :func:`_step_attestation_index`: a deferred import, and any failure degrades
+    to ``None``, which the derivation reads as "nobody named anything", i.e.
+    exactly the answer this screen gave before #54. The derivation re-checks
+    both flags itself; this filter is the first of the two guards, not the only
+    one.
+    """
+    try:
+        return demand_target_map.fresh_index_payload()
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "calibration: demand-target mappings unavailable (%s: %s)", type(exc).__name__, exc
+        )
+        return None
+
+
+def _derive_all(
     shadow: dict[str, Any] | None,
     *,
     period: str | None,
     observation_set_id: str | None,
-) -> list[Any] | None:
-    """The edit targets THIS server can derive, or ``None``.
+    human_mappings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """``reality_check_targets.derive_targets``'s WHOLE answer, or ``None``.
 
     ONE derivation, called from all three of this router's reality-check call
-    sites, because a page that shows the report, a rail that summarises it and a
-    gate that is evaluated against it must not hold three opinions about which
-    object a miss belongs to. The rules — and the dominance pick they refuse to
-    make — live in ``services.agent.reality_check_targets``; this function is
-    only the I/O half: it reads the observed workbook and hands it, with the
-    offline ``.inpx`` parse the caller already had, to that pure derivation.
-
-    ``None`` (never ``[]``) whenever nothing could be derived, and every such
-    case leaves the report byte-identical to what it was before this unit:
-    ``NO_TARGET_OBJECT`` refusals, naming what was missing.
+    sites AND from the demand-target routes, because a page that shows the
+    report, a rail that summarises it, a gate that is evaluated against it and a
+    picker that offers a modeller a choice must not hold four opinions about
+    which object a miss belongs to. The rules — and the dominance pick they
+    refuse to make — live in ``services.agent.reality_check_targets``; this
+    function is only the I/O half: it reads the observed workbook and hands it,
+    with the offline ``.inpx`` parse the caller already had, to that pure
+    derivation.
 
     ``observation_set_id`` short-circuits, and it costs nothing: a stored
     observation set needs a ``site_nodes`` map, no route on this router accepts
@@ -299,13 +350,43 @@ def _derived_targets(
         )
         if observed["problem"] is not None:
             return None
-        derived = reality_check_targets.derive_targets(
-            observed=observed["nodes"], shadow_model=shadow
+        return reality_check_targets.derive_targets(
+            observed=observed["nodes"],
+            shadow_model=shadow,
+            human_mappings=human_mappings,
         )
     except Exception as exc:  # noqa: BLE001 — no target is a state, not a fault
         logger.warning(
             "calibration: edit targets could not be derived (%s: %s)", type(exc).__name__, exc
         )
+        return None
+
+
+def _derived_targets(
+    shadow: dict[str, Any] | None,
+    *,
+    period: str | None,
+    observation_set_id: str | None,
+) -> list[Any] | None:
+    """The edit targets THIS server can derive, or ``None``.
+
+    ``None`` (never ``[]``) whenever nothing could be derived, and every such
+    case leaves the report byte-identical to what it was before the targets unit
+    landed: ``NO_TARGET_OBJECT`` refusals, naming what was missing.
+
+    #54: the human-named mappings are gathered HERE rather than by each caller,
+    for the reason this function exists at all — the report, the rail and the
+    search gate must be derived from the same account of the network, and a
+    mapping visible to one of them and not the others is precisely the
+    two-opinions failure the targets unit's own tests were written against.
+    """
+    derived = _derive_all(
+        shadow,
+        period=period,
+        observation_set_id=observation_set_id,
+        human_mappings=_demand_target_index(),
+    )
+    if derived is None:
         return None
     targets = derived["targets"]
     logger.debug(
@@ -805,6 +886,236 @@ def revoke_step_attestation(
             detail=(
                 "The revocation could not be written because this project's signatures could not "
                 f"be read. Nothing was changed. [{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The revocation could not be written. Nothing was changed. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# #54 — the human-named demand target: the choice a refusal was asking for
+# ---------------------------------------------------------------------------
+
+
+class DemandTargetRequest(BaseModel):
+    """Which node, which input, which link, and WHY. NOT who, and NOT when.
+
+    ``extra="forbid"`` is load-bearing exactly as it is on
+    :class:`StepAttestationRequest`: a body carrying ``named_by`` or ``named_at``
+    is a 422 AT THE DOOR rather than a field that quietly does nothing, so "the
+    namer is the session and the clock is the server's" is a property a caller
+    can verify rather than a promise.
+
+    The LINK is on the body and is not derived from the input number, even
+    though a vehicle input has exactly one link: the modeller is asserting a
+    triple, and the server checks all three of it against the candidate list.
+    Deriving the link here would mean the thing being checked was partly
+    supplied by the checker.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(..., description="The counts-workbook node this input is said to drive")
+    vehicle_input_no: str = Field(..., description="One of that node's candidate vehicle inputs")
+    link_no: str = Field(..., description="The link that input feeds — checked, never assumed")
+    reason: str = Field(
+        ...,
+        description=(
+            "Why this person says this input drives this node's total. Mandatory and non-empty "
+            "after stripping — a mapping with no stated reason is a tick."
+        ),
+    )
+    #: The counts window the candidate list is computed against, so the server
+    #: checks the choice against the SAME candidates the picker offered.
+    period: str | None = None
+
+
+class RevokeDemandTargetRequest(BaseModel):
+    """Why the mapping is being withdrawn. Mandatory, for the same reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., description="Why this mapping no longer holds")
+
+
+def _demand_target_payload(period: str | None) -> dict[str, Any]:
+    """Per node: its candidate inputs, its derivation reason, and any mapping.
+
+    Everything here is the SERVER's: the candidates are
+    ``reality_check_targets``' own per-node list (the same one the store checks a
+    choice against), the reason is its own code, and the mapping is the store's
+    own summary including ``stale``. The picker renders this and computes
+    nothing — a client that assembled its own candidate list could offer a
+    choice the store would then refuse, which is the two-opinions failure in its
+    most user-hostile form.
+
+    A STALE mapping is included, carrying its flag, because the screen has to
+    show the claim it is asking to have re-made. The derivation ignores it; this
+    payload is not the derivation.
+
+    WHY THIS DERIVES OVER THE FULL INDEX AND ``_derived_targets`` OVER THE FRESH
+    ONE, and why that is not two opinions: the derivation drops a stale mapping
+    ITSELF (its second guard), so ``reason`` and ``chosen`` come out byte-
+    identical either way. What the extra rows buy is the ``human_mapping_ignored``
+    CODE — "your mapping is stale", "the input you named is no longer a
+    candidate" — which is the one thing a modeller looking at a node they
+    already answered needs to be told, and which a fresh-only index can never
+    produce because a stale mapping is not in it.
+    """
+    standing: dict[str, dict[str, Any]] = {}
+    try:
+        standing = demand_target_map.index_payload()
+    except Exception as exc:  # noqa: BLE001 — an unreadable store is a state
+        logger.info(
+            "calibration: demand-target mappings unreadable (%s: %s)", type(exc).__name__, exc
+        )
+        standing = {}
+    derived = _derive_all(
+        _shadow_model(), period=period, observation_set_id=None, human_mappings=standing
+    )
+
+    if derived is None:
+        return {
+            "available": False,
+            "reason": "NO_DERIVATION",
+            "nodes": {},
+            # The mappings survive a derivation this server could not run: a
+            # modeller must still be able to SEE and REVOKE what they named.
+            "mappings": standing,
+        }
+
+    nodes: dict[str, Any] = {}
+    for node_id, why in (derived.get("nodes") or {}).items():
+        demand = (why or {}).get("vehicle_input") or {}
+        nodes[str(node_id)] = {
+            "approach_links": list((why or {}).get("approach_links") or []),
+            "reason": demand.get("reason"),
+            "chosen": demand.get("chosen"),
+            "candidates": list(demand.get("candidate_inputs") or []),
+            "human_mapping_ignored": demand.get("human_mapping_ignored"),
+            "mapping": standing.get(str(node_id)),
+        }
+    return {"available": True, "reason": None, "nodes": nodes, "mappings": standing}
+
+
+@router.get("/demand-targets/candidates")
+def get_demand_target_candidates(
+    period: str | None = Query(None, description="AM/PM window for the base counts workbook"),
+):
+    """Which vehicle inputs a modeller may name for each node, and what stands.
+
+    Read-only, and the same derivation everything else on this router reads. It
+    exists because a refusal that says "several inputs are candidates and this
+    product will not pick between them" is only half an answer until the screen
+    can show WHICH several.
+    """
+    return _demand_target_payload(period)
+
+
+@router.post("/demand-targets")
+def create_demand_target(
+    body: DemandTargetRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Record ONE human's mapping of a vehicle input to a node's demand.
+
+    The namer is the signed-in user, the timestamp is the server's, and the
+    ``.inpx`` hash the claim is bound to is read off disk here, not sent. The
+    CANDIDATE LIST the choice is checked against is re-derived here too, from
+    the network and the workbook this process read — a caller cannot send one,
+    and the check is therefore against the same list the picker was offered
+    rather than against a list the request asserted.
+
+    ``current_user``, not ``require_approver``: this is the #53 analogue. Naming
+    what YOU know about a network is not approving what the MACHINE proposed;
+    the latter is still ``POST /api/assistant/agent/approve``.
+
+    WHAT THIS RESPONSE DOES NOT CONTAIN: a status, a diagnosis, or a rung. The
+    report and the rail re-derive everything from the store on the next read, so
+    there is exactly one place a node's classification is decided.
+    """
+    # The mappings are threaded here too, and it is CONSISTENCY rather than
+    # necessity: a candidate list is mapping-independent by construction (it is
+    # the inputs feeding the node's counted approach links, which no signature
+    # moves), so this call would answer the same either way today. Deriving one
+    # of this router's four sites from a smaller bundle than the rest is how the
+    # POST's validation list would eventually drift from the picker's, and
+    # ``test_the_candidate_list_is_the_same_with_and_without_mappings`` pins the
+    # invariant so a refactor cannot make the difference matter silently.
+    derived = _derive_all(
+        _shadow_model(),
+        period=body.period,
+        observation_set_id=None,
+        human_mappings=_demand_target_index(),
+    )
+    node_why = ((derived or {}).get("nodes") or {}).get(str(body.node_id).strip())
+    candidates = (
+        None
+        if node_why is None
+        else list(((node_why or {}).get("vehicle_input") or {}).get("candidate_inputs") or [])
+    )
+    try:
+        return demand_target_map.record_mapping(
+            node_id=body.node_id,
+            vehicle_input_no=body.vehicle_input_no,
+            link_no=body.link_no,
+            reason=body.reason,
+            named_by=str(user.get("username") or user.get("id") or "").strip(),
+            candidates=candidates,
+        )
+    except demand_target_map.DemandTargetRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+    except demand_target_map.RegistryUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The mapping could not be written because this project's existing ones could not "
+                f"be read. Nothing was recorded. [{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The mapping could not be written. Nothing was recorded. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+
+@router.post("/demand-targets/{mapping_id}/revoke")
+def revoke_demand_target(
+    mapping_id: str,
+    body: RevokeDemandTargetRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Withdraw one mapping, with a reason. Nothing is deleted.
+
+    ANY signed-in user may revoke, and the store records who did and why beside
+    the original naming event. The node then falls back to whatever the network
+    itself supports on the next read — which, for a node with six candidates, is
+    the honest refusal it had before anybody named anything.
+    """
+    try:
+        return demand_target_map.revoke_mapping(
+            mapping_id,
+            revoked_by=str(user.get("username") or user.get("id") or "").strip(),
+            reason=body.reason,
+        )
+    except demand_target_map.DemandTargetRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+    except demand_target_map.RegistryUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The revocation could not be written because this project's mappings could not be "
+                f"read. Nothing was changed. [{type(exc).__name__}: {exc}]"
             ),
         ) from exc
     except OSError as exc:

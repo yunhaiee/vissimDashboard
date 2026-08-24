@@ -780,8 +780,21 @@ def test_the_tool_params_translate_into_u4s_target_shape():
     # Unit D4: the input's LINK travels with the rest of the demand target —
     # it is the join fixes.entrance_measurement uses to tell an entrance the
     # counts were taken at from one they were not.
+    #
+    # Unit #54 added the provenance pair, and they are asserted here as EXPLICIT
+    # None for the same reason `link_no` is below: an agent-supplied target has
+    # no human mapping behind it, and "nobody named this" must stay
+    # distinguishable from "the field was dropped on the way through" — `fixes`
+    # renders the block only when `named_by` is truthy, so a silently absent key
+    # and a None read identically downstream and this is the only place the
+    # difference can be executed.
     assert targets["1"]["vehicle_input"] == {
-        "input_no": "7", "current_volume": 800.0, "link_no": "620", "interval_no": 1,
+        "input_no": "7",
+        "current_volume": 800.0,
+        "link_no": "620",
+        "interval_no": 1,
+        "named_by": None,
+        "named_at": None,
     }
     # ... and a caller that omits it gets an explicit None, the same way
     # decision_movements does: "not supplied" must stay distinguishable from
