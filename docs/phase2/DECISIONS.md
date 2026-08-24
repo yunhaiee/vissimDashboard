@@ -6822,3 +6822,25 @@ fold every note into Φ1's first movement 비고 (`"2차 정독: … | 신호시
 no phase-less rows. Verified: all 22 re-parse with 0 refusals and movement-set equality
 against the corrections ledger. The parser-side fix (accept memo rows as intersection-level
 notes + round-trip tests WITH notes) is registered as chip **task_114c3f1a**.
+
+## 2026-08-24 — 사용자 결정: 현시도 화면은 엑셀 업로드로 통합, 판독 확인 클릭은 제거 (#55)
+
+User's words (verbatim intent): "아예 엑셀 올리는걸로 통합하자 — user uploads excel in the
+template structure (template downloadable), and the page renders the diagram. no other extra
+confirmation etc. keep it simple." This supersedes the review-first structure on
+/genesis/phases: the AI-reads-image proposal review is no longer the page's spine.
+
+Doctrine reconciliation (why this does NOT break C1-b): the confirmation click existed to make
+a MACHINE reading into a fact. An Excel a person filled and uploaded is ALREADY that person's
+own statement — demanding a second per-intersection click on their own words was ceremony, and
+the user has now named it as such. Upload therefore stamps uploaded_by (server-side) as the
+authoring word for the READING. What upload cannot carry — the binding of sheet approaches to
+a generated draft's node/link ids (MappingAttestation's node_id/approach_links) — REMAINS a
+human act at signals-build time, reached from the intersection card as a secondary action, not
+as the page's default structure. generate_node_signals' refusal of unbound mappings is
+untouched.
+
+The page's new job: 템플릿 다운로드 + 엑셀 업로드 → per-intersection cards RENDER a phase
+diagram (Φ columns, movement arrows) from the parsed rows. The template (v1) has no
+approach-side column, so rendered placement is layout, not geography — the card must say so
+rather than pretend bearings.
