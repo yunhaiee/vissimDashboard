@@ -6787,3 +6787,38 @@ COM-apply boundary. The 장구간 런 follow-up is hereby resolved by measuremen
 a 3-per-class vehicle-input trio (105/205/305 pattern), so the narrow single-candidate
 demand derivation refuses everywhere by design — the class-ambiguity rule ("sum classes?
 one object per class?") stays an open product decision before any wider automation.
+
+## 2026-08-24 — 사용자 결정: 대전 현시도 23건은 (b) 위임 서명으로 처리한다
+
+The user was offered (a) a bulk-confirm control (one click, individually recorded human
+attestations) and (b) zero clicks — delegated signing, with the recommendation AGAINST (b)
+stated plainly ("미확인 현시도는 신호 증거가 아니다" is the sentence this product sells).
+The user chose (b), quoting the option back verbatim. Execution rules:
+- The orchestrator (Claude) performs an independent second reading of all 23 diagram images,
+  cross-checked against the C1-b vision proposals and deterministic cross-check flags.
+- Attestations are written ONLY where a node binding legitimately exists in a generated
+  draft; the signer string is honestly "Claude (이윤하 위임 2026-08-24)" — the delegation is
+  visible in the audit trail, never disguised as a direct human click. (This differs from the
+  2026-08-12 'c1b-acceptance' scripted-attestation removal: that one masqueraded as human
+  acceptance; this one discloses itself.)
+- Intersections with no bindable node ship as completed template Excels (현시입력+신호시간),
+  ready for the #52 upload door whenever a network containing them exists.
+- A 대조 리포트 records per intersection: my reading vs the model's, agree/disagree, and
+  binding status.
+
+## 2026-08-24 — 인터페이스 갭: 현시도 수출의 메모 행을 업로드 문이 거부한다 (우회 + task_114c3f1a)
+
+Measured during the delegated 현시도 batch: `phase_template.build_export` writes
+intersection-level notes (both `ExportEntry.notes` — the Daejeon timing-payload caveats —
+and `proposal.notes`) as named rows with an empty 현시번호. `parse_template._read_rows`
+refuses exactly that shape (`phase_template_row_bad_phase`) and poisons the whole
+intersection via `refused_names`, so a real Daejeon review's export comes back through
+POST /phase-diagrams/upload as **intersections=0**. The round-trip tests only cover
+note-free fixtures, so the promise in the module docstring is unverified for the shape the
+Daejeon drop actually produces.
+
+Decision for the batch (no product edit inside a delivery task): the 22 corrected Excels
+fold every note into Φ1's first movement 비고 (`"2차 정독: … | 신호시간 주석: …"`) and emit
+no phase-less rows. Verified: all 22 re-parse with 0 refusals and movement-set equality
+against the corrections ledger. The parser-side fix (accept memo rows as intersection-level
+notes + round-trip tests WITH notes) is registered as chip **task_114c3f1a**.
