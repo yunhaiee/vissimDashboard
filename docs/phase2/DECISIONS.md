@@ -6966,3 +6966,37 @@ Execution rules (doctrine reconciliation):
 관용구 재사용), 노드 후보를 지도에 표시하고 클릭 = 선택(양방향 하이라이트), 기존 draft
 지도 컴포넌트(#19/#29 계열) 재사용 — 새 지도 금지. 클릭은 선택이지 확인이 아니며, 확인
 행위는 여전히 '확인' 버튼 하나뿐. geojson 없는 draft는 명명된 부재로 강등.
+
+## 2026-08-24 — 사용자 결정: HWP는 v1 제외 확정 · 승인 이력 세션 픽커는 위임 (R-5c)
+
+- **HWP 제외 확정** ("hwp 제외하고"). Track R의 산출 포맷은 DOCX(+도판 zip)로 고정. HWP는
+  기존 도구 조사 후 별도 검토(요구사항 12행의 원래 방침) — 로드맵에 재등재하지 않는다.
+- **실제 회사 보고서 DOCX 없음 확정** — R-4의 실측 대상 교체는 없던 일로. 대신 사용자
+  테스트용으로 가상 스타일 샘플 2–3종(서로 다른 서식)을 생성해 전달한다(생성 프로파일
+  JSON = 각 샘플의 정답지, 추출 왕복 사전 검증).
+- **승인 이력 도판의 session 픽커: "너가 알아서 해"** — 위임. 결정: R-5b가 명명한 갭을
+  소형 유닛 R-5c로 착지시킨다 — 백엔드에 "승인 원장을 가진 세션" 목록 라우트(있는
+  것만, 발명 없음), /report 상단에 픽커, 선택 시 approval_history_table이 실제 데이터로.
+  발명 매핑 금지: fetchAgentDownloads(쓰기 저장 세션)와 다른 집합이므로 원장 존재를
+  서버가 직접 측정한다.
+
+## 2026-08-24 — 사용자 결정: 수요 클래스 규칙 = (a) 비례 공동 조정 (#59)
+
+The class-ambiguity question open since the targets unit (`70ad934` measured: every client-model
+approach link carries a 3-class vehicle-input trio, so single-candidate demand derivation
+refuses network-wide) is now DECIDED by the user: **(a) 셋을 비례로 함께 조정 — 승용차:버스:
+트럭 구성비 유지** (offered with the recommendation attached; user chose it verbatim).
+
+Execution rules for unit #59:
+- A node's candidate inputs that share ONE link group into a single COMPOSITE candidate
+  (the link is the unit of choice, not the class input). A node with exactly one such group
+  auto-resolves where it refused before; several groups remain a human choice (#54 picker
+  offers link-groups — 2 choices instead of 6 raw inputs on the demo's node 8).
+- A demand adjustment against a composite target splits the total change across members
+  proportionally to their CURRENT volumes (mix preserved). All-zero members = proportional
+  split undefined → named refusal, never an invented split. The proposal/approval card shows
+  the per-member split (auditability — the reviewer approves the split they can see).
+- The decision is carried as a named assumption token (CLASS_MIX_PRESERVED family) beside
+  ASSUME_INPUT_DRIVES_NODE_TOTAL in every audit block it touches.
+- Existing #54 single-input mappings stay valid unchanged (the node's latest word rules are
+  untouched); the store gains group-shaped candidates without breaking old records.
