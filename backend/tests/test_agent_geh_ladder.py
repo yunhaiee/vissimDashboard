@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 from services import results_evidence, validation
-from services.agent import fixes, geh_ladder, mrwa_reference, reality_check
+from services.agent import fixes, geh_ladder, mrwa_reference, reality_check, reality_check_targets
 from services.agent.tools_run import _collect_run_evidence
 from tools import make_demo_data
 
@@ -309,6 +309,7 @@ def _report(
     queues: Any = _DEFAULT,
     targets: Any = _DEFAULT,
     node_control: dict[str, str] | None = None,
+    demand_target_reasons: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return reality_check.check_run_against_counts(
         _run_result(
@@ -319,6 +320,7 @@ def _report(
         _observed(observed_total, observed_per_approach),
         targets=_MEASURED_TARGET if targets is _DEFAULT else targets,
         node_control=node_control,
+        demand_target_reasons=demand_target_reasons,
     )
 
 
@@ -677,6 +679,141 @@ def test_each_broken_precondition_degrades_to_a_named_unclassifiable(
     for language in ("ko", "en", "ja"):
         assert diagnosis["why"][language].strip()
         assert diagnosis["next_action"]["text"][language].strip()
+
+
+# ---------------------------------------------------------------------------
+# #56 (b) — the target-less rung branches on WHY, never sends a 0-candidate
+# node chasing get_vehicle_inputs
+#
+# DECISIONS.md, "같은 날 추가 측정 — CTA는 후보 0 노드에 불가능한 행동을
+# 지시한다": before this unit every NO_DEMAND_TARGET node got the identical
+# "name this node's vehicle input with get_vehicle_inputs" sentence, even a
+# node whose counted approaches carry ZERO vehicle inputs -- an instruction
+# with no possible answer, which is what sent the assistant back to
+# get_vehicle_inputs on a loop and burned the iteration cap (the duplicate-
+# call guard, orchestrator.py FIX 2).
+# ---------------------------------------------------------------------------
+
+
+def test_zero_candidate_reason_never_names_get_vehicle_inputs():
+    """0 candidates (``NO_VEHICLE_INPUT_ON_APPROACH``): no input can be named,
+    so the sentence must not tell a reader — human or assistant — to name
+    one. It names the REAL fix instead: observation points / site→node
+    mapping."""
+    diagnosis = _diagnosis(
+        _report(
+            targets={},
+            demand_target_reasons={
+                _NODE_ID: {
+                    "reason": reality_check_targets.NO_VEHICLE_INPUT_ON_APPROACH,
+                    "candidate_count": 0,
+                }
+            },
+        )
+    )
+
+    assert diagnosis["rung"] == geh_ladder.UNCLASSIFIABLE
+    assert diagnosis["missing_evidence"] == [geh_ladder.NO_DEMAND_TARGET]
+    next_action_text = diagnosis["next_action"]["text"]
+    for language in ("ko", "en", "ja"):
+        assert next_action_text[language].strip()
+        assert "get_vehicle_inputs" not in next_action_text[language], (
+            f"[{language}] a 0-candidate node's next action must not point at a tool that has "
+            "nothing to name"
+        )
+    # The real fix, named, in each language.
+    assert "관측 지점" in next_action_text["ko"] or "site" in next_action_text["ko"].lower()
+    assert "observation" in next_action_text["en"].lower()
+    assert "観測" in next_action_text["ja"]
+
+
+def test_multiple_candidate_reason_names_the_picker_and_the_count():
+    """2+ candidates (``MULTIPLE_VEHICLE_INPUT_CANDIDATES``): the sentence
+    must say a PERSON chooses (the #54 picker / #56 (c)'s audit tool), never
+    that this product names one automatically, and must state the count."""
+    diagnosis = _diagnosis(
+        _report(
+            targets={},
+            demand_target_reasons={
+                _NODE_ID: {
+                    "reason": reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES,
+                    "candidate_count": 6,
+                }
+            },
+        )
+    )
+
+    assert diagnosis["rung"] == geh_ladder.UNCLASSIFIABLE
+    assert diagnosis["missing_evidence"] == [geh_ladder.NO_DEMAND_TARGET]
+    next_action_text = diagnosis["next_action"]["text"]
+    for language in ("ko", "en", "ja"):
+        assert next_action_text[language].strip()
+        assert "6" in next_action_text[language], f"[{language}] the candidate count must be named"
+        assert "get_vehicle_inputs" not in next_action_text[language], (
+            f"[{language}] several candidates still means no automatic pick — this must not send "
+            "the reader to name one directly either"
+        )
+    assert "get_demand_target_derivation" in next_action_text["ko"]
+    assert "get_demand_target_derivation" in next_action_text["en"]
+    assert "get_demand_target_derivation" in next_action_text["ja"]
+
+
+def test_multiple_candidate_reason_with_a_contradictory_count_falls_back():
+    """``candidate_count`` under 2 contradicts
+    ``MULTIPLE_VEHICLE_INPUT_CANDIDATES`` — guards against a mutation that
+    drops the ``candidate_count >= 2`` guard and fires the picker branch on
+    an internally-inconsistent audit."""
+    diagnosis = _diagnosis(
+        _report(
+            targets={},
+            demand_target_reasons={
+                _NODE_ID: {
+                    "reason": reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES,
+                    "candidate_count": 1,
+                }
+            },
+        )
+    )
+
+    assert diagnosis["next_action"]["text"]["en"] == (
+        "Name this node's vehicle input (number, current volume, and LINK) from "
+        "get_vehicle_inputs and re-check — the link is what makes the entrance "
+        "checkable."
+    )
+
+
+def test_missing_demand_target_reason_keeps_the_pre_56_sentence_verbatim():
+    """No audit threaded (``demand_target_reasons=None``, the default): the
+    sentence is EXACTLY what it was before #56 -- the honest fallback for
+    "why is not known here", never a guess at which of the two branches
+    applies."""
+    diagnosis = _diagnosis(_report(targets={}))
+
+    next_action_text = diagnosis["next_action"]["text"]
+    assert next_action_text["en"] == (
+        "Name this node's vehicle input (number, current volume, and LINK) from "
+        "get_vehicle_inputs and re-check — the link is what makes the entrance "
+        "checkable."
+    )
+
+
+def test_an_unrecognised_reason_code_also_falls_back_rather_than_guessing():
+    """A reason this branch does not recognise (or a candidate_count that
+    contradicts MULTIPLE_VEHICLE_INPUT_CANDIDATES, e.g. < 2) must not be
+    silently mapped to either named branch -- it is exactly the same "why is
+    not known here" case as no audit at all."""
+    diagnosis = _diagnosis(
+        _report(
+            targets={},
+            demand_target_reasons={_NODE_ID: {"reason": "SOME_FUTURE_CODE", "candidate_count": 1}},
+        )
+    )
+
+    assert diagnosis["next_action"]["text"]["en"] == (
+        "Name this node's vehicle input (number, current volume, and LINK) from "
+        "get_vehicle_inputs and re-check — the link is what makes the entrance "
+        "checkable."
+    )
 
 
 def test_an_unverified_entrance_with_no_derivable_value_names_that_gap():

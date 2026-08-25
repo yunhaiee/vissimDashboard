@@ -84,7 +84,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from services import results_evidence
-from services.agent import fixes, mrwa_reference
+from services.agent import fixes, mrwa_reference, reality_check_targets
 
 # ---------------------------------------------------------------------------
 # The rungs
@@ -635,6 +635,128 @@ def entrance_verdict(outcome: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return None
 
 
+def _target_less_rung(
+    *,
+    node_id: str,
+    total_geh: float | None,
+    geh_threshold: float,
+    base_evidence: Mapping[str, Any],
+    demand_target_reason: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The UNCLASSIFIABLE rung for a node with NO demand-target verdict at
+    all — #56 (b), branched on WHY.
+
+    Before #56, every such node reached the SAME next action regardless of
+    why no target existed: "name this node's vehicle input with
+    get_vehicle_inputs". Measured wrong (DECISIONS.md, "같은 날 추가 측정 —
+    CTA는 후보 0 노드에 불가능한 행동을 지시한다"): a node whose counted
+    approaches carry ZERO vehicle inputs
+    (:data:`reality_check_targets.NO_VEHICLE_INPUT_ON_APPROACH`) cannot be
+    answered that way — there is no input to name, and the sentence sent a
+    modeller (and the assistant relaying it) looking for an answer that does
+    not exist, which is exactly the loop DECISIONS.md's #56 measurement traced
+    to a burned iteration cap. A node with SEVERAL candidates
+    (:data:`reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES`) needs a
+    *different* act entirely: a human choice among them (the #54 picker, or
+    #56 (c)'s audit tool to read the candidates first), never an automatic
+    pick — this product's own doctrine (``reality_check_targets``' module
+    docstring) refuses to choose by dominance.
+
+    ``demand_target_reason`` absent, or carrying a reason this function does
+    not recognise, keeps the PRE-#56 sentence VERBATIM — the honest fallback
+    for "why is not known here", never a guess at which of the two applies.
+    """
+    reason = (demand_target_reason or {}).get("reason")
+    candidate_count = (demand_target_reason or {}).get("candidate_count")
+
+    if reason == reality_check_targets.NO_VEHICLE_INPUT_ON_APPROACH:
+        return _rung(
+            UNCLASSIFIABLE,
+            ko=f"노드 {node_id}의 GEH {_fmt(total_geh)}가 기준 {geh_threshold}를 넘지만, 이 노드의 "
+            "카운트된 접근로로 유입되는 차량 인풋이 하나도 없어 '입구 교통량이 실측인지'를 판정하지 "
+            "못했습니다. 인풋을 지정해도 답이 나오지 않습니다 — 이 접근로 자체에 연결된 차량 인풋이 "
+            "없기 때문입니다.",
+            en=f"Node {node_id} misses (GEH {_fmt(total_geh)} >= {geh_threshold}), and NO vehicle "
+            "input feeds this node's counted approach links at all, so whether its entrance is "
+            "measured data could not be established. Naming an input will not answer this — there "
+            "is no input on these approaches to name.",
+            ja=f"ノード {node_id} のGEH {_fmt(total_geh)} は閾値 {geh_threshold} を超えますが、この"
+            "ノードの計上済み流入リンクに車両インプットが一つも接続されておらず、流入交通量が実測かを"
+            "判定できませんでした。インプットを指定しても答えは出ません — その接近路自体にインプット"
+            "が接続されていないためです。",
+            next_action=_supply_action(
+                ko="이 노드의 접근로에는 연결된 차량 인풋이 없습니다. 관측 지점을 추가하거나, 이 "
+                "노드의 site→node 매핑이 올바른지 점검하십시오 — 인풋을 지정하는 문제가 아닙니다.",
+                en="No vehicle input is connected to this node's approaches. Add an observation "
+                "point, or check whether this node's site→node mapping is correct — this is "
+                "not a question of naming an input.",
+                ja="このノードの接近路には接続された車両インプットがありません。観測地点を追加する"
+                "か、このノードのsite→nodeマッピングが正しいか確認してください — インプットを"
+                "指定する問題ではありません。",
+            ),
+            evidence=dict(base_evidence),
+            missing_evidence=[NO_DEMAND_TARGET],
+        )
+
+    if reason == reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES and isinstance(
+        candidate_count, int
+    ) and candidate_count >= 2:
+        return _rung(
+            UNCLASSIFIABLE,
+            ko=f"노드 {node_id}의 GEH {_fmt(total_geh)}가 기준 {geh_threshold}를 넘지만, 이 노드의 "
+            f"카운트된 접근로로 유입되는 차량 인풋이 {candidate_count}개 있어 이 제품이 자동으로 "
+            "하나를 고르지 않았습니다. '입구 교통량이 실측인지' 판정은 그 선택 뒤로 미뤄집니다.",
+            en=f"Node {node_id} misses (GEH {_fmt(total_geh)} >= {geh_threshold}), and "
+            f"{candidate_count} vehicle inputs feed this node's counted approach links — this "
+            "product will not pick one automatically, so whether the entrance is measured data "
+            "waits on that choice.",
+            ja=f"ノード {node_id} のGEH {_fmt(total_geh)} は閾値 {geh_threshold} を超えますが、この"
+            f"ノードの計上済み流入リンクに車両インプットが{candidate_count}件あり、本製品は自動で"
+            "一つを選びません。流入交通量が実測かどうかの判定はその選択待ちです。",
+            next_action=_supply_action(
+                ko=f"후보 {candidate_count}개 중 하나를 사람이 지정해야 합니다 — 화면의 '수요 대상 "
+                "차량 인풋'에서 지정하거나, get_demand_target_derivation으로 후보를 확인한 뒤 근거를 "
+                "들어 지정하십시오.",
+                en=f"A person must name one of the {candidate_count} candidates — use the screen's "
+                "demand-target picker, or read the candidates with get_demand_target_derivation and "
+                "name one with a stated reason.",
+                ja=f"候補{candidate_count}件のうち一つを人が指定する必要があります — 画面の「需要"
+                "対象車両インプット」で指定するか、get_demand_target_derivationで候補を確認したうえで"
+                "理由を添えて指定してください。",
+            ),
+            evidence=dict(base_evidence),
+            missing_evidence=[NO_DEMAND_TARGET],
+        )
+
+    # Unknown, absent, or a reason neither branch above recognises: the caller
+    # did not thread #56 (b)'s audit, or the derivation genuinely has no
+    # opinion. Fall back to the exact sentence this rung had before #56 --
+    # never a guess at which of the two above applies.
+    return _rung(
+        UNCLASSIFIABLE,
+        ko=f"노드 {node_id}의 GEH {_fmt(total_geh)}가 기준 {geh_threshold}를 넘지만, 이 노드에 "
+        "차량 인풋 대상이 지정되지 않아 '입구 교통량이 실측인지'를 판정하지 못했습니다. 그 "
+        "판정 없이는 용량·신호 어느 쪽도 근거 없이 단정하게 됩니다.",
+        en=f"Node {node_id} misses (GEH {_fmt(total_geh)} >= {geh_threshold}), but no "
+        "vehicle-input target was named for it, so whether its entrance volume is measured "
+        "data was never established — and every rung below rests on that.",
+        ja=f"ノード {node_id} のGEH {_fmt(total_geh)} は閾値 {geh_threshold} を超えますが、"
+        "車両インプットの対象が指定されておらず、流入交通量が実測かどうかを判定できません。"
+        "その判定なしでは容量も信号も根拠なく断定することになります。",
+        next_action=_supply_action(
+            ko="get_vehicle_inputs로 이 노드에 유입되는 차량 인풋(번호·현재 교통량·링크)을 "
+            "지정해 다시 대조하십시오. 링크가 있어야 실측 여부를 판정할 수 있습니다.",
+            en="Name this node's vehicle input (number, current volume, and LINK) from "
+            "get_vehicle_inputs and re-check — the link is what makes the entrance "
+            "checkable.",
+            ja="get_vehicle_inputsでこのノードに流入する車両インプット(番号・現在交通量・"
+            "リンク)を指定して再度対照してください。リンクがあって初めて実測判定ができます。",
+        ),
+        evidence=dict(base_evidence),
+        missing_evidence=[NO_DEMAND_TARGET],
+    )
+
+
 def classify_node(
     *,
     node: Mapping[str, Any],
@@ -642,6 +764,7 @@ def classify_node(
     congestion: Mapping[str, Any],
     geh_threshold: float,
     node_control: str | None = None,
+    demand_target_reason: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """One node's evidence → one rung, or ``None`` when there is no miss.
 
@@ -650,6 +773,15 @@ def classify_node(
     ``outcome`` is ``fixes.map_node_counts(...).to_dict()`` — read, never
     re-derived: the ladder must not be able to disagree with the proposal the
     same report ships. ``congestion`` is :func:`node_congestion`'s output.
+
+    ``demand_target_reason`` is #56 (b)'s per-node audit —
+    ``{"reason": <a reality_check_targets reason code>, "candidate_count":
+    <int>}`` — CALLER knowledge exactly like ``node_control`` is: it is read
+    off ``services.agent.reality_check_targets.derive_targets``' own account
+    of why this node's demand target does or does not exist, never re-derived
+    here (the ladder must not disagree with THAT either). Its only effect is
+    on the target-less rung below: absent, that rung's sentence is exactly
+    what it was before #56.
 
     Returns ``None`` for a node the model already reproduces. There is nothing
     to diagnose there, and inventing a rung for it would put a "next action" in
@@ -794,28 +926,12 @@ def classify_node(
         # data rather than a parameter, and every rung below is predicated on
         # exactly that. Two distinct gaps, two distinct asks.
         if entrance is None:
-            return _rung(
-                UNCLASSIFIABLE,
-                ko=f"노드 {node_id}의 GEH {_fmt(total_geh)}가 기준 {geh_threshold}를 넘지만, 이 노드에 "
-                "차량 인풋 대상이 지정되지 않아 '입구 교통량이 실측인지'를 판정하지 못했습니다. 그 "
-                "판정 없이는 용량·신호 어느 쪽도 근거 없이 단정하게 됩니다.",
-                en=f"Node {node_id} misses (GEH {_fmt(total_geh)} >= {geh_threshold}), but no "
-                "vehicle-input target was named for it, so whether its entrance volume is measured "
-                "data was never established — and every rung below rests on that.",
-                ja=f"ノード {node_id} のGEH {_fmt(total_geh)} は閾値 {geh_threshold} を超えますが、"
-                "車両インプットの対象が指定されておらず、流入交通量が実測かどうかを判定できません。"
-                "その判定なしでは容量も信号も根拠なく断定することになります。",
-                next_action=_supply_action(
-                    ko="get_vehicle_inputs로 이 노드에 유입되는 차량 인풋(번호·현재 교통량·링크)을 "
-                    "지정해 다시 대조하십시오. 링크가 있어야 실측 여부를 판정할 수 있습니다.",
-                    en="Name this node's vehicle input (number, current volume, and LINK) from "
-                    "get_vehicle_inputs and re-check — the link is what makes the entrance "
-                    "checkable.",
-                    ja="get_vehicle_inputsでこのノードに流入する車両インプット(番号・現在交通量・"
-                    "リンク)を指定して再度対照してください。リンクがあって初めて実測判定ができます。",
-                ),
-                evidence=base_evidence,
-                missing_evidence=[NO_DEMAND_TARGET],
+            return _target_less_rung(
+                node_id=node_id,
+                total_geh=total_geh,
+                geh_threshold=geh_threshold,
+                base_evidence=base_evidence,
+                demand_target_reason=demand_target_reason,
             )
         return _rung(
             UNCLASSIFIABLE,

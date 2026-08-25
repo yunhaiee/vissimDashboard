@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -367,6 +367,59 @@ def _resolve_result_dir(scenario_id: str) -> Path | None:
     return scenario_dir if scenario_dir.is_dir() else None
 
 
+def _resolve_scenario_reference(scenario_id: str) -> dict[str, Any]:
+    """``scenario_id`` -> its result directory, translating a display NAME to
+    the tool-vocabulary id it names -- but only when the name is unique.
+
+    #56 (a) — DECISIONS.md "화면은 실행의 `name`을, 도구는 `id`를 쓴다": a run
+    record carries two spellings, ``scenario_result_id`` (what
+    :func:`_resolve_result_dir` and every tool accept) and ``name`` (what the
+    screen shows, and what a user pastes when they copy the visible label —
+    measured: the calibration page's own run picker already sends the
+    CORRECT id as its ``<option>`` value, so the id is never what a human
+    typed; the display name is).
+
+    THE FIRST TRY is always the caller's string taken as an id, unchanged --
+    the common case, and the only one the picker itself ever produces. Only
+    when that fails does this look the string up as a NAME, over
+    ``results_reader.list_scenarios()`` (project scenarios and runtime runs
+    alike, workspace-scoped the same way the picker is), and only ACTS when
+    the match is unique — the #54 doctrine repeated here: act only when
+    unique, always say you translated. Several scenarios (or a run and a
+    project scenario) sharing one display name is not something this function
+    picks among; it falls through to the same "not found" answer a genuinely
+    unknown id gets, candidates and all.
+    """
+    result_dir = _resolve_result_dir(scenario_id)
+    if result_dir is not None:
+        return {
+            "scenario_id": scenario_id,
+            "result_dir": result_dir,
+            "translated_from": None,
+            "candidates": None,
+        }
+    scenarios = results_reader.list_scenarios()
+    matches = [
+        scenario for scenario in scenarios if str(scenario.get("name") or "") == scenario_id
+    ]
+    if len(matches) == 1:
+        resolved_id = str(matches[0]["id"])
+        resolved_dir = _resolve_result_dir(resolved_id)
+        if resolved_dir is not None:
+            return {
+                "scenario_id": resolved_id,
+                "result_dir": resolved_dir,
+                "translated_from": scenario_id,
+                "candidates": None,
+            }
+    return {
+        "scenario_id": scenario_id,
+        "result_dir": None,
+        "translated_from": None,
+        "candidates": [str(scenario["id"]) for scenario in scenarios],
+    }
+
+
 def _planner_safe_warnings(warnings: list[str]) -> list[str]:
     """The loader's own warnings, path-redacted but never dropped.
 
@@ -586,6 +639,57 @@ def _observed_from_store(
     return None, coverage
 
 
+def _disclosed_detail(
+    detail: dict[str, Any],
+    *,
+    resolved_scenario_id: str,
+    translated_from: str | None,
+) -> dict[str, Any]:
+    """``detail``'s scenario fields, WITH the #56 (a) translation named.
+
+    ``scenario_id`` is the id the report was actually built from (the
+    resolved one); ``scenario_id_translated_from`` rides beside it only when a
+    display NAME was accepted in place of an id, so a reader — human or
+    planner — can see both "what this report is about" and "what you sent me"
+    in the one case those two differ.
+    """
+    merged = {**detail, "scenario_id": resolved_scenario_id}
+    if translated_from:
+        merged["scenario_id_translated_from"] = translated_from
+    return merged
+
+
+def _disclose_scenario_translation(
+    report: dict[str, Any], *, translated_from: str | None, resolved_scenario_id: str
+) -> dict[str, Any]:
+    """Append the #56 (a) translation sentence to ``report["message"]``.
+
+    A no-op (returns ``report`` unchanged) whenever nothing was translated —
+    the overwhelming majority of calls, where the caller already sent the
+    tool-vocabulary id and there is nothing to disclose. When a display name
+    WAS accepted, every language gets the same fact stated: which string was
+    sent, and which id it was resolved to, so "the assistant silently used a
+    different run than what I typed" cannot happen unnoticed.
+    """
+    if not translated_from:
+        return report
+    disclosure = {
+        "ko": f" (참고: '{translated_from}'은 화면에 표시되는 이름이어서, "
+        f"그 이름을 가진 실행이 하나뿐임을 확인하고 id '{resolved_scenario_id}'로 대신 "
+        "대조했습니다.)",
+        "en": f" (Note: '{translated_from}' is a display name, not a tool id -- exactly one "
+        f"run carries it, so this compared against that run's id, '{resolved_scenario_id}', "
+        "instead.)",
+        "ja": f" (注記: '{translated_from}' は画面上の表示名です — その名前を持つ実行が"
+        f"一つだけであることを確認し、id '{resolved_scenario_id}' でこの対照を行いました。)",
+    }
+    report["message"] = {
+        language: text + disclosure.get(language, disclosure["en"])
+        for language, text in report["message"].items()
+    }
+    return report
+
+
 def build_reality_check_report(
     scenario_id: str,
     *,
@@ -595,6 +699,7 @@ def build_reality_check_report(
     observation_period: str | None = None,
     site_nodes: list[ObservationSiteNode] | None = None,
     result_dir: Path | None = None,
+    demand_target_reasons: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve the run, load the counts, run the check. No COM, no writes.
 
@@ -617,16 +722,48 @@ def build_reality_check_report(
     appear in the run picker, which is precisely what registering one to satisfy
     the resolver would have done. **No HTTP route accepts this argument**; it is
     reachable only from in-process code.
+
+    ``scenario_id`` RESOLUTION is #56 (a)'s vocabulary bridge, and applies only
+    when ``result_dir`` is not already supplied: :func:`_resolve_scenario_reference`
+    tries ``scenario_id`` as a tool id first (the common case, and the only
+    thing the run picker itself ever sends), and only on failure checks
+    whether it is a display NAME that names exactly one known run — accepting
+    it and disclosing the translation in ``report["detail"]`` and
+    ``report["message"]`` when so, refusing by name (never guessing among
+    several) otherwise. The RUN_NOT_FOUND refusal's ``detail["candidates"]``
+    always carried the valid ids; its message now names them too.
+
+    ``demand_target_reasons`` is #56 (b)'s per-node audit
+    (``{node_id: {"reason": ..., "candidate_count": ...}}``, from
+    ``routers.calibration._derived_targets_and_reasons``): threaded straight
+    through to :func:`services.agent.reality_check.check_run_against_counts`
+    so the diagnosis ladder's target-less rung can tell "no candidate" from
+    "several, unpicked" apart. Optional and additive — omitted, the ladder's
+    behaviour is exactly what it was before #56.
     """
-    result_dir = Path(result_dir) if result_dir is not None else _resolve_result_dir(scenario_id)
-    db_paths = results_evidence.result_db_paths(result_dir) if result_dir is not None else []
+    resolved_scenario_id = scenario_id
+    translated_from: str | None = None
+    candidates: list[str] | None = None
+    if result_dir is not None:
+        result_dir = Path(result_dir)
+        db_paths = results_evidence.result_db_paths(result_dir)
+    else:
+        resolution = _resolve_scenario_reference(scenario_id)
+        result_dir = resolution["result_dir"]
+        resolved_scenario_id = resolution["scenario_id"]
+        translated_from = resolution["translated_from"]
+        candidates = resolution["candidates"]
+        db_paths = results_evidence.result_db_paths(result_dir) if result_dir is not None else []
     if not db_paths:
+        if candidates is None:
+            candidates = [scenario["id"] for scenario in results_reader.list_scenarios()]
         return reality_check.not_checkable(
             reality_check.RUN_NOT_FOUND,
             scenario_id=scenario_id,
+            candidates=", ".join(candidates) if candidates else "-",
             detail={
                 "scenario_id": scenario_id,
-                "candidates": [scenario["id"] for scenario in results_reader.list_scenarios()],
+                "candidates": candidates,
             },
         )
     if len(db_paths) > 1:
@@ -670,12 +807,16 @@ def build_reality_check_report(
         )
         if observed is None:
             report = site_coverage.pop("report")
-            report["detail"] = {
-                **report["detail"],
-                "scenario_id": scenario_id,
-                "result_db_count": 1,
-            }
-            return report
+            report["detail"] = _disclosed_detail(
+                {**report["detail"], "result_db_count": 1},
+                resolved_scenario_id=resolved_scenario_id,
+                translated_from=translated_from,
+            )
+            return _disclose_scenario_translation(
+                report,
+                translated_from=translated_from,
+                resolved_scenario_id=resolved_scenario_id,
+            )
         # ``observed`` is {node_id: NodeRealCounts}, and each node already
         # carries ITS OWN count_basis (observations.observed_side, ~1189-1218)
         # — read straight from it rather than assuming every node shares one
@@ -704,6 +845,7 @@ def build_reality_check_report(
         movement_ids=movement_ids,
         observed_source=observed_source,
         node_control=_reality_check_node_control(targets),
+        demand_target_reasons=demand_target_reasons,
     )
     report["workbook_warnings"] = _planner_safe_warnings(report["workbook_warnings"])
     if site_coverage is not None:
@@ -712,8 +854,14 @@ def build_reality_check_report(
         # dropping the site names here would leave "which count site never made
         # it into the comparison" answerable only by re-deriving it.
         report["coverage"]["observation_sites"] = site_coverage
-    report["detail"] = {**report["detail"], "scenario_id": scenario_id, "result_db_count": 1}
-    return report
+    report["detail"] = _disclosed_detail(
+        {**report["detail"], "result_db_count": 1},
+        resolved_scenario_id=resolved_scenario_id,
+        translated_from=translated_from,
+    )
+    return _disclose_scenario_translation(
+        report, translated_from=translated_from, resolved_scenario_id=resolved_scenario_id
+    )
 
 
 @tool(

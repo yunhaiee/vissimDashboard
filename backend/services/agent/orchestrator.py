@@ -604,6 +604,47 @@ def _diagnosis_step_payload(envelope: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+#: Same wire cap as the diagnosis payload above, and the same reason: a step
+#: event carries this on EVERY successful call, so its size must track a
+#: bounded prefix of the network, not the network itself.
+_DEMAND_TARGET_DERIVATION_WIRE_CAP = _DIAGNOSIS_WIRE_CAP
+
+
+def _demand_target_derivation_step_payload(envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """#56 (c)'s audit tool result, shaped for the ``step`` event.
+
+    Carries just the fact a K-cap apology needs to be useful instead of a
+    list of tool names (:func:`_forced_completion_answer` reads this): per
+    node, the reason code and how many candidates stood. Not the candidate
+    ROWS themselves, and not the standing mapping — those already reached the
+    planner in the tool's own envelope on the turn that called it; this copy
+    exists only for the deterministic, no-LLM-call apology text.
+
+    Returns ``None`` when the tool's own answer was not the "available"
+    shape (``NO_DERIVATION`` / ``NODE_NOT_FOUND``), so an apology built from
+    it never claims a fact the tool did not establish.
+    """
+    audit = (envelope.get("data") or {}).get("demand_target_derivation")
+    if not isinstance(audit, dict) or audit.get("available") is not True or audit.get("reason"):
+        return None
+    nodes = audit.get("nodes")
+    if not isinstance(nodes, dict) or not nodes:
+        return None
+    entries = [
+        {
+            "node_id": node_id,
+            "reason": (why or {}).get("reason"),
+            "candidate_count": len((why or {}).get("candidates") or ()),
+        }
+        for node_id, why in sorted(nodes.items())
+    ]
+    return {
+        "nodes": entries[:_DEMAND_TARGET_DERIVATION_WIRE_CAP],
+        "total": len(entries),
+        "truncated": len(entries) > _DEMAND_TARGET_DERIVATION_WIRE_CAP,
+    }
+
+
 #: M2.4: the tiers that go through the WriteGate/ApprovalRequired/preflight
 #: machinery below — write (M2.2/M2.3) and run (M2.4) alike. A tier NOT in
 #: this set (only "read" today) never reaches the gate at all; a tier that
@@ -872,6 +913,40 @@ def _record_accumulated_warnings(
     state.context["accumulated_warnings"] = list(by_constraint.values())
 
 
+def _forced_completion_fact_clause(step: dict[str, Any]) -> str:
+    """One step's already-gathered FACTS, appended after its status word.
+
+    ``""`` for every step that carries neither of the two graftings below —
+    which is most of them, and unchanged behaviour for those. #56: before
+    this, a K-cap apology named only tool CALLS ("get_vehicle_inputs: ok" x6),
+    never what any of them found — so a reader (or the assistant's own next
+    turn, reading its prior answer back) got no more information from the
+    apology than from the raw trace it was meant to summarise. Both blocks
+    below read data the SAME turn already gathered and attached to this exact
+    step (``_diagnosis_step_payload`` / ``_demand_target_derivation_step_
+    payload``); neither re-derives or re-calls anything.
+    """
+    diagnosis = step.get("diagnosis")
+    if isinstance(diagnosis, dict):
+        rungs = ", ".join(
+            f"{node.get('node_id')}:{node.get('rung')}"
+            for node in diagnosis.get("nodes") or ()
+            if isinstance(node, dict) and node.get("rung")
+        )
+        if rungs:
+            return f" [{rungs}]"
+    audit = step.get("demand_target_derivation")
+    if isinstance(audit, dict):
+        facts = ", ".join(
+            f"{node.get('node_id')}:{node.get('reason')}({node.get('candidate_count')})"
+            for node in audit.get("nodes") or ()
+            if isinstance(node, dict) and node.get("reason")
+        )
+        if facts:
+            return f" [{facts}]"
+    return ""
+
+
 def _forced_completion_answer(
     language: str, steps: list[dict[str, Any]], max_iterations: int
 ) -> str:
@@ -883,6 +958,7 @@ def _forced_completion_answer(
     status_words = _STATUS_WORD.get(language, _STATUS_WORD["ko"])
     lines = [
         f"- {step['tool']}: {status_words.get(step['status'], step['status'])}"
+        f"{_forced_completion_fact_clause(step)}"
         for step in steps
     ]
     if not lines:
@@ -1737,6 +1813,15 @@ def run_agent_turn(
             diagnosis_payload = _diagnosis_step_payload(envelope)
             if diagnosis_payload is not None:
                 step_payload["diagnosis"] = diagnosis_payload
+        # #56 (c): the SAME grafting move, for the derivation-audit tool. A
+        # duplicate-call guard refusal on this tool (or any other) already
+        # carries no facts to graft -- this only fires on a real "ok" answer,
+        # so the K-cap apology below has something besides tool names to show
+        # for the calls that DID return something.
+        if decision.tool == "get_demand_target_derivation" and envelope["status"] == "ok":
+            audit_payload = _demand_target_derivation_step_payload(envelope)
+            if audit_payload is not None:
+                step_payload["demand_target_derivation"] = audit_payload
         _emit_step(steps, step_payload, on_step)
 
     return finalize(

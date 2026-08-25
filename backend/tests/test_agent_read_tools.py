@@ -109,6 +109,12 @@ EXPECTED_TOOL_NAMES = {
     # writes it describes still go through the approval loop one by one.
     # Registry pin: bump deliberately, not by accident.
     "propose_car_following_from_saturation_flow",
+    # #56 (c) adds get_demand_target_derivation (tools_calibration.py): the
+    # per-node demand-target derivation audit (reason code, candidate rows,
+    # any standing #54 mapping) -- read-only, reachable INSTEAD of
+    # get_vehicle_inputs when a node's diagnosis names a missing demand
+    # target. Registry pin: bump deliberately, not by accident.
+    "get_demand_target_derivation",
 }
 
 # M2.3's tools_edit.py registers these write-tier tools, and M2.4's

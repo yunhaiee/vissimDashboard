@@ -333,33 +333,23 @@ def _derive_all(
     Every failure degrades to ``None`` and a log line, the same rule the other
     gatherers on this router follow: an unreadable workbook is missing evidence
     for the targets, not a 500 for the whole screen.
-    """
-    if shadow is None or observation_set_id:
-        return None
-    try:
-        # The MODULE, not a name bound at import: ``tools_metrics`` resolves the
-        # active workbook through this same accessor, so one seam (a workspace
-        # switch, or a test that repoints it) moves both and the derivation
-        # cannot end up reading a different workbook than the report grades.
-        from services import datasets, validation
-        from services.agent import reality_check, reality_check_targets
 
-        observed = reality_check.observed_nodes(
-            validation.load_base_workbook(str(datasets.get_active_real_counts_excel())),
-            period=period or None,
-        )
-        if observed["problem"] is not None:
-            return None
-        return reality_check_targets.derive_targets(
-            observed=observed["nodes"],
-            shadow_model=shadow,
-            human_mappings=human_mappings,
-        )
-    except Exception as exc:  # noqa: BLE001 — no target is a state, not a fault
-        logger.warning(
-            "calibration: edit targets could not be derived (%s: %s)", type(exc).__name__, exc
-        )
-        return None
+    A ONE-LINE FORWARD since #56 (c): the body used to live here. It moved to
+    ``services.agent.reality_check_targets.derive_targets_for_active_dataset``
+    so an agent TOOL (``services/agent/tools_calibration.py``'s
+    ``get_demand_target_derivation``, which must not import ``routers.*``)
+    could reach the identical derivation instead of forking a second one that
+    re-reads the same workbook. Kept here, under this name, because this
+    module's own tests call ``_derive_all`` directly.
+    """
+    from services.agent import reality_check_targets
+
+    return reality_check_targets.derive_targets_for_active_dataset(
+        shadow_model=shadow,
+        period=period,
+        observation_set_id=observation_set_id,
+        human_mappings=human_mappings,
+    )
 
 
 def _derived_targets(
@@ -379,6 +369,43 @@ def _derived_targets(
     search gate must be derived from the same account of the network, and a
     mapping visible to one of them and not the others is precisely the
     two-opinions failure the targets unit's own tests were written against.
+
+    A thin slice of :func:`_derived_targets_and_reasons` since #56 (b), which
+    added a SECOND thing this router reads out of the same derivation (why a
+    target-less node has no target). This function's own signature and return
+    value are unchanged -- kept exactly as they were for the callers (the
+    search-start gate among them) and the tests that pin this name directly.
+    """
+    return _derived_targets_and_reasons(
+        shadow, period=period, observation_set_id=observation_set_id
+    )[0]
+
+
+def _derived_targets_and_reasons(
+    shadow: dict[str, Any] | None,
+    *,
+    period: str | None,
+    observation_set_id: str | None,
+) -> tuple[list[Any] | None, dict[str, dict[str, Any]] | None]:
+    """``(targets, demand_target_reasons)`` from ONE derivation call — #56 (b).
+
+    ``demand_target_reasons`` is ``{node_id: {"reason": ..., "candidate_count":
+    ...}}`` for every node the derivation looked at, read off the SAME
+    ``derived["nodes"]`` audit ``_demand_target_payload`` already reads for the
+    picker. It exists so the diagnosis ladder's target-less rung
+    (``geh_ladder.classify_node``) can tell "no vehicle input reaches this
+    node's approaches" (``NO_VEHICLE_INPUT_ON_APPROACH``, 0 candidates) apart
+    from "several do and this product will not pick one"
+    (``MULTIPLE_VEHICLE_INPUT_CANDIDATES``, 2+) — the two reasons a target
+    never resolved, which DECISIONS.md's #56 (b) measurement found the old
+    next-action sentence conflating into one instruction that named an input
+    even on the 0-candidate node it cannot possibly help.
+
+    Calling ``_derive_all`` a SECOND time here (rather than threading a return
+    value through ``_derived_targets``) would read the observed-counts workbook
+    twice per request for no reason this module's own doctrine allows — see
+    that function's docstring on "must not hold four opinions" — so this is
+    the ONE call, and ``_derived_targets`` above is now defined in terms of it.
     """
     derived = _derive_all(
         shadow,
@@ -387,12 +414,19 @@ def _derived_targets(
         human_mappings=_demand_target_index(),
     )
     if derived is None:
-        return None
+        return None, None
     targets = derived["targets"]
     logger.debug(
         "calibration: derived %d edit target(s) over %d node(s)", len(targets), len(derived["nodes"])
     )
-    return targets or None
+    reasons: dict[str, dict[str, Any]] = {}
+    for node_id, why in (derived.get("nodes") or {}).items():
+        demand = (why or {}).get("vehicle_input") or {}
+        reasons[str(node_id)] = {
+            "reason": demand.get("reason"),
+            "candidate_count": len(demand.get("candidate_inputs") or []),
+        }
+    return targets or None, reasons
 
 
 def _reality_check(
@@ -402,6 +436,7 @@ def _reality_check(
     observation_set_id: str | None,
     observation_period: str | None,
     targets: list[Any] | None = None,
+    demand_target_reasons: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if not scenario_id:
         return None
@@ -417,6 +452,7 @@ def _reality_check(
         targets=targets or None,
         observation_set_id=observation_set_id or None,
         observation_period=observation_period or None,
+        demand_target_reasons=demand_target_reasons or None,
     )
 
 
@@ -458,14 +494,20 @@ def get_reality_check(
     """
     shadow = _shadow_model()
     try:
+        # #56 (b): the SAME derivation call as before, now also carrying WHY a
+        # target-less node has no target (0 candidates vs several) so the
+        # ladder's next-action sentence can branch instead of telling a
+        # 0-candidate node to name an input it does not have.
+        targets, demand_target_reasons = _derived_targets_and_reasons(
+            shadow, period=period, observation_set_id=observation_set_id
+        )
         report = _reality_check(
             scenario_id,
             period=period,
             observation_set_id=observation_set_id,
             observation_period=observation_period,
-            targets=_derived_targets(
-                shadow, period=period, observation_set_id=observation_set_id
-            ),
+            targets=targets,
+            demand_target_reasons=demand_target_reasons,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
@@ -541,18 +583,22 @@ def get_flow_rail(
     gate = _gate_for_active_dataset(_language(request))
     health = None if gate else _health_report()
     try:
+        # The SAME derivation ``GET /reality-check`` uses. Step ⑩ counts
+        # demand proposals and D4 entrance verdicts; a rail reading a
+        # targetless report would have shown zero of both while the report
+        # beside it showed them. #56 (b): also the SAME per-node demand-target
+        # reasons, so a rail-driven card branches its next action exactly like
+        # the report's own card does.
+        targets, demand_target_reasons = _derived_targets_and_reasons(
+            shadow, period=period, observation_set_id=observation_set_id
+        )
         report = _reality_check(
             scenario_id,
             period=period,
             observation_set_id=observation_set_id,
             observation_period=observation_period,
-            # The SAME derivation ``GET /reality-check`` uses. Step ⑩ counts
-            # demand proposals and D4 entrance verdicts; a rail reading a
-            # targetless report would have shown zero of both while the report
-            # beside it showed them.
-            targets=_derived_targets(
-                shadow, period=period, observation_set_id=observation_set_id
-            ),
+            targets=targets,
+            demand_target_reasons=demand_target_reasons,
         )
     except Exception as exc:  # noqa: BLE001 — a broken run is missing evidence
         logger.warning("calibration: reality check unavailable (%s: %s)", type(exc).__name__, exc)

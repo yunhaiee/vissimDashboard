@@ -470,6 +470,71 @@ export default function CalibrationWorkspacePage() {
     };
   }, [compareId]);
 
+  // #56 (a): the page context the drawer reads (dashboard/page.tsx and
+  // network/page.tsx already publish theirs the same way -- see
+  // components/FloatingAssistant.tsx's own docstring on the "vissim:page-
+  // context" / "vissim:assistant-context-request" pair being the contract
+  // between independent dispatchers). Before this unit /calibration published
+  // NONE: a user who typed or pasted the SCORED run's on-screen name into the
+  // drawer (the picker below shows `scenario.name`, e.g. "agent_run_…") got a
+  // named, correct refusal from the tools -- they all speak `scenario.id`
+  // (e.g. "SIM_…"), never the display name -- but the assistant had no way to
+  // answer without asking, because nothing on this page told it which run was
+  // already selected.
+  //
+  // `selectedScenarioIds` is exactly the picker's OWN <option value>, i.e.
+  // the tool-vocabulary id (see the `<select>` below) -- NEVER the name a
+  // human reads. `services/network_selection.py`'s `build_selection_context`
+  // passes it straight to `services.results_reader`/the agent's own
+  // `compare_scenarios` tool, and `services/agent/planner.py` renders it
+  // verbatim into the prompt as "- scenarios: <id>" -- so a Table 5-6 or
+  // reality-check question about "this run" is answered from the id already
+  // in context, never a name the assistant would have to translate or ask
+  // about.
+  useEffect(() => {
+    const publishAssistantContext = () => {
+      const selectedScenario = scenarios.find((scenario) => scenario.id === scenarioId) ?? null;
+      window.dispatchEvent(
+        new CustomEvent("vissim:page-context", {
+          detail: {
+            route: "/calibration",
+            label: "Calibration workspace context",
+            selectedScenarioIds: scenarioId ? [scenarioId] : [],
+            selectedScenarioNames: selectedScenario ? [selectedScenario.name] : [],
+            selectedNodeIds,
+            selectedNodeNames: selectedNodeIds.map(
+              (nodeId) =>
+                report?.nodes?.find((node) => node.node_id === nodeId)?.node_name ?? `Node ${nodeId}`,
+            ),
+            dataset: dataset
+              ? { filename: dataset.filename, source: dataset.source, revision: dataset.revision }
+              : null,
+            notes: [
+              scenarioId
+                ? t(
+                    `채점 중인 실행: ${selectedScenario?.name ?? scenarioId} (id: ${scenarioId})`,
+                    `Run being scored: ${selectedScenario?.name ?? scenarioId} (id: ${scenarioId})`,
+                    `採点中の実行: ${selectedScenario?.name ?? scenarioId} (id: ${scenarioId})`,
+                  )
+                : t(
+                    "아직 채점할 실행이 선택되지 않았습니다.",
+                    "No run has been selected to score yet.",
+                    "採点する実行がまだ選択されていません。",
+                  ),
+            ],
+            updatedAt: Date.now(),
+          },
+        }),
+      );
+    };
+
+    publishAssistantContext();
+    window.addEventListener("vissim:assistant-context-request", publishAssistantContext);
+    return () => {
+      window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
+    };
+  }, [scenarioId, scenarios, selectedNodeIds, report, dataset, t]);
+
   const handleNodeClick = useCallback((nodeId: string) => {
     setActiveNodeId((current) => (current === nodeId ? null : nodeId));
     setSelectedNodeIds((current) => (current.includes(nodeId) ? current : [...current, nodeId]));

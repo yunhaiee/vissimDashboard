@@ -115,15 +115,22 @@ is therefore reachable only from a caller that names an input whose link the
 counts do NOT reach — the agent, acting on a human's instruction, which is
 exactly who that labelled-estimate path was built for.
 
-Pure: no I/O, no COM, no network read. The caller supplies the observed side and
-the offline ``.inpx`` parse; this module joins them and says what it could not.
+:func:`derive_targets` itself is pure: no I/O, no COM, no network read. The
+caller supplies the observed side and the offline ``.inpx`` parse; it joins
+them and says what it could not. :func:`derive_targets_for_active_dataset`
+(added #56 (c)) is the one impure sibling in this file -- see its own
+docstring for why it lives here rather than staying private to
+``routers/calibration.py``.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping
 
 from services import results_evidence
 from services.agent import fixes
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Why a node got the target it got — machine-readable, one code per outcome
@@ -548,6 +555,71 @@ def derive_targets(
     return result
 
 
+def derive_targets_for_active_dataset(
+    *,
+    shadow_model: Mapping[str, Any] | None,
+    period: str | None = None,
+    observation_set_id: str | None = None,
+    human_mappings: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """:func:`derive_targets`'s WHOLE answer over the ACTIVE dataset's own
+    observed-counts workbook, or ``None``.
+
+    THE I/O HALF, extracted 2026-08-25 (#56 (c)) from what was
+    ``routers/calibration.py``'s private ``_derive_all``. That router function
+    is now a one-line forward to this one -- its docstring's "ONE derivation,
+    called from all three of this router's reality-check call sites AND from
+    the demand-target routes" is still true, and this is why: an agent TOOL
+    needs the identical derivation (services must not import ``routers.*``,
+    so the router's private helper was never reachable from
+    ``services/agent/tools_calibration.py``), and the alternative -- a second
+    function that re-reads the workbook and re-derives -- is exactly the
+    "two opinions about which object a miss belongs to" doctrine this module's
+    own docstring already refuses. ``routers/calibration.py``'s tests keep
+    pinning ``_derive_all`` by name; only its body changed.
+
+    Everything below is exactly what ``_derive_all`` did: read the active
+    dataset's observed-counts workbook, join it against ``shadow_model``
+    through :func:`derive_targets`, and degrade any failure to ``None`` -- an
+    unreadable workbook is missing evidence for the targets, not a 500.
+
+    ``observation_set_id`` short-circuits for the reason ``_derive_all``
+    documented it: a stored observation set needs a ``site_nodes`` map no
+    caller of this function supplies, and ``observations.observed_side``
+    refuses without one anyway, so such a request is NOT_CHECKABLE with no
+    nodes to target either way -- deriving would cost a workbook read to
+    answer a question nobody asked.
+    """
+    if shadow_model is None or observation_set_id:
+        return None
+    try:
+        # Deferred: importing ``tools_metrics`` (for ``RealityCheckNodeTarget``,
+        # via ``derive_targets`` below) pulls the whole tool registry in and
+        # would reorder tool registration -- the same reason every other
+        # module in this package defers that same import.
+        from services import datasets, validation
+        from services.agent import reality_check
+
+        observed = reality_check.observed_nodes(
+            validation.load_base_workbook(str(datasets.get_active_real_counts_excel())),
+            period=period or None,
+        )
+        if observed["problem"] is not None:
+            return None
+        return derive_targets(
+            observed=observed["nodes"],
+            shadow_model=shadow_model,
+            human_mappings=human_mappings,
+        )
+    except Exception as exc:  # noqa: BLE001 — no target is a state, not a fault
+        logger.warning(
+            "reality_check_targets: edit targets could not be derived (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 __all__ = [
     "DECISION_IDENTIFIED",
     "HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE",
@@ -567,4 +639,5 @@ __all__ = [
     "ROUTE_NOT_IDENTIFIED",
     "SINGLE_VEHICLE_INPUT",
     "derive_targets",
+    "derive_targets_for_active_dataset",
 ]

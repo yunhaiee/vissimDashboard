@@ -826,6 +826,229 @@ def test_the_tool_refuses_a_run_it_cannot_resolve(monkeypatch: pytest.MonkeyPatc
     assert report["detail"]["scenario_id"] == "S999999"
 
 
+# ---------------------------------------------------------------------------
+# #56 (a) — the vocabulary bridge: a run picker's own DISPLAY NAME is not the
+# id every tool speaks (DECISIONS.md "화면은 실행의 name을, 도구는 id를
+# 쓴다"). ONE match -> accept and disclose; zero or several -> refuse, but
+# name the ids that DO exist rather than leaving the reader (or the
+# assistant relaying the refusal) to guess at them.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_scenario_reference_takes_the_callers_string_as_an_id_first(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The common case, and the only one the run picker itself ever sends:
+    an id that resolves needs no name lookup and reports no translation."""
+    from services.agent import tools_metrics
+
+    marker = Path("resolved/dir")
+    monkeypatch.setattr(
+        tools_metrics, "_resolve_result_dir", lambda scenario_id: marker if scenario_id == "SIM_x" else None
+    )
+    resolution = tools_metrics._resolve_scenario_reference("SIM_x")
+    assert resolution == {
+        "scenario_id": "SIM_x",
+        "result_dir": marker,
+        "translated_from": None,
+        "candidates": None,
+    }
+
+
+def test_resolve_scenario_reference_a_display_name_that_equals_another_runs_id_never_shadows_the_direct_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """DEFECT 1 (refuter): id-before-name priority, pinned directly.
+
+    Run X's DISPLAY NAME happens to equal run Y's own id (``"SIM_y"``) — a
+    coincidence nothing prevents (a name is free text; #54's own naming form
+    has no format constraint on it either). Calling with the literal string
+    ``"SIM_y"`` must resolve to Y through the DIRECT id path — no name search
+    even runs, because the id check comes first — never to X via a name
+    search that treated "SIM_y" as a name to look up. Before this test, a
+    mutation that tried the name search BEFORE the direct id lookup survived
+    the entire suite: it would have found X's name == "SIM_y", "translated"
+    to X's real id, and returned X's directory under a claim of exactness.
+    """
+    from services.agent import tools_metrics
+
+    x_dir = Path("dir/x")
+    y_dir = Path("dir/y")
+    monkeypatch.setattr(
+        tools_metrics,
+        "_resolve_result_dir",
+        lambda scenario_id: {"SIM_x": x_dir, "SIM_y": y_dir}.get(scenario_id),
+    )
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [
+            # X's display name IS Y's real id -- the coincidence this test exists for.
+            {"id": "SIM_x", "name": "SIM_y", "color": "sky"},
+            {"id": "SIM_y", "name": "agent_run_y", "color": "amber"},
+        ],
+    )
+
+    resolution = tools_metrics._resolve_scenario_reference("SIM_y")
+
+    assert resolution["scenario_id"] == "SIM_y", "the literal string must resolve as Y's OWN id"
+    assert resolution["result_dir"] == y_dir
+    assert resolution["translated_from"] is None, "the direct id path discloses no translation"
+
+
+def test_resolve_scenario_reference_translates_a_unique_display_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from services.agent import tools_metrics
+
+    marker = Path("resolved/dir")
+    monkeypatch.setattr(
+        tools_metrics, "_resolve_result_dir", lambda scenario_id: marker if scenario_id == "SIM_fe342b88" else None
+    )
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [{"id": "SIM_fe342b88", "name": "agent_run_fe342b88", "color": "sky"}],
+    )
+    resolution = tools_metrics._resolve_scenario_reference("agent_run_fe342b88")
+    assert resolution["scenario_id"] == "SIM_fe342b88"
+    assert resolution["result_dir"] == marker
+    assert resolution["translated_from"] == "agent_run_fe342b88"
+    assert resolution["candidates"] is None
+
+
+def test_resolve_scenario_reference_never_guesses_among_several_same_named_runs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """MUTATION GUARD: ``_resolve_result_dir`` resolves ONE of the two
+    same-named candidates (``SIM_a``) — a mutation that guesses the first
+    match instead of requiring uniqueness would find that directory and
+    return it. Requiring both to fail proves nothing; this proves the
+    refusal is deliberate, not incidental."""
+    from services.agent import tools_metrics
+
+    marker = Path("resolved/dir")
+    monkeypatch.setattr(
+        tools_metrics, "_resolve_result_dir", lambda scenario_id: marker if scenario_id == "SIM_a" else None
+    )
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [
+            {"id": "SIM_a", "name": "dup", "color": "sky"},
+            {"id": "SIM_b", "name": "dup", "color": "amber"},
+        ],
+    )
+    resolution = tools_metrics._resolve_scenario_reference("dup")
+    assert resolution["result_dir"] is None
+    assert resolution["translated_from"] is None
+    assert sorted(resolution["candidates"]) == ["SIM_a", "SIM_b"]
+
+
+def test_resolve_scenario_reference_zero_matches_names_every_known_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from services.agent import tools_metrics
+
+    monkeypatch.setattr(tools_metrics, "_resolve_result_dir", lambda scenario_id: None)
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [{"id": "SIM_a", "name": "run a", "color": "sky"}],
+    )
+    resolution = tools_metrics._resolve_scenario_reference("no such thing")
+    assert resolution["result_dir"] is None
+    assert resolution["translated_from"] is None
+    assert resolution["candidates"] == ["SIM_a"]
+
+
+def test_the_run_not_found_refusal_names_the_candidates_in_its_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """DECISIONS.md's #56 (a) measurement: the refusal already carried
+    ``detail.candidates`` without SAYING them. A mutation that drops the
+    naming from the message (while leaving ``detail`` alone) must die here."""
+    from services.agent import tools_metrics
+
+    monkeypatch.setattr(tools_metrics, "_resolve_result_dir", lambda scenario_id: None)
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [
+            {"id": "SIM_a", "name": "run a", "color": "sky"},
+            {"id": "S000002", "name": "run b", "color": "amber"},
+        ],
+    )
+    report = tools_metrics.build_reality_check_report("agent_run_typo")
+    assert report["reason_code"] == reality_check.RUN_NOT_FOUND
+    assert report["detail"]["candidates"] == ["SIM_a", "S000002"]
+    assert "scenario_id_translated_from" not in report["detail"]
+    for language in ("ko", "en", "ja"):
+        assert "SIM_a" in report["message"][language], f"[{language}] must name the valid ids"
+        assert "S000002" in report["message"][language], f"[{language}] must name the valid ids"
+
+
+def test_a_unique_display_name_is_accepted_and_the_translation_disclosed(
+    demo_dir: Path, run_work_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The exact user scenario DECISIONS.md measured: a display name that
+    names exactly one real run is ACCEPTED, and the report says so — never a
+    silent substitution."""
+    from services import datasets
+    from services.agent import tools_metrics
+
+    monkeypatch.setattr(
+        tools_metrics,
+        "_resolve_result_dir",
+        lambda scenario_id: run_work_dir if scenario_id == "SIM_real" else None,
+    )
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [{"id": "SIM_real", "name": "agent_run_real", "color": "sky"}],
+    )
+    monkeypatch.setattr(datasets, "get_active_inpx_path", lambda: demo_dir / "practice.inpx")
+    monkeypatch.setattr(
+        datasets, "get_active_real_counts_excel", lambda: demo_dir / "real_counts.xlsx"
+    )
+
+    report = tools_metrics.build_reality_check_report("agent_run_real", period="AM")
+
+    assert report["status"] == reality_check.CHECKED, report
+    assert report["detail"]["scenario_id"] == "SIM_real"
+    assert report["detail"]["scenario_id_translated_from"] == "agent_run_real"
+    for language in ("ko", "en", "ja"):
+        assert "agent_run_real" in report["message"][language], f"[{language}] must disclose what was sent"
+        assert "SIM_real" in report["message"][language], f"[{language}] must disclose what it resolved to"
+
+
+def test_an_ambiguous_display_name_refuses_rather_than_guessing_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The REPORT-shape half of the ambiguous-name guarantee (RUN_NOT_FOUND,
+    both candidates named, no translation disclosed). The "does the resolver
+    actually refuse to guess" half is
+    ``test_resolve_scenario_reference_never_guesses_among_several_same_named_runs``,
+    which arms one of the two same-named candidates with a REAL resolvable
+    directory so a mutation that picks it anyway has something to be caught
+    picking."""
+    from services.agent import tools_metrics
+
+    monkeypatch.setattr(tools_metrics, "_resolve_result_dir", lambda scenario_id: None)
+    monkeypatch.setattr(
+        tools_metrics.results_reader,
+        "list_scenarios",
+        lambda: [
+            {"id": "SIM_a", "name": "dup", "color": "sky"},
+            {"id": "SIM_b", "name": "dup", "color": "amber"},
+        ],
+    )
+    report = tools_metrics.build_reality_check_report("dup")
+    assert report["reason_code"] == reality_check.RUN_NOT_FOUND
+    assert "scenario_id_translated_from" not in report["detail"]
+    assert sorted(report["detail"]["candidates"]) == ["SIM_a", "SIM_b"]
+
+
 def test_the_tool_refuses_a_multi_seed_run_rather_than_comparing_summed_seeds(
     demo_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -85,7 +85,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from services.agent import car_following_broker, car_following_grant, geh_ladder, saturation_flow
+from services import demand_target_map
+from services.agent import (
+    car_following_broker,
+    car_following_grant,
+    fixes,
+    geh_ladder,
+    reality_check_targets,
+    saturation_flow,
+)
 from services.agent.tools_metrics import RunRealityCheckParams, build_reality_check_report
 from services.agent.tools_network import _current_shadow_model
 from services.agent.toolkit import tool
@@ -450,11 +458,129 @@ def build_proposal_payload(
 #: ladder to name the one rung this treatment answers.
 CAPACITY_LIMIT = geh_ladder.CAPACITY_LIMIT
 
+
+# ---------------------------------------------------------------------------
+# get_demand_target_derivation — #56 (c)
+# ---------------------------------------------------------------------------
+#
+# THE GAP THIS CLOSES (DECISIONS.md, 2026-08-24, "같은 날 추가 측정"): a node
+# whose demand target the derivation could not resolve reads UNCLASSIFIABLE
+# with a next action, and until now the assistant had NO TOOL that could read
+# WHY -- reality_check_targets.derive_targets' own per-node audit (reason
+# code, the candidate rows it vouches for, any standing #54 mapping) lived
+# only in the router's HTTP response for the SCREEN's picker
+# (GET /api/calibration/demand-targets/candidates). Asked to explain or fix a
+# target-less node, the assistant's only lever was get_vehicle_inputs -- which
+# lists every vehicle input in the NETWORK and cannot say which ones feed
+# THIS node's counted approaches or why none/several were chosen -- so it
+# re-issued the identical call, hit the read-tier duplicate-call guard
+# (FIX 2, orchestrator.py), and burned the whole iteration cap on a call that
+# could never have answered the question. This tool reads the SAME audit the
+# picker reads, through the SAME derivation (see
+# reality_check_targets.derive_targets_for_active_dataset's own docstring on
+# why that extraction exists) -- never a second one.
+
+
+class GetDemandTargetDerivationParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str | None = Field(
+        default=None,
+        description=(
+            "One node to inspect (its counts-workbook / Vissim node id). Omit to get every node "
+            "the derivation looked at."
+        ),
+    )
+    period: Literal["AM", "PM"] | None = Field(
+        default=None,
+        description=(
+            "Which counts period's rows decide the node's counted approach links. Omitted = the "
+            "workbook's default period, the same rule run_reality_check's own `period` follows."
+        ),
+    )
+
+
+@tool(
+    name="get_demand_target_derivation",
+    tier="read",
+    provider="metrics",
+    params=GetDemandTargetDerivationParams,
+)
+def get_demand_target_derivation(params: GetDemandTargetDerivationParams) -> dict[str, Any]:
+    """Read WHY a node's demand target (the vehicle input a reality-check demand edit would touch) does or does not exist -- the derivation's own audit, never re-derived here. Per node: the reason code (no vehicle input reaches the node's counted approaches at all -- naming one cannot help; several feed it and none is auto-picked; exactly one does and it is the target; or a person named one under #54), the candidate rows the derivation itself vouches for (vehicle input number, link, current volume -- the same rows the screen's picker offers), the standing #54 human mapping if any (including a STALE or IGNORED one and why it does not decide), and the assumption token a resolved target carries. Call this INSTEAD of get_vehicle_inputs when a node's diagnosis is unclassified and names a missing demand target: get_vehicle_inputs lists every vehicle input in the whole network and cannot say which feed THIS node's counted approaches or why none/several were chosen, so repeating it on the same refusal returns the same unusable list every time and burns the iteration cap for nothing. Read-only and proposes nothing -- naming an input for a node with several candidates is still a human act, through the screen's picker or the demand-targets route."""
+    shadow = _current_shadow_model()
+    standing: dict[str, dict[str, Any]] = {}
+    try:
+        standing = demand_target_map.index_payload()
+    except Exception as exc:  # noqa: BLE001 — an unreadable store is a state, not a fault
+        logger.info(
+            "get_demand_target_derivation: demand-target mappings unreadable (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        standing = {}
+
+    derived = reality_check_targets.derive_targets_for_active_dataset(
+        shadow_model=shadow,
+        period=params.period,
+        observation_set_id=None,
+        human_mappings=standing,
+    )
+    if derived is None:
+        return {
+            "message": "The observed-counts workbook could not be read, so no demand target "
+            "could be derived for any node.",
+            "demand_target_derivation": {"available": False, "reason": "NO_DERIVATION", "nodes": {}},
+        }
+
+    all_nodes = derived.get("nodes") or {}
+    if params.node_id is not None and str(params.node_id) not in all_nodes:
+        return {
+            "message": f"Node {params.node_id} was not part of this derivation (it carries no "
+            "counted rows this workbook's period joins to a Vissim movement id).",
+            "demand_target_derivation": {
+                "available": True,
+                "reason": "NODE_NOT_FOUND",
+                "node_id": str(params.node_id),
+                "known_node_ids": sorted(all_nodes, key=lambda value: (len(value), value)),
+                "nodes": {},
+            },
+        }
+
+    nodes_out: dict[str, Any] = {}
+    for node_id, why in all_nodes.items():
+        if params.node_id is not None and str(node_id) != str(params.node_id):
+            continue
+        demand = (why or {}).get("vehicle_input") or {}
+        # A target EXISTS (SINGLE_VEHICLE_INPUT or a human named one) the
+        # instant `chosen` is set — both carry the same admission every
+        # resolved target in this product carries (fixes._human_named_block's
+        # own docstring): naming an input drives this node's total is
+        # ASSUMED, never proven, whether the network or a person supplied it.
+        chosen = demand.get("chosen")
+        nodes_out[str(node_id)] = {
+            "approach_links": list((why or {}).get("approach_links") or []),
+            "reason": demand.get("reason"),
+            "chosen": chosen,
+            "candidates": list(demand.get("candidate_inputs") or []),
+            "human_mapping_ignored": demand.get("human_mapping_ignored"),
+            "mapping": standing.get(str(node_id)),
+            "assumption": fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL if chosen else None,
+        }
+
+    return {
+        "message": f"Demand-target derivation audit for {len(nodes_out)} node(s).",
+        "demand_target_derivation": {"available": True, "reason": None, "nodes": nodes_out},
+    }
+
+
 __all__ = [
     "CAPACITY_LIMIT",
+    "GetDemandTargetDerivationParams",
     "NODE_CONTROL_UNDECLARED",
     "ProposeCarFollowingParams",
     "SaturationFlowMeasurementParams",
     "build_proposal_payload",
+    "get_demand_target_derivation",
     "propose_car_following_from_saturation_flow",
 ]

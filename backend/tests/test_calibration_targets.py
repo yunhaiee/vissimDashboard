@@ -43,7 +43,8 @@ from fastapi.testclient import TestClient
 import main
 from routers import calibration as calibration_endpoint
 from services import datasets, demand_target_map, validation, workspaces
-from services.agent import fixes, reality_check, reality_check_targets, tools_metrics, tools_network
+from services.agent import fixes, reality_check, reality_check_targets, tools_calibration, tools_metrics, tools_network
+from services.agent.toolkit import default_registry, dispatch
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -1539,3 +1540,113 @@ def _workspace(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mon
         yield
     finally:
         workspaces.reset_current_workspace_id(token)
+
+
+# ===========================================================================
+# 5. Unit #56 (c) — the derivation-audit AGENT TOOL reads the SAME derivation
+#
+# THE GAP: an assistant asked to explain or fix a target-less node had only
+# get_vehicle_inputs, which lists every input in the network and cannot say
+# which feed THIS node's counted approaches or why none/several were
+# chosen — so it re-issued the identical call, hit the read-tier
+# duplicate-call guard, and burned the whole iteration cap. This tool reads
+# reality_check_targets.derive_targets_for_active_dataset -- the SAME
+# extraction routers/calibration.py's `_derive_all` now forwards to -- so the
+# tool and the screen's picker can never disagree about one node's audit.
+# ===========================================================================
+
+
+@pytest.fixture()
+def network_active(wired: None, network: Path):
+    """#56 (c)'s tool reads the network through ``tools_network``'s OWN
+    active-inpx override (``_current_shadow_model``) -- a SEPARATE seam from
+    ``datasets.get_active_inpx_path``, which ``wired`` above already points at
+    ``network`` for the router path. Both must name the same file, or the
+    tool and the router would grade two different networks.
+    """
+    tools_network.set_active_inpx(network)
+    try:
+        yield
+    finally:
+        tools_network.set_active_inpx(None)
+
+
+def test_the_tool_registers_read_tier(network_active: None):
+    spec = default_registry.get("get_demand_target_derivation")
+    assert spec is not None
+    assert spec.tier == "read"
+
+
+def test_the_tool_reads_the_same_audit_the_picker_reads(network_active: None):
+    """Node 1 (one candidate, resolved) and node 4 (two candidates, no
+    dominance pick) must read IDENTICALLY to ``_demand_target_payload``'s own
+    account -- the same derivation, never a second opinion."""
+    envelope = dispatch("get_demand_target_derivation", {"period": "AM"})
+    assert envelope["status"] == "ok", envelope
+    audit = envelope["data"]["demand_target_derivation"]
+    assert audit["available"] is True
+    assert audit["reason"] is None
+
+    node1 = audit["nodes"]["1"]
+    assert node1["reason"] == reality_check_targets.SINGLE_VEHICLE_INPUT
+    assert node1["chosen"] == "1"
+    assert node1["assumption"] == fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL
+    assert node1["mapping"] is None
+
+    node4 = audit["nodes"]["4"]
+    assert node4["reason"] == reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES
+    assert node4["chosen"] is None
+    # THE MUTATION SURFACE: the tool must never invent a candidate, and must
+    # never drop a real one. "5" and "6" are the two inputs the module-level
+    # fixture docstring names as node 4's two counted-approach candidates
+    # (test_two_candidates_produce_no_target_and_no_dominance_pick pins the
+    # same pair against the derivation directly).
+    assert sorted(candidate["vehicle_input_no"] for candidate in node4["candidates"]) == ["5", "6"]
+    assert node4["assumption"] is None, "nothing was chosen, so no assumption is carried"
+
+
+def test_the_tool_filters_to_one_node(network_active: None):
+    envelope = dispatch("get_demand_target_derivation", {"period": "AM", "node_id": "4"})
+    audit = envelope["data"]["demand_target_derivation"]
+    assert set(audit["nodes"]) == {"4"}
+
+
+def test_the_tool_names_the_known_nodes_for_an_unknown_one(network_active: None):
+    envelope = dispatch(
+        "get_demand_target_derivation", {"period": "AM", "node_id": "not-a-real-node"}
+    )
+    assert envelope["status"] == "ok", envelope
+    audit = envelope["data"]["demand_target_derivation"]
+    assert audit["reason"] == "NODE_NOT_FOUND"
+    assert audit["nodes"] == {}
+    assert "1" in audit["known_node_ids"]
+    assert "4" in audit["known_node_ids"]
+
+
+def test_the_tool_surfaces_a_standing_54_mapping(network_active: None, derived, observed, shadow):
+    """A human's #54 naming on node 4 must appear on THIS tool's answer too --
+    the same store the screen's picker reads, read through the same field
+    name (``mapping``) the router's own ``_demand_target_payload`` uses."""
+    _name_input(derived, "4", "6", "205")
+
+    envelope = dispatch("get_demand_target_derivation", {"period": "AM", "node_id": "4"})
+    node4 = envelope["data"]["demand_target_derivation"]["nodes"]["4"]
+    assert node4["mapping"] is not None
+    assert node4["mapping"]["vehicle_input_no"] == "6"
+    assert node4["mapping"]["named_by"] == "yunha"
+    assert node4["mapping"]["stale"] is False
+
+
+def test_the_tool_degrades_to_no_derivation_over_an_unreadable_workbook(
+    network_active: None, monkeypatch: pytest.MonkeyPatch
+):
+    def boom(_path):
+        raise RuntimeError("the workbook is a directory")
+
+    monkeypatch.setattr(validation, "load_base_workbook", boom)
+    envelope = dispatch("get_demand_target_derivation", {"period": "AM"})
+    assert envelope["status"] == "ok", envelope
+    audit = envelope["data"]["demand_target_derivation"]
+    assert audit["available"] is False
+    assert audit["reason"] == "NO_DERIVATION"
+    assert audit["nodes"] == {}

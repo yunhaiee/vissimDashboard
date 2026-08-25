@@ -18,6 +18,7 @@ import pytest
 
 import config
 import services.agent.tools_network as tools_network
+from services.agent import orchestrator
 from services.agent.orchestrator import run_agent_turn
 from services.agent.toolkit import ToolRegistry, tool
 from services.agent.trace import read_trace
@@ -66,6 +67,13 @@ EXPECTED_READ_TOOLS = {
     # writes it describes go through this engine's own approval loop one by
     # one, and it is that pause that the set's grant then rides on.
     "propose_car_following_from_saturation_flow",
+    # #56 (c) adds get_demand_target_derivation (tools_calibration.py): WHY a
+    # node's demand target does or does not exist -- the same audit the
+    # screen's #54 picker reads, reachable by the assistant now instead of
+    # only get_vehicle_inputs (which cannot answer that question and, before
+    # this tool existed, was the call that got re-issued into the read-tier
+    # duplicate-call guard on a target-less node).
+    "get_demand_target_derivation",
 }
 
 # M2.3: tools_edit.py's write tools are now offered to the planner too (see
@@ -579,6 +587,110 @@ def test_iteration_cap_forces_deterministic_completion(tmp_path):
     assert result.kind == "answer"
     assert result.answer
     assert "get_network_overview" in result.answer
+
+
+# ---------------------------------------------------------------------------
+# #56 (c) refuter DEFECT 2 — the K-cap "gathered facts" upgrade
+# (orchestrator._forced_completion_fact_clause / _forced_completion_answer)
+# was entirely unpinned: a mutation that fabricates a fact clause on EVERY
+# step (not only ones that actually carry a diagnosis/demand_target_
+# derivation payload) survived the full 5789-test suite untouched. These
+# pin the property directly against the private helpers the K-cap answer is
+# built from — not through a full run_agent_turn, because the fact this
+# unit must never do is invent evidence, and that is a property of the
+# STRING-BUILDING step, checkable without a live tool dispatch.
+# ---------------------------------------------------------------------------
+
+
+def test_forced_completion_answer_invents_nothing_when_no_step_carries_a_payload():
+    """(i) Every step here is a real ok/error status with NO diagnosis and NO
+    demand_target_derivation key at all (the ordinary case — most tool calls
+    carry neither). The forced answer must show tool + status ONLY: no
+    bracketed fact clause, because there is no fact to show."""
+    steps = [
+        {"summary": "차량 인풋을 확인합니다", "tool": "get_vehicle_inputs", "status": "ok"},
+        {"summary": "다시 확인합니다", "tool": "get_vehicle_inputs", "status": "error"},
+    ]
+
+    answer = orchestrator._forced_completion_answer("en", steps, 6)
+
+    assert "[" not in answer and "]" not in answer, (
+        "no step carried a fact payload, so no bracketed fact clause may appear"
+    )
+    lines = answer.splitlines()
+    assert lines[1] == "- get_vehicle_inputs: ok"
+    assert lines[2] == "- get_vehicle_inputs: error"
+
+
+def test_forced_completion_fact_clause_is_empty_for_a_step_with_no_recognised_payload():
+    """The same property, isolated to the one-step helper the mutation
+    actually targets."""
+    assert orchestrator._forced_completion_fact_clause({"tool": "get_run_kpis", "status": "ok"}) == ""
+    assert orchestrator._forced_completion_fact_clause({"tool": "get_run_kpis", "status": "error"}) == ""
+    # A payload of the wrong SHAPE (present but not the dict this helper
+    # reads) must degrade the same way, never raise and never fabricate.
+    assert (
+        orchestrator._forced_completion_fact_clause(
+            {"tool": "run_reality_check", "status": "ok", "diagnosis": None}
+        )
+        == ""
+    )
+
+
+def test_forced_completion_answer_states_a_real_diagnosis_fact_compactly_in_ko():
+    """(ii) A step that DID carry a real diagnosis payload (the shape
+    ``_diagnosis_step_payload`` builds from a run_reality_check envelope,
+    unit #47) must show the fact — node id : rung, per node — in the ko
+    header's own primary language, as compact prose, never a dumped dict."""
+    steps = [
+        {
+            "summary": "실행 결과를 실측과 대조했습니다",
+            "tool": "run_reality_check",
+            "status": "ok",
+            "diagnosis": {
+                "nodes": [
+                    {"node_id": "4", "rung": "UNCLASSIFIABLE"},
+                    {"node_id": "8", "rung": "CAPACITY_LIMIT"},
+                ],
+                "total": 2,
+                "truncated": False,
+                "by_rung": {},
+                "geh_threshold": 5.0,
+            },
+        }
+    ]
+
+    answer = orchestrator._forced_completion_answer("ko", steps, 6)
+
+    assert "지금까지 확인한 내용입니다" in answer, "expected the ko-primary K-cap header"
+    assert "- run_reality_check: 성공 [4:UNCLASSIFIABLE, 8:CAPACITY_LIMIT]" in answer
+    assert "{" not in answer and "}" not in answer, "must be compact prose, never a dumped dict/JSON"
+    assert '"node_id"' not in answer and "'node_id'" not in answer
+
+
+def test_forced_completion_answer_states_a_real_demand_target_audit_fact_compactly():
+    """(ii), the #56 (c) audit tool's own payload shape
+    (``_demand_target_derivation_step_payload``): reason + candidate count
+    per node, compact, never the raw candidate rows or the mapping."""
+    steps = [
+        {
+            "summary": "노드 4의 수요 타깃 감사를 확인합니다",
+            "tool": "get_demand_target_derivation",
+            "status": "ok",
+            "demand_target_derivation": {
+                "nodes": [
+                    {"node_id": "4", "reason": "NO_VEHICLE_INPUT_ON_APPROACH", "candidate_count": 0},
+                ],
+                "total": 1,
+                "truncated": False,
+            },
+        }
+    ]
+
+    answer = orchestrator._forced_completion_answer("en", steps, 6)
+
+    assert "- get_demand_target_derivation: ok [4:NO_VEHICLE_INPUT_ON_APPROACH(0)]" in answer
+    assert "{" not in answer and "}" not in answer
 
 
 # ---------------------------------------------------------------------------

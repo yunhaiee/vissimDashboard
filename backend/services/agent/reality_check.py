@@ -270,11 +270,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     RUN_NOT_FOUND: {
         "ko": "'{scenario_id}'에 해당하는 실행 결과를 찾을 수 없습니다. 존재하지 않는 실행을 "
-        "대조했다고 보고하지 않습니다.",
+        "대조했다고 보고하지 않습니다. 사용 가능한 실행 id: {candidates}",
         "en": "No run results could be resolved for '{scenario_id}'. This will not be reported "
-        "as a comparison against a run that does not exist.",
+        "as a comparison against a run that does not exist. Available run ids: {candidates}",
         "ja": "'{scenario_id}'に対応する実行結果が見つかりません。存在しない実行と対照したとは"
-        "報告しません。",
+        "報告しません。利用可能な実行id: {candidates}",
     },
     OBSERVATION_SET_NOT_FOUND: {
         "ko": "이 프로젝트에 '{observation_set_id}' 관측 세트가 없습니다. 다른 세트로 대신 "
@@ -689,6 +689,7 @@ def check_run_against_counts(
     registry: ToolRegistry | None = None,
     observed_source: str | None = None,
     node_control: Mapping[str, str] | None = None,
+    demand_target_reasons: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """RUN evidence vs OBSERVED counts, per node → proposals and refusals.
 
@@ -730,6 +731,18 @@ def check_run_against_counts(
     ships — and it exists for the case D4 created: an entrance that is measured
     data, no routing decision named, and a modeller left with a true refusal
     and nothing to do next.
+
+    ``demand_target_reasons`` is #56 (b)'s per-node audit —
+    ``{node_id: {"reason": <a services.agent.reality_check_targets reason
+    code>, "candidate_count": <int>}}``, from the SAME derivation ``targets``
+    itself came from (``routers.calibration._derived_targets_and_reasons``).
+    It is caller knowledge exactly like ``targets`` and ``node_control`` are:
+    this module does not derive it, and its absence is exactly today's
+    behaviour — the ladder's target-less rung falls back to its pre-#56
+    sentence. Present, it lets that rung tell "no vehicle input reaches this
+    node's counted approaches at all" (0 candidates — naming one is not
+    possible) apart from "several do, and naming one is a modeller's call, not
+    an automatic pick" (2+ candidates — the #54 picker is the answer).
     """
     targets = targets or {}
     movement_ids = movement_ids or {}
@@ -900,6 +913,7 @@ def check_run_against_counts(
             congestion=geh_ladder.node_congestion(run_result, node_id),
             geh_threshold=geh_threshold,
             node_control=node_control.get(node_id),
+            demand_target_reason=(demand_target_reasons or {}).get(node_id),
         )
         if diagnosis is not None:
             by_rung.setdefault(diagnosis["rung"], []).append(node_id)

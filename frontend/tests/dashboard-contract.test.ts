@@ -741,7 +741,15 @@ contractTest("base model page wires the validation workbook lifecycle", (pin) =>
 contractTest("base model page publishes assistant page context", (pin) => {
   const page = read("components/calibration/BaseModelStation.tsx");
 
-  pin.match(page, /vissim:page-context/, "expected base-model page to publish assistant page context");
+  // Quote-boundary anchored (refuter NIT 3, #56): an unanchored substring
+  // match survives a rename to e.g. "vissim:page-context-v2" -- a REAL break,
+  // since FloatingAssistant's listener is bound to the exact string. Anchored
+  // to the literal dispatch statement all four publishers share.
+  pin.match(
+    page,
+    /new CustomEvent\("vissim:page-context", \{/,
+    "expected base-model page to dispatch the EXACT event name FloatingAssistant listens for -- a suffixed rename must fail this pin",
+  );
   pin.match(page, /selectedScenarioIds: selectedScenarioId \? \[selectedScenarioId\] : \[\]/, "expected selected base scenario to be passed to floating assistant context");
   pin.match(page, /Validation workbook is not connected/, "expected workbook status to be included in assistant context");
 });
@@ -1115,7 +1123,14 @@ contractTest("intersection comparison is merged into the main dashboard", (pin) 
   const proxy = read("proxy.ts");
 
   pin.match(page, /selectedNodeIds/, "expected multi-node comparison state on the main dashboard");
-  pin.match(page, /vissim:page-context/, "expected dashboard to publish assistant page context");
+  // Quote-boundary anchored (refuter NIT 3, #56) -- see the base-model
+  // publisher pin's own comment for why an unanchored substring match is a
+  // real gap (a "-v2" rename would still contain "vissim:page-context").
+  pin.match(
+    page,
+    /new CustomEvent\("vissim:page-context", \{/,
+    "expected dashboard to dispatch the EXACT event name FloatingAssistant listens for",
+  );
   pin.match(page, /selectedScenarioIds: selected/, "expected selected dashboard scenarios to be passed to floating assistant context");
   pin.match(page, /selectedNodeIds,/, "expected selected dashboard nodes to be passed to floating assistant context");
   pin.match(page, /IntersectionPerformanceGrid/, "expected intersection performance cards on the main dashboard");
@@ -1219,7 +1234,13 @@ contractTest("selected intersection panel omits scenario total volume chart", (p
 contractTest("network preview page publishes assistant page context", (pin) => {
   const page = read("app/network/page.tsx");
 
-  pin.match(page, /vissim:page-context/, "expected network preview page to publish assistant page context");
+  // Quote-boundary anchored (refuter NIT 3, #56) -- see the base-model
+  // publisher pin's own comment.
+  pin.match(
+    page,
+    /new CustomEvent\("vissim:page-context", \{/,
+    "expected network preview page to dispatch the EXACT event name FloatingAssistant listens for",
+  );
   pin.match(
     page,
     /vissim:assistant-context-request/,
@@ -11364,6 +11385,40 @@ contractTest(
   },
 );
 
+// #56 (a) -- DECISIONS.md "화면은 실행의 name을, 도구는 id를 쓴다": before this
+// unit /calibration published NO page context at all, so a user who typed the
+// SCORED run's on-screen display name into the drawer got a correct but
+// nameless refusal -- the tools speak the picker's <option value> (an id like
+// "SIM_…"), never the label the <option> shows ("agent_run_…"). dashboard and
+// base-model already publish their own selected-scenario id/name pairs the
+// same way (see the pins on those two pages elsewhere in this file); this is
+// calibration's.
+contractTest("calibration workspace publishes the scored run's tool-vocabulary id to the assistant (#56 (a))", (pin) => {
+  const page = read("app/calibration/page.tsx");
+
+  // Quote-boundary anchored (refuter NIT 3, #56): an unanchored
+  // /vissim:page-context/ substring match survives a rename to
+  // "vissim:page-context-v2" -- a REAL break, since FloatingAssistant's
+  // listener is bound to the exact string. Anchored to the literal dispatch
+  // statement (same fix applied to the other three publishers' pins above).
+  pin.match(
+    page,
+    /new CustomEvent\("vissim:page-context", \{/,
+    "expected calibration workspace to dispatch the EXACT event name FloatingAssistant listens for -- a suffixed rename must fail this pin",
+  );
+  pin.match(page, /route: "\/calibration"/, "expected the page context to publish under this page's own route");
+  pin.match(
+    page,
+    /selectedScenarioIds: scenarioId \? \[scenarioId\] : \[\]/,
+    "expected the SELECTED run's tool-vocabulary id -- the picker's own <option value>, never its display name -- to reach the assistant's selection context",
+  );
+  pin.match(
+    page,
+    /selectedScenarioNames: selectedScenario \? \[selectedScenario\.name\] : \[\]/,
+    "expected the run's on-screen DISPLAY name to ride ALONGSIDE its id, never in place of it",
+  );
+});
+
 contractTest("unit #50-e: the next-action box hands the user to the assistant, prefilled and node-specific", (pin) => {
   const table = read("components/calibration/NodeScoreTable.tsx");
   const detail = table.slice(table.indexOf("export function NodeScoreDetail"));
@@ -11410,6 +11465,30 @@ contractTest("unit #50-e: the next-action box hands the user to the assistant, p
   pin.match(builder, /text\.ko/, "expected the ko template to carry the server's own ko next-action text, not a paraphrase");
   pin.match(builder, /text\.en/, "expected the en template to carry the server's own en next-action text");
   pin.match(builder, /text\.ja/, "expected the ja template to carry the server's own ja next-action text");
+});
+
+// #56 (b) -- DECISIONS.md "같은 날 추가 측정 — CTA는 후보 0 노드에 불가능한
+// 행동을 지시한다": before this unit every target-less node got the IDENTICAL
+// next-action sentence regardless of whether its counted approaches carried
+// zero candidate vehicle inputs (naming one is impossible) or several
+// (naming one is a human's choice, not this product's). The fix branches
+// geh_ladder.py's own sentence server-side (_target_less_rung); this file's
+// job stays exactly what it was -- print `next_action.text` verbatim and
+// never grow an opinion of its own about which of the two sentences a node
+// deserves.
+contractTest("node score detail renders the server's branched next-action sentence verbatim (#56 (b))", (pin) => {
+  const table = withoutComments(read("components/calibration/NodeScoreTable.tsx"));
+
+  pin.match(
+    table,
+    /\{pick\(nextAction\.text, lang\)\}/,
+    "expected the next-action box to print the SERVER's own text object, never a locally composed sentence",
+  );
+  pin.doesNotMatch(
+    table,
+    /NO_VEHICLE_INPUT_ON_APPROACH|MULTIPLE_VEHICLE_INPUT_CANDIDATES/,
+    "expected the #56 (b) reason-code branch to live ONLY server-side (services/agent/geh_ladder.py's _target_less_rung) -- this file re-deriving which of the two sentences to show would let the card and the server disagree about the same node",
+  );
 });
 
 // ---------------------------------------------------------------------------
