@@ -4124,9 +4124,15 @@ contractTest("B3: generation comparison stays scoped to gate results and named c
 
 contractTest("the 현시도 review screen never presents a proposal as a verified fact", (pin) => {
   const page = read("app/genesis/phases/page.tsx");
+  // #55 moved the drawn diagram -- ambiguity note included -- out of the page
+  // and into its own component (docs/phase2/DECISIONS.md, "2026-08-24 --
+  // 사용자 결정: 현시도 화면은 엑셀 업로드로 통합 ... (#55)"). The honesty core this
+  // pin exists for did not move with it; only its FILE did, so the pin follows.
+  const sketch = read("components/genesis/PhaseDiagramSketch.tsx");
 
-  // The load-bearing sentence. A proposal is a machine READING; the only claim
-  // of correctness on this page belongs to the person who confirms.
+  // The load-bearing sentence. A proposal (the vision path) is a machine
+  // READING; the only claim of correctness on this page belongs to the person
+  // who confirms the BINDING, never to the reading itself.
   pin.match(
     page,
     /이 앱이 검증한 것이 아닙니다/,
@@ -4137,14 +4143,26 @@ contractTest("the 현시도 review screen never presents a proposal as a verifie
     /모델의 판독 \(제안\)/,
     "expected the proposal panel to be titled as a reading/proposal, never as a result",
   );
+  // Re-anchored at its NEW location (components/genesis/PhaseDiagramSketch.tsx):
+  // the strip renders every phase's ambiguity note -- the model naming what it
+  // could NOT resolve -- verbatim, beside the drawing it qualifies.
+  // VACUITY MEASURED 2026-08-24 (refuter, #55b round 2): `{false && phase.
+  // ambiguity && (` keeps this pin green, because the bare substring
+  // `phase.ambiguity && (` is still PRESENT inside the longer, dead chain --
+  // a substring pin cannot tell rendered code from dead code. Anchored on the
+  // `{` that opens the JSX expression immediately preceding `phase.ambiguity`:
+  // a prepended `X &&` of any kind (not just `false` or `0`) inserts text
+  // between that `{` and `phase.ambiguity`, breaking this exact adjacency.
   pin.match(
-    page,
-    /phase\.ambiguity && \(/,
-    "expected every phase's ambiguity note to be rendered -- it is the model saying what it could NOT resolve",
+    sketch,
+    /\{phase\.ambiguity && \(/,
+    "expected every phase's ambiguity note to be rendered -- it is the model saying what it could NOT resolve (phase.ambiguity must be the FIRST operand of its JSX expression, not short-circuited behind another condition)",
   );
   // A confidence score would invite a threshold, and a threshold is how a
-  // low-confidence guess gets promoted to a reading.
+  // low-confidence guess gets promoted to a reading. Banned on BOTH files now
+  // that the reading has two rendering surfaces.
   pin.doesNotMatch(page, /confidence/i, "expected no confidence score anywhere on the review screen");
+  pin.doesNotMatch(sketch, /confidence/i, "expected no confidence score anywhere on the drawn Φ strip either");
 
   // The cross-check's three tiers must stay three words. `observation` in
   // particular corroborates a measurement and must never read as an endorsement.
@@ -4180,6 +4198,99 @@ contractTest("the 현시도 review screen keeps confirmation the only road to si
   pin.match(page, /changes\.push\(/, "expected what the human changed against the proposal to be recorded");
 });
 
+contractTest(
+  "the reading column is display-only, by structure -- #55 removed that click, not relocated it",
+  (pin) => {
+    const page = read("app/genesis/phases/page.tsx");
+
+    // GAP MEASURED 2026-08-24 round 2 (refuter): a wording ban scoped to a
+    // slice starting at an INTERIOR comment survives a `<button>` placed just
+    // above that comment's own start marker (still inside the same JSX
+    // region a reader would call "the reading panel", but outside the text
+    // window the pin actually read) -- and a wording-only ban survives
+    // `role="button"` div with novel wording anyway. Per the recorded
+    // threat-model boundary (docs/phase2/DECISIONS.md, "2026-08-24 — 계약
+    // 핀의 위협 모델 경계 (#55b 3패스에서 명시)"): "위치 우회 → 슬라이스가 아니라
+    // 영역 전체" -- the reading column is display-only BY DESIGN, so "zero
+    // interactive affordances" is a STRUCTURAL invariant over the whole
+    // region, not a wording sweep over a fragment of it.
+    //
+    // REGION, measured: starts at the `) : (` / `<>` that opens the
+    // "review selected" render (the true branch boundary, not an interior
+    // comment a few lines into the first Panel inside it) and runs through
+    // everything display-only before "#55 — THE SECONDARY ACT" -- the
+    // comment page.tsx's own author left marking where the interactive
+    // binding UI begins. This covers FOUR panels (the scan/image, the stale-
+    // reasons banner, the reading/Φ-strip panel, and the machine cross-check
+    // panel), not just the one the round-2 mutation happened to target.
+    const startMarker = ") : (\n            <>\n              <Panel";
+    const endMarker = "{/* #55 — THE SECONDARY ACT.";
+    const readingColumn = sliceBetween(page, startMarker, endMarker);
+    pin.match(readingColumn, /\S/, "expected to find the reading column's own source slice (markers moved?)");
+
+    // MEASURED 2026-08-24: the region legitimately contains exactly ONE
+    // interactive element -- the per-review "엑셀로 내보내기 (미확인)" export
+    // link (`<a href={phaseDiagramExportUrl(review.review_id)}>`), inside the
+    // scan/image panel. It is a download control, not a confirmation
+    // affordance, and it is carved by its own exact href rather than banning
+    // `<a` less precisely -- every OTHER `<a`, every `<button>`,
+    // `role="button"`, `onClick=`, `onKeyDown=`, and `tabIndex=` is still
+    // banned, so a rogue interactive element anywhere else in the region,
+    // under any wording, still fails here.
+    pin.doesNotMatch(
+      readingColumn,
+      /<button\b|role=["']button|onClick=|onKeyDown=|onChange=|onInput=|onSubmit=|tabIndex=|<a\b(?!\s*href=\{phaseDiagramExportUrl\()/i,
+      "expected zero interactive affordances in the reading column, except the one carved export link -- this region is display-only BY DESIGN, so ANY <button>/role=button/onClick/onKeyDown/onChange/onInput/onSubmit/tabIndex/<a> reintroduces the confirmation click #55 removed, under any wording",
+    );
+
+    // SELF-EVASION FOUND 2026-08-24, closed the same day: `<input
+    // type="checkbox" onChange={...} />` survived the attribute-name ban
+    // above in its FIRST form (onClick/onKeyDown only) -- a native form
+    // control reached for its own natural event (onChange), not the button
+    // family's. Rather than keep enumerating event-handler names one at a
+    // time, closed the same way as the SVG vocabulary in
+    // PhaseDiagramSketch.tsx: a set-equality pin over every host-element tag
+    // this region actually uses. MEASURED 2026-08-24: exactly seven --
+    // a (the carved export link), div, img, li, p, span, ul -- none of them
+    // natively interactive. A tag entering (input, select, textarea, label,
+    // button, details, canvas, video, iframe, ...) fails here even under an
+    // event-handler name this suite has not named yet.
+    const readingColumnTags = new Set<string>();
+    for (const m of readingColumn.matchAll(/<([a-z][a-zA-Z0-9]*)/g)) readingColumnTags.add(m[1]);
+    const actualReadingColumnTags = [...readingColumnTags].sort().join(",");
+    pin.match(
+      `tags=${actualReadingColumnTags}`,
+      /^tags=a,div,img,li,p,span,ul$/,
+      "expected the reading column's entire host-element vocabulary to equal this measured set exactly -- a NEW tag entering (input/select/textarea/label/button/details/canvas/...) fails here even under an event-handler name no attribute pin has named",
+    );
+
+    // SECOND LAYER, kept: the wording sweep, widened to the WHOLE FILE
+    // (MEASURED 2026-08-24: zero occurrences of this pattern exist anywhere
+    // in page.tsx today, including inside the binding/attestation sections,
+    // so no carve is needed to go file-wide). Catches a confirmation-shaped
+    // affordance built from something other than the five HTML mechanisms
+    // above (e.g. a styled <span> or <li> with a synthetic keyboard handler
+    // this suite has not named yet) by what it SAYS instead of what tag it
+    // uses.
+    pin.doesNotMatch(
+      withoutComments(page),
+      /판독\s*을?\s*확인|confirm this reading|判読\s*を?\s*確認/i,
+      "expected no per-reading confirmation wording anywhere in the file -- 판독 확인 클릭은 제거 (#55), and only the BINDING keeps a 확인 control",
+    );
+
+    // Scope check, not a weakening: the BINDING section's own legitimate
+    // confirm button -- an unrelated control this unit never touched -- must
+    // still exist and still be reachable. A pin broad enough to catch a
+    // reintroduced reading-confirm button but blind to this would be scoped
+    // wrong in the other direction.
+    pin.match(
+      page,
+      /이 결박을 확인합니다/,
+      "expected the 네트워크 결박 section's own confirm button to survive, unaffected by the reading-column sweep",
+    );
+  },
+);
+
 contractTest("the 현시도 review screen distinguishes stale, unconfirmed and blank-form", (pin) => {
   const page = read("app/genesis/phases/page.tsx");
 
@@ -4194,6 +4305,20 @@ contractTest("the 현시도 review screen distinguishes stale, unconfirmed and b
     "expected the stale reasons to be shown verbatim, not summarised away",
   );
 
+  // SINCE #55 (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자 결정: 현시도 화면은
+  // 엑셀 업로드로 통합 ... (#55)") these three words describe the BINDING
+  // (attestation) state, demoted into its own section, not the reading -- a
+  // reading is complete the moment somebody uploads their own sheet. Pinned on
+  // the function's OWN signature so the claim is mechanical: `reviewStateLabel`
+  // must be computed from the attestation's `confirmed`/`stale_reasons` fields,
+  // never from anything on `review.proposal`. Moving the computation onto the
+  // reading breaks this line even if the three words survive untouched.
+  pin.match(
+    page,
+    /function reviewStateLabel\(row: \{ confirmed: boolean; stale_reasons: string\[\] \}, t: Translate\)/,
+    "expected the three status words to be computed from the BINDING record's own fields (confirmed / stale_reasons), not from the reading",
+  );
+
   // Roadmap C1 option (b): a refused or absent proposal is the SAME screen with
   // a blank form, not a separate workflow.
   pin.match(
@@ -4201,10 +4326,16 @@ contractTest("the 현시도 review screen distinguishes stale, unconfirmed and b
     /!review\.proposal \|\| review\.proposal\.outcome === "refused"/,
     "expected a refused OR missing proposal to take the same branch -- the blank manual-entry form",
   );
+  // #55 moved 네트워크 결박 (the binding form) below the fold; the blank-form
+  // branch now points there by name instead of at "아래 양식" generically.
+  // Anchored on the full sentence (the "판독 결과가 없습니다" prefix is unique to
+  // THIS branch) rather than the bare "아래 네트워크 결박 절의 표에 직접 입력하십시오"
+  // fragment, which also appears verbatim in noImageSentence() -- an unanchored
+  // pin would pass even if this branch's own copy were rewritten.
   pin.match(
     page,
-    /아래 양식에 직접 입력하십시오/,
-    "expected the blank-form branch to say so in ko rather than rendering an empty panel",
+    /판독 결과가 없습니다 — 아래 네트워크 결박 절의 표에 직접 입력하십시오/,
+    "expected the blank-form branch to say so in ko, naming the 네트워크 결박 section, rather than rendering an empty panel",
   );
 });
 
@@ -4253,6 +4384,17 @@ contractTest("the 현시도 screen offers all three ways in, and each one produc
 contractTest("a 현시도 review with no drawing says so and never fakes one", (pin) => {
   const page = read("app/genesis/phases/page.tsx");
   const api = read("lib/api.ts");
+  // #55 (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자 결정: 현시도 화면은 엑셀
+  // 업로드로 통합 ... (#55)") split the rendering surface: the SCAN placeholder
+  // stays here, but the drawn Φ strip moved into its own component. VACUITY
+  // MEASURED 2026-08-24 (unit #55b refuter): a `<img src="placeholder.png">`
+  // planted inside PhaseDiagramSketch.tsx made this test pass unchanged,
+  // because it never read that file -- the no-stand-in-image invariant had
+  // silently narrowed to half the surface it claims to cover. `sketch` closes
+  // that gap. The strip's OWN <svg> is real, generated markup (not a stand-in
+  // for a scan the app never made), which is exactly why it does not trip this
+  // pin -- see components/genesis/PhaseDiagramSketch.tsx's own header comment.
+  const sketch = read("components/genesis/PhaseDiagramSketch.tsx");
 
   // The three media, and the fact that only one of them HAS an image.
   pin.match(
@@ -4271,11 +4413,17 @@ contractTest("a 현시도 review with no drawing says so and never fakes one", (
   pin.match(page, /이미지 없음 — 엑셀 업로드로 만든 검토입니다/, "expected the excel placeholder to say in ko that there is no drawing");
 
   // A stand-in picture would make the attestation's binding -- "the drawing
-  // this person actually looked at" -- unfalsifiable.
+  // this person actually looked at" -- unfalsifiable. Checked on BOTH files
+  // that render this screen now.
   pin.doesNotMatch(
     withoutComments(page),
     /data:image|placeholder\.(png|svg|jpg)/,
     "expected no stand-in image anywhere on the review screen",
+  );
+  pin.doesNotMatch(
+    withoutComments(sketch),
+    /data:image|placeholder\.(png|svg|jpg)|<img\b/,
+    "expected no stand-in image (or <img> at all) inside the drawn Φ strip -- it is a generated <svg>, never a scan substitute",
   );
   // The confirmation still sends the sha VERBATIM from the render, null and all.
   pin.match(
@@ -4288,27 +4436,485 @@ contractTest("a 현시도 review with no drawing says so and never fakes one", (
 contractTest("an uploaded sheet is provenance, and the panel says whose reading it is", (pin) => {
   const page = read("app/genesis/phases/page.tsx");
 
-  // Two sources, two honest titles, ONE status. The vision title must survive:
-  // an uploaded sheet was not read by a model, and a model's reading was not
-  // uploaded by a person.
+  // #55's core distinction (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자
+  // 결정: 현시도 화면은 엑셀 업로드로 통합 ... (#55)"): an uploaded workbook is no
+  // longer a proposal awaiting a click -- it is THAT PERSON'S OWN RECORD of the
+  // reading. Two sources, two honest titles, ONE status word left (신뢰 is never
+  // split into "우리가 검증한" vs "우리가 안 한" -- neither source is verified by
+  // this app). The vision title must survive: an uploaded sheet was not read by
+  // a model, and a model's reading was not uploaded by a person.
   pin.match(page, /모델의 판독 \(제안\)/, "expected the vision branch to keep its own title");
-  pin.match(page, /업로드된 시트 \(제안\)/, "expected an uploaded sheet to be titled as what it is -- still a 제안");
   pin.match(
     page,
-    /uploadedProposal\s*\n?\s*\?\s*t\("업로드된 시트 \(제안\)"/,
-    "expected the title to be chosen by the proposal's SOURCE, not by which one was written last",
+    /업로드된 시트 \(올린 사람의 기록\)/,
+    "expected an uploaded sheet to be titled as the UPLOADER'S OWN RECORD -- per #55, no longer a 제안 awaiting confirmation",
   );
-  pin.match(page, /올린 사람: \$\{review\.proposal\.uploaded_by/, "expected the uploader to be shown as provenance");
   pin.match(
     page,
-    /올린 것은 확인이 아닙니다/,
-    "expected the screen to say, in ko, that uploading is not confirming",
+    /uploadedRecord\s*\n?\s*\?\s*t\("업로드된 시트 \(올린 사람의 기록\)"/,
+    "expected the title to be chosen by the proposal's SOURCE (uploadedRecord), not by which branch was written last",
   );
-  // Provenance must never be dressed as an attestation.
+
+  // HALF ONE -- 올린 사람 is that person's OWN WORD about the READING: named as
+  // authorship, and the screen says outright that it does not referee it.
+  pin.match(page, /올린 사람: \$\{review\.proposal\.uploaded_by/, "expected the uploader to be named as the author of the reading");
+  pin.match(
+    page,
+    /이 앱은 기록의 정오를 판단하지 않습니다/,
+    "expected the screen to say, in ko, that this app does not judge whether the uploader's record is right",
+  );
+  pin.match(
+    page,
+    /그 시트 자체가 그 사람의 진술입니다/,
+    "expected the body to state plainly that the sheet IS that person's own statement of the reading",
+  );
+
+  // HALF TWO -- provenance must still never be dressed as the BINDING's
+  // attestation. 확인자 names who attested the draft node/link binding
+  // (attestation.attested_by); uploaded_by must never sit beside that word,
+  // and the 확인자 line must be sourced from the attestation and nothing else.
   pin.doesNotMatch(
     withoutComments(page),
-    /확인자[^\n]{0,40}uploaded_by/,
-    "expected the uploader never to be printed as the 확인자 -- that name comes from the confirmation",
+    /확인자[^\n]{0,80}uploaded_by/,
+    "expected the uploader never to be printed as the 확인자 -- that name comes only from the binding attestation",
+  );
+  pin.match(
+    page,
+    /t\("확인자", "attested by", "確認者"\)\}: <b>\{review\.attestation\.attested_by\}<\/b>/,
+    "expected 확인자 to be sourced only from the binding attestation's attested_by, never from proposal.uploaded_by",
+  );
+});
+
+contractTest(
+  "the PhaseDiagramProposal docstring states #55's reconciliation, and the retired wording cannot silently return",
+  (pin) => {
+    const api = read("lib/api.ts");
+
+    // DEFECT MEASURED 2026-08-24 (refuter, #55b round 2): nothing in this test
+    // file grepped for `PhaseDiagramProposal` or any docstring excerpt at all --
+    // the refuter restored the ENTIRE pre-#55 docstring (the retired
+    // "uploaded_by is PROVENANCE ... must never render beside the word 확인"
+    // wording) and the suite stayed 203/203 green. A single-source-of-truth
+    // doctrine that can silently revert is the exact problem #55 was fixing.
+    const docstring = sliceBetween(
+      api,
+      "/** A READING. An artifact, never a fact",
+      "export type PhaseDiagramProposal = {",
+    );
+    pin.match(docstring, /\S/, "expected to find the PhaseDiagramProposal docstring (boundary moved?)");
+
+    // HALF ONE -- uploaded_by IS the authoring word for the READING (#55's
+    // affirmative claim, not present in the pre-#55 wording at all).
+    pin.match(
+      docstring,
+      /it is the authoring word for THIS reading/,
+      "expected the docstring to state uploaded_by is the authoring word for the reading",
+    );
+    pin.match(
+      docstring,
+      /it is still never the 확인자 of anything/,
+      "expected the docstring to state uploaded_by is never a 확인자 claim on its own",
+    );
+
+    // HALF TWO -- the reconciliation's prohibition, stated as two explicit,
+    // opposite-direction bans (never printed beside; never the SOURCE of).
+    pin.match(
+      docstring,
+      /`uploaded_by` must never render beside that\s*\n?\s*\*?\s*attested_by/,
+      "expected the docstring to forbid uploaded_by ever rendering beside attested_by",
+    );
+    pin.match(
+      docstring,
+      /`attested_by` must never be filled from `uploaded_by`/,
+      "expected the docstring to forbid attested_by ever being filled FROM uploaded_by",
+    );
+
+    // THE RETIRED WORDING must not silently return -- this is the exact
+    // string the refuter restored wholesale.
+    pin.doesNotMatch(
+      docstring,
+      /`uploaded_by` is PROVENANCE -- who supplied the sheet -- which the review\s*\n\s*\* screen must never render beside the word 확인/,
+      "expected the pre-#55 'uploaded_by is PROVENANCE ... must never render beside the word 확인' wording to stay retired, not restored wholesale beside (or instead of) its #55 replacement",
+    );
+    pin.doesNotMatch(
+      docstring,
+      /Two sources since unit #52, one status\./,
+      "expected the pre-#55 'Two sources since unit #52, one status.' opening sentence to stay retired",
+    );
+
+    // ROUND 3 -- CLOSING THE CLASS: the fragment pins above all still matched
+    // after the refuter APPENDED a contradicting sentence right before the
+    // closing `*/`. Per the recorded threat-model boundary
+    // (docs/phase2/DECISIONS.md, "2026-08-24 — 계약 핀의 위협 모델 경계 (#55b
+    // 3패스에서 명시)"), "문서 우회 → 문장 조각이 아니라 독스트링 블록 전체를
+    // 핀": the whole doc-comment block, line for line, from its opening `/**`
+    // through the closing `*/` immediately followed by the type it documents
+    // -- so ANY inserted, appended, or reworded sentence anywhere in the
+    // block breaks the match. MEASURED 2026-08-24 (extracted programmatically
+    // via the same sliceBetween markers above, LF-only, 20 lines) -- built
+    // with `\r?\n` between lines rather than a hardcoded `\n`, the same
+    // CRLF-tolerance discipline `topLevelFunction` above documents.
+    const DOCSTRING_LINES = [
+      "/** A READING. An artifact, never a fact -- no field here asserts correctness,",
+      " * and no string in this UI may imply one does.",
+      " *",
+      " * Two sources. `vision` is a model reading a rendered band (`model` names it,",
+      " * `image_sha256` binds it) -- still a proposal, and the screen labels it one.",
+      " * `excel_upload` is a spreadsheet somebody filled in and sent: no model read",
+      " * it, it has no image, and since unit #55 (docs/phase2/DECISIONS.md,",
+      ' * "2026-08-24 -- 사용자 결정: 현시도 화면은 엑셀 업로드로 통합 ... (#55)") it is no',
+      " * longer a proposal awaiting a per-intersection click -- the upload itself IS",
+      " * that person's own statement of the reading.",
+      " *",
+      " * `uploaded_by` therefore carries TWO things that must not be collapsed into",
+      " * one: it is the authoring word for THIS reading (who read the sheet and typed",
+      " * it in -- a claim this app makes about the record's origin, never about",
+      " * whether it is correct), and it is still never the 확인자 of anything. The",
+      " * word 확인 on this screen belongs exclusively to the BINDING -- the human act",
+      " * of tying this reading's approaches to a generated draft's node and link ids",
+      " * (MappingAttestation.attested_by), reached from each card's 네트워크 결박",
+      " * section at signals-build time. `uploaded_by` must never render beside that",
+      " * attested_by, and `attested_by` must never be filled from `uploaded_by`. */",
+    ];
+    const docstringBlockPattern = new RegExp(
+      DOCSTRING_LINES.map((line) => literalPattern(line).source).join("\\r?\\n") +
+        '\\r?\\nexport type PhaseDiagramProposal = \\{',
+    );
+    pin.match(
+      api,
+      docstringBlockPattern,
+      "expected the PhaseDiagramProposal docstring to equal this EXACT block, line for line, immediately followed by the type it documents -- any inserted, appended, or reworded sentence anywhere in it fails here even where every fragment pin above stays green",
+    );
+
+    // SELF-EVASION FOUND 2026-08-24, closed the same day: the block-equality
+    // pin above is scoped to the DOC COMMENT only -- it says nothing about the
+    // TYPE BODY that follows. A contradicting field-level `//` comment on
+    // `uploaded_by` itself (an entirely ordinary TypeScript idiom, not
+    // obscure obfuscation -- plausible honest drift from a well-meaning
+    // future editor) sits outside every pin above and survives. Widened to
+    // the whole type declaration -- docstring through the closing `};` -- and
+    // banned the "this is handled automatically, don't worry about it"
+    // contradiction family this unit has now measured TWICE (once here, once
+    // in phasesHelpEntries' 결박이 사람의 몫입니다 entry): #55's whole point is
+    // that the binding is NOT automatic and IS a human act, so no phrasing
+    // anywhere near this type may say otherwise.
+    const typeStart = api.indexOf("export type PhaseDiagramProposal = {");
+    const typeEnd = api.indexOf("\n};", typeStart);
+    pin.match(`typeBounds=${typeStart}/${typeEnd}`, /^typeBounds=\d+\/\d+$/, "expected to find PhaseDiagramProposal's closing `};` (boundary moved?) -- a -1 from indexOf fails this digits-only pattern");
+    const wholeDeclaration = api.slice(api.indexOf("/** A READING. An artifact, never a fact"), typeEnd + 3);
+    pin.doesNotMatch(
+      wholeDeclaration,
+      /usually.{0,40}(?:automatic|infers?|handles?|figures? out|connects?)|rarely matters|doesn'?t really matter|대부분(?:의 경우)?.{0,20}(?:자동|알아서)|특별히 신경 쓰지 않아도|신경 쓰지 않아도 됩니다/i,
+      "expected no 'this is handled automatically / rarely matters' contradiction anywhere in the PhaseDiagramProposal docstring OR its type body -- #55's whole reconciliation is that the binding is NOT automatic",
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// #55's new component -- components/genesis/PhaseDiagramSketch.tsx. The Φ
+// strip draws the STORED reading's own parsed rows, and nothing else. These
+// pins are the three rules the component's own header comment names.
+// ---------------------------------------------------------------------------
+
+contractTest("the Φ strip is fed the review's own parsed rows, and nothing else", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  pin.match(
+    page,
+    /phases=\{review\.proposal\.phases\}/,
+    "expected the strip to be drawn from the review's OWN parsed phases, not a separately-fetched or synthesised list",
+  );
+  pin.match(
+    page,
+    /approaches=\{review\.proposal\.approaches\}/,
+    "expected the strip's slot order to come from the review's OWN parsed approaches",
+  );
+  pin.match(
+    page,
+    /notes=\{review\.proposal\.notes\}/,
+    "expected the intersection notes under the strip to come from the review's OWN parsed notes",
+  );
+
+  // DEFECT MEASURED 2026-08-24 (refuter, #55b round 2): the three pins above
+  // only verify the RENDER CALL SITE -- they say nothing about where `review`
+  // itself came from. The refuter rewrote `loadReview` to overwrite every
+  // phase's `movements` with a fabricated `[{approach_label:"MUTATED", ...}]`
+  // array before calling `setReview`, and every pin above stayed green
+  // because `review.proposal.phases` was still the prop wired to the strip --
+  // it just no longer held what the server sent. FIX: pin the STORE itself.
+  const loadReviewBody = sliceBetween(
+    page,
+    "const loadReview = useCallback(async (reviewId: string) => {",
+    "}, []);",
+  );
+  pin.match(loadReviewBody, /\S/, "expected to find loadReview's body (boundary moved?)");
+  pin.match(
+    loadReviewBody,
+    /const loaded = await fetchPhaseDiagram\(reviewId\);\s*\n\s*setReview\(loaded\);/,
+    "expected setReview to receive `loaded` UNMODIFIED, on the very next line after the fetch -- no transform, spread-and-patch, or rebuild may sit between the fetch and the store",
+  );
+  pin.doesNotMatch(
+    withoutComments(loadReviewBody),
+    /\.movements\s*=|\.phases\s*=|movements\s*:\s*\[|phases\s*:\s*\[/,
+    "expected loadReview never to reassign or fabricate a .movements/.phases array -- the stored review must be exactly the server's own payload, so the Φ strip can never be fed data no fetch produced",
+  );
+
+  // ROUND 3 -- CLOSING THE CLASS: the loadReview-scoped ban above only covers
+  // ONE of THREE `setReview(...)` call sites in this file (`setReview(loaded)`
+  // in loadReview, `setReview(null)` in its catch, `setReview(updated)` in
+  // `submit`'s confirm handler). Round 2's refuter fabricated the phases
+  // before the OTHER call site -- `submit`, not `loadReview` -- and the
+  // scoped pin above could not see it. The page NEVER constructs
+  // phases/movements anywhere -- it only displays what the server already
+  // returned (from `fetchPhaseDiagram` or from `confirmPhaseDiagram`) -- so
+  // the ban belongs on the WHOLE FILE, not one function, and it covers every
+  // present AND future `setReview` call site by construction. MEASURED
+  // 2026-08-24: none of these shapes -- including the literal field name
+  // `approach_label:`, which only a hand-built movement object would ever
+  // write -- appear anywhere in page.tsx today.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /\.movements\s*=|\.phases\s*=|movements\s*:\s*\[|phases\s*:\s*\[|approach_label:/,
+    "expected the page to never CONSTRUCT a phases/movements array anywhere -- it only ever displays server data, from ANY setReview call site, present or future",
+  );
+});
+
+contractTest("`unknown` can never reach an arrow, by type -- not by convention", (pin) => {
+  const sketch = read("components/genesis/PhaseDiagramSketch.tsx");
+
+  // THE DISCRIMINATING PATH. `VehicleTurn` is the closed set of turns that
+  // HAVE a direction -- `unknown` and `pedestrian` are deliberately absent
+  // from it, so a heading table typed over it structurally cannot have an
+  // entry for either. Adding a sixth turn to the vocabulary without updating
+  // this set fails to COMPILE (verified separately by `npm run typecheck`);
+  // this pin guards the runtime routing on top of that.
+  pin.match(
+    sketch,
+    /type VehicleTurn = "through" \| "left" \| "right" \| "u_turn";/,
+    "expected the four turns WITH a direction to be a closed set that excludes unknown and pedestrian",
+  );
+  pin.match(
+    sketch,
+    /function movementGlyph\(turn: SketchTurn\): Glyph \{/,
+    "expected one function to be the sole place a turn is classified into a glyph",
+  );
+  pin.match(
+    sketch,
+    /if \(turn === "unknown"\) return \{ kind: "chip" \};/,
+    "expected unknown to be routed to the chip arm before any arrow logic runs",
+  );
+  pin.match(
+    sketch,
+    /const TURN_ROTATION_DEG: Record<VehicleTurn, number> = \{/,
+    "expected the arrow heading table to be typed over VehicleTurn only -- there is no heading for unknown to acquire",
+  );
+  // The rendering side must actually respect the discriminated union: an arrow
+  // is drawn only in the "arrow" arm, never as a fallback default.
+  pin.match(
+    sketch,
+    /glyph\.kind === "arrow" \? \(/,
+    "expected ArrowMark to be reached only through the explicit 'arrow' branch of the glyph union",
+  );
+
+  // VACUITY MEASURED 2026-08-24 (refuter, #55b round 2): the type guarantee
+  // above is real for the ArrowMark PATH, but says nothing about a hand-rolled
+  // JSX shape planted anywhere else in the file -- the refuter added an inline
+  // `<svg><polygon .../></svg>` arrowhead beside the 미상 chip text (~line
+  // 333-340) and every pin above stayed green, because none of them look past
+  // ArrowMark/CrossingMark's own bodies at the REST of the file. FIX DIRECTION
+  // (the coordinator's, not a chip-specific patch): the file may carry
+  // exactly ONE arrowhead-drawing <polygon>, and it must live inside
+  // ArrowMark's own body -- proven by COUNTING, so a second one anywhere
+  // (a chip, a slot label, the notes block, or any future JSX) fails here
+  // regardless of which element it hides inside.
+  const totalPolygons = (sketch.match(/<polygon\b/g) ?? []).length;
+  const arrowMarkBody = sliceBetween(sketch, "function ArrowMark(", "function CrossingMark(");
+  pin.match(arrowMarkBody, /\S/, "expected to find ArrowMark's body (function boundary moved?)");
+  const arrowMarkPolygons = (arrowMarkBody.match(/<polygon\b/g) ?? []).length;
+  pin.match(
+    `polygons=${totalPolygons}/inArrowMark=${arrowMarkPolygons}`,
+    /^polygons=1\/inArrowMark=1$/,
+    "expected the file's ONLY <polygon> (an arrowhead) to be the one inside ArrowMark -- any second <polygon> anywhere else in the component (a chip, a slot label, the notes block) is an ungoverned second arrowhead emitter",
+  );
+  // The other SVG arrowhead mechanism this file could reach for instead of a
+  // <polygon> -- a <marker>/markerEnd -- is banned outright, file-wide: this
+  // component draws its one legitimate arrowhead by hand in ArrowMark and has
+  // no legitimate use for the marker mechanism at all.
+  pin.doesNotMatch(
+    withoutComments(sketch),
+    /<marker\b|markerEnd\s*=|markerStart\s*=|markerWidth\s*=|markerHeight\s*=/,
+    "expected no SVG <marker>/markerEnd arrow mechanism anywhere in the file -- ArrowMark's own <polygon> head is the only arrow-drawing mechanism this component may use",
+  );
+
+  // ROUND 3 -- CLOSING THE CLASS, not the two reproductions. Round 2's
+  // refuter redrew the SAME lie with different markup and the polygon-count
+  // pin above stayed green: a `<path d="M0,0 L10,5 L0,10 Z">` triangle (a
+  // NEW use of an ALREADY-legitimate tag -- `path` is ArrowMark's own stroke)
+  // and a `<use href="#...">` reusing ArrowMark's polygon by reference. Per
+  // the recorded threat-model boundary (docs/phase2/DECISIONS.md, "2026-08-24
+  // — 계약 핀의 위협 모델 경계 (#55b 3패스에서 명시)"): a partial ban
+  // (`<polygon>` only) is always evadable by a different primitive: the fix
+  // is a CLOSED VOCABULARY, set-equality, the #50-d idiom.
+  //
+  // MEASURED 2026-08-24: this pure-display component's entire lowercase
+  // (host-element) tag vocabulary is exactly these 13 -- svg/g/title (SVG
+  // structure), line/polygon/path (SVG marks -- `path` is ArrowMark's OWN
+  // connecting stroke, not an arrowhead), text (leg numerals), and
+  // div/p/span/ul/ol/li (chrome). Anchored BOTH directions: a tag entering
+  // (`use`, `marker`, `circle`, `image`, `foreignObject`, `a`, `button`,
+  // `input`, `canvas`, `iframe`, ...) fails, and a tag leaving (e.g. losing
+  // <title> a11y support) fails too -- the same "files=" idiom
+  // MICROTASK_DEFERRAL_FILES uses above, anchored so a superset does not pass.
+  const tagSet = new Set<string>();
+  for (const m of sketch.matchAll(/<([a-z][a-zA-Z0-9]*)/g)) tagSet.add(m[1]);
+  const actualTags = [...tagSet].sort().join(",");
+  pin.match(
+    `tags=${actualTags}`,
+    /^tags=div,g,li,line,ol,p,path,polygon,span,svg,text,title,ul$/,
+    "expected the Φ strip's entire host-element vocabulary to equal this measured set exactly -- a NEW tag entering (use/marker/circle/image/foreignObject/a/button/...) fails here even where the polygon-count pin above cannot see it, and a tag disappearing fails too",
+  );
+
+  // `path` was ALREADY legitimate (ArrowMark's stroke) before this pin
+  // existed, so the tag-SET pin above cannot catch a SECOND <path> reusing
+  // that already-open door -- exactly the refuter's triangle. Closed the same
+  // way as <polygon>: total count in the file must equal the count inside
+  // ArrowMark's own body.
+  const totalPaths = (sketch.match(/<path\b/g) ?? []).length;
+  const arrowMarkPaths = (arrowMarkBody.match(/<path\b/g) ?? []).length;
+  pin.match(
+    `paths=${totalPaths}/inArrowMark=${arrowMarkPaths}`,
+    /^paths=1\/inArrowMark=1$/,
+    "expected the file's ONLY <path> (ArrowMark's own connecting stroke) to be the one inside ArrowMark -- a second <path> anywhere else is an ungoverned shape, triangle-drawing or otherwise, that the polygon-only pin cannot see",
+  );
+
+  // Arrow-shaped UNICODE glyphs in JSX text -- a third, markup-free way to
+  // draw a direction beside 미상 that no tag-vocabulary pin can see at all.
+  // MEASURED 2026-08-24: zero legitimate uses exist anywhere in this file (no
+  // arrow emoji/dingbat currently appears, directional turns are drawn as
+  // <path>/<polygon> geometry and named in prose, never as a glyph) -- so the
+  // ban is flat, not carved.
+  pin.doesNotMatch(
+    sketch,
+    /[←-⇿➔-➿⬀-⯿▲-▾◀-◅▶-▻]/u,
+    "expected no arrow-shaped unicode glyph (→ ▶ ▸ ➤ etc.) anywhere in the file -- a fourth way to draw a direction beside a movement this component must never give one",
+  );
+
+  // SELF-EVASION FOUND 2026-08-24, closed the same day: a CSS-only
+  // "border-triangle" (`<div style={{width:0, height:0, borderLeft:"8px
+  // solid currentColor", ...}} />`) draws a visible arrowhead using ONLY the
+  // already-legitimate `div` tag -- it is invisible to the tag-set pin (no
+  // new tag), the path/polygon-count pins (neither element), and the
+  // unicode-glyph ban (no glyph). This is a well-known, ordinary CSS idiom,
+  // not obscure obfuscation -- plausible honest drift, per the recorded
+  // threat-model boundary -- so it gets a pin rather than a shrug. MEASURED:
+  // this pure-display component uses zero inline `style=` anywhere (every
+  // visual property is a Tailwind class or an SVG presentation attribute), so
+  // the ban is flat. It also forecloses the sibling idioms (conic-gradient
+  // arrows, clip-path polygons, box-shadow arrows) that reach for the exact
+  // same door.
+  pin.doesNotMatch(
+    sketch,
+    /style\s*=\s*\{/,
+    "expected no inline `style=` prop anywhere in the file -- a CSS-only shape (a border-triangle arrowhead, a clip-path polygon, ...) drawn through it would be invisible to every tag- and glyph-based pin above",
+  );
+});
+
+contractTest("보행 draws a headless crossing bar, never a vehicle arrow", (pin) => {
+  const sketch = read("components/genesis/PhaseDiagramSketch.tsx");
+
+  pin.match(
+    sketch,
+    /if \(turn === "pedestrian"\) return \{ kind: "crossing" \};/,
+    "expected pedestrian to be routed to the crossing arm, never to the arrow arm",
+  );
+  pin.match(
+    sketch,
+    /glyph\.kind === "crossing" \? \(/,
+    "expected CrossingMark to be reached only through the explicit 'crossing' branch of the glyph union",
+  );
+  // CrossingMark itself must carry no arrowhead: ArrowMark's head is a
+  // <polygon>, and a crossing mark that grew one would be misreadable as a
+  // fifth arrow beside the four real ones.
+  const crossingMarkBody = sliceBetween(sketch, "function CrossingMark(", "function PhaseCell(");
+  pin.match(crossingMarkBody, /\S/, "expected to find CrossingMark's body (function boundary moved?)");
+  pin.doesNotMatch(
+    crossingMarkBody,
+    /<polygon/,
+    "expected the crossing mark to carry no arrowhead polygon -- it must not be misreadable as a fifth arrow",
+  );
+  pin.match(
+    crossingMarkBody,
+    /<line\b/,
+    "expected the crossing mark to be drawn as bars (<line>), not a directional stroke with a head",
+  );
+});
+
+contractTest("the Φ strip's placement-is-not-a-bearing caption renders unconditionally with it", (pin) => {
+  const sketch = read("components/genesis/PhaseDiagramSketch.tsx");
+
+  // MANDATORY per the component's own header comment (rule 1): the v1
+  // template carries no 방위 column, so a leg's position on this drawing is a
+  // SCREEN LAYOUT, never a claim about which way it actually faces. Anchored
+  // directly after the strip's opening <div> so a conditional wrapper inserted
+  // between them (hiding the caption in some branch) breaks this pin.
+  pin.match(
+    sketch,
+    /<div>\s*\{\/\* MANDATORY, and it is not decoration/,
+    "expected the caption to render unconditionally, immediately inside the strip's root element -- not gated behind a branch",
+  );
+  // VACUITY MEASURED 2026-08-24 (refuter, #55b round 2): the anchor above only
+  // reads up to where the comment STARTS -- it never reads past the comment's
+  // own close. Wrapping the caption in `{false && ( ... )}` AFTER the comment
+  // (leaving `<div>{/* MANDATORY... */}` itself untouched) kept that pin green
+  // AND kept the ko literal below matching, because a substring pin cannot
+  // tell rendered code from dead code. THE OTHER HALF of the structural
+  // anchor: the comment's closing `*/}` must be immediately followed (only
+  // whitespace between) by the caption's OWN `<p>` -- no `{anything && (`
+  // wrapper of any kind may sit between them. Together with the anchor above,
+  // this pins the caption as the div's literal first and only-wrapped-by-
+  // nothing child, which is a structural claim no single literal (`false`,
+  // `0`, or any other falsy value) can dodge.
+  pin.match(
+    sketch,
+    /order\. Saying so is the difference between a diagram and a claim\. \*\/\}\s*<p className="text-\[14px\] leading-relaxed text-slate-600">/,
+    "expected the caption comment's close to be immediately followed by its own <p> -- no conditional wrapper (of any kind, not just `false &&`) may sit between the comment and the element it documents",
+  );
+  pin.match(
+    sketch,
+    /배치는 화면 배열이며 실제 방위가 아닙니다/,
+    "expected the caption to state, in ko, that placement is a screen layout and not a real bearing",
+  );
+
+  // THE CLASS, not the two instances the refuter found: a substring pin
+  // cannot distinguish rendered code from code disabled by a leading/trailing
+  // falsy operand in an `&&` chain. Banned file-wide (comments stripped, since
+  // this very doc comment legitimately NAMES the family while explaining it) --
+  // `false`, `0`, `null`, `undefined`, on EITHER side of `&&`. Verified against
+  // the file's own live code first: `drawn.length === 0 && chips.length === 0`
+  // and similar numeric-equality checks do NOT trip this, because the
+  // lookaround requires the `0`/`false`/etc. to be a BARE operand, not the
+  // right-hand side of a comparison operator.
+  pin.doesNotMatch(
+    withoutComments(sketch),
+    /(?<![=!<>]\s{0,3})\b(?:false|0|null|undefined)\s*&&|&&\s*(?:false|0|null|undefined)\b(?!\s{0,3}[=!<>])/,
+    "expected no dead-branch short-circuit (false/0/null/undefined && ..., or ... && false/0/null/undefined) anywhere in the Φ strip -- that is how a live pin can be left matching a branch that never renders",
+  );
+
+  // ROUND 3 -- CLOSING THE CLASS: round 2's refuter drew the SAME "hide the
+  // caption" lie a second way -- `style={{display:"none"}}` on the <p> --
+  // which the JS-level `&&`-short-circuit ban above cannot see (there is no
+  // `&&` at all). Per the recorded threat-model boundary
+  // (docs/phase2/DECISIONS.md, "2026-08-24 — 계약 핀의 위협 모델 경계 (#55b
+  // 3패스에서 명시)"): "가시성 억제 관용구 전면 금지" -- a pure-display component
+  // has no legitimate reason to hide ANY of its own content, by ANY
+  // mechanism, so every visibility-suppression idiom this app's own
+  // conventions and CSS ecosystem offer is banned outright rather than
+  // chased one literal at a time. MEASURED 2026-08-24: none of these strings
+  // appear anywhere in the file today, so the ban is flat.
+  pin.doesNotMatch(
+    withoutComments(sketch),
+    /display:\s*["']?none|visibility:\s*["']?hidden|opacity-0|\bsr-only\b|aria-hidden|\bhidden\b|\binvisible\b|visibility-collapse|\bcollapse\b/i,
+    "expected no visibility-suppression idiom anywhere in the Φ strip (display:none, visibility:hidden, opacity-0, sr-only, aria-hidden, a bare `hidden` attribute/class, Tailwind's `invisible`/`collapse`) -- this pure-display component has no legitimate reason to hide any of its own content",
   );
 });
 
@@ -4370,10 +4976,15 @@ contractTest("the network diagram links a selected node to its 현시도 without
     /node_id === Number\(nodeParam\)/,
     "expected a Vissim node id never to be matched against a draft attestation's node_id -- different id spaces",
   );
+  // #55 demoted the confirm form into the collapsed 네트워크 결박 section
+  // (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자 결정: 현시도 화면은 엑셀
+  // 업로드로 통합 ... (#55)"); the old sentence's referent moved, so the sentence
+  // pointing at it had to move too. It still names WHERE the binding is decided
+  // -- the invariant above (never matched by number) is what keeps it honest.
   pin.match(
     phasesPage,
-    /어느 노드에 배정되는지는 아래 확인 양식에서 정해집니다/,
-    "expected the screen to say the binding is still decided on the confirm form",
+    /어느 노드에 결박되는지는 카드의 네트워크 결박 절에서 정해집니다/,
+    "expected the screen to say the binding is still decided in the card's 네트워크 결박 section, by name",
   );
 });
 
@@ -4416,19 +5027,154 @@ contractTest("unit #52's doctrine lives at /docs, not on the phases screen", (pi
   const page = read("app/genesis/phases/page.tsx");
 
   pin.match(help, /입력하는 세 가지 방법/, "expected the three input paths to be explained in the doctrine module");
+  // #55 (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자 결정: 현시도 화면은 엑셀
+  // 업로드로 통합 ... (#55)") retired the old "all three produce a PROPOSAL"
+  // claim: an upload is now the uploader's own RECORD, not something awaiting a
+  // click. BOTH directions matter here -- the new claim must be present, and
+  // the retired one must not have quietly come back.
   pin.match(
     help,
+    /세 가지 모두 결과는 올린 사람의 기록이며/,
+    "expected the doctrine to state that all three produce THAT PERSON'S OWN RECORD, not a proposal",
+  );
+  pin.doesNotMatch(
+    help,
     /세 가지 모두 결과는 '제안'이며/,
-    "expected the doctrine to state that all three produce a proposal",
+    "expected the retired #52-era 'all three produce a proposal' claim to be GONE, not left beside its #55 replacement",
   );
   pin.match(help, /가짜 이미지를 넣지 않고/, "expected the no-fake-image rule to be stated at /docs");
+
+  // #55's two new doctrine claims: binding is the human act that survived, and
+  // the drawn Φ strip is a layout, never a claim about real geography.
+  pin.match(
+    help,
+    /export function phasesHelpEntries\(t: Translate\): HelpEntry\[\] \{[\s\S]*?결박이 사람의 몫입니다/,
+    "expected a doctrine entry stating that binding the draft node/links stays a human act, inside phasesHelpEntries",
+  );
+  pin.match(
+    help,
+    /signals 입력을 만들 때 사람이 각 카드의 네트워크 결박 절에서 정하며/,
+    "expected the binding entry to name WHEN it happens -- at signals-build time, in each card's own section",
+  );
+  pin.match(
+    help,
+    /export function phasesHelpEntries\(t: Translate\): HelpEntry\[\] \{[\s\S]*?그려진 도식은 배치이지 실제 지리가 아닙니다/,
+    "expected a doctrine entry stating the drawn strip is a layout, not real geography, inside phasesHelpEntries",
+  );
+  pin.match(
+    help,
+    /실제 방위를 주장하지 않으며/,
+    "expected the layout entry to disclaim any real-bearing claim, the same rule PhaseDiagramSketch.tsx enforces by type",
+  );
+
   // Unit #20's rule: the screen carries actions, the doctrine page carries prose.
   pin.doesNotMatch(
     withoutComments(page),
-    /확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로/,
+    /결박 확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로/,
     "expected the doctrine paragraph to stay at /docs rather than being pasted onto the screen",
   );
 });
+
+contractTest(
+  "phasesHelpEntries' titles and bodies are pinned as EXACT triples, in ko AND en AND ja",
+  (pin) => {
+    const help = read("lib/help-content.tsx");
+
+    // DEFECT MEASURED 2026-08-24 round 2 (refuter): a ko-only exact-string
+    // pin (this test's prior form) still passed after the SAME contradicting
+    // clause was appended to the EN body instead of the ko one -- #50-d's own
+    // measured defect class, restated exactly: "fragment pins let en/ja
+    // drift" applies just as much to a language-SCOPED exact pin as to a
+    // substring one. Per the recorded threat-model boundary
+    // (docs/phase2/DECISIONS.md, "2026-08-24 — 계약 핀의 위협 모델 경계 (#55b
+    // 3패스에서 명시)"): "언어 우회 → ko만이 아니라 ko/en/ja 세 본문 전부". Widened
+    // to all three languages AND to the titles (each entry's `title: t(ko,
+    // en, ja)` also carries a per-language claim a fragment pin could drift
+    // on unnoticed).
+    //
+    // IMPLEMENTATION: reuses this suite's own `TS_STRING_LITERAL` and
+    // `unquoteTsString` (defined below, in scope by the time this callback
+    // actually runs -- node:test executes test bodies after the whole module
+    // has finished its synchronous top-level evaluation) to extract every
+    // `title: t(...)` and `body: t(...)` triple from phasesHelpEntries, in
+    // SOURCE ORDER, and compares the extracted set to a hardcoded expected
+    // set via a single anchored string-equality pin per field -- the same
+    // "count="/"files=" idiom MICROTASK_DEFERRAL_FILES and the U-19 resolver
+    // count use above, generalised from a scalar to a whole array by
+    // serialising it. An insertion, deletion, reorder, or per-language reword
+    // ANYWHERE in either set changes the serialised string and fails.
+    //
+    // MEASURED 2026-08-24: extracted programmatically from the live file (a
+    // small script, not hand-copied) to rule out a transcription error making
+    // this pin permanently red or, worse, silently vacuous.
+    function phasesEntryTriples(field: "title" | "body"): string {
+      const start = help.indexOf("export function phasesHelpEntries(");
+      if (start === -1) return "MISSING";
+      const end = help.indexOf("\nexport function ", start + 1);
+      const slice = help.slice(start, end === -1 ? undefined : end);
+      const pattern = new RegExp(
+        `${field}:\\s*t\\(\\s*(${TS_STRING_LITERAL.source})\\s*,\\s*(${TS_STRING_LITERAL.source})\\s*,\\s*(${TS_STRING_LITERAL.source})\\s*,?\\s*\\)`,
+        "g",
+      );
+      const triples = [...slice.matchAll(pattern)].map((m) => [
+        unquoteTsString(m[1]),
+        unquoteTsString(m[2]),
+        unquoteTsString(m[3]),
+      ]);
+      return JSON.stringify(triples);
+    }
+
+    const EXPECTED_TITLES = JSON.stringify([
+      ["결박이 사람의 몫입니다", "Binding stays a human act", "結縛は人の仕事です"],
+      ["signals 입력", "Signals input", "信号入力"],
+      ["입력하는 세 가지 방법", "Three ways to add one", "入力する三つの方法"],
+      ["엑셀에는 도면이 없습니다", "A spreadsheet carries no drawing", "エクセルに図面はありません"],
+      [
+        "그려진 도식은 배치이지 실제 지리가 아닙니다",
+        "The drawn strip is a layout, not real geography",
+        "描かれた図は配置であり実際の地理ではありません",
+      ],
+    ]);
+    const EXPECTED_BODIES = JSON.stringify([
+      [
+        "현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 자동으로 만들어내지 못합니다. 템플릿을 채워 올린 엑셀은 올린 사람 자신의 판독 기록이며, 이 화면은 그 기록을 그대로 도식으로 그릴 뿐 정오를 판단하지 않습니다. 초안 네트워크의 어느 노드·링크에 묶이는지만은 signals 입력을 만들 때 사람이 각 카드의 네트워크 결박 절에서 정하며, 그 결박이 이 제품에서 사람 손으로 남아 있는 유일한 확인입니다.",
+        "The 현시도 is a drawing, so no parse can produce the approach→phase mapping on its own. A workbook somebody filled in and uploaded is THAT PERSON'S OWN reading; this screen draws it exactly as written and judges nothing. Only which draft node and link ids it binds to is still decided by a human, in each card's 네트워크 결박 section, at the moment a signals input is built -- that binding is the one human-confirmed act left in this product.",
+        "現示図は図面であり、解析だけでは流入路と現示の対応を自動的には作れません。テンプレートを記入して送られたエクセルは提出者自身の判読記録であり、この画面はそれをそのまま図として描くだけで正誤は判断しません。草案ネットワークのどのノード・リンクに結びつくかのみ、signals入力を作るときに人がカードの네트워크 결박で決めます — その結縛が、この製品に残る唯一の人による確認です。",
+      ],
+      [
+        "네트워크 결박까지 확인된(CONFIRMED) 교차로만 signals 입력에 포함됩니다 — 업로드만 되고 결박이 없거나 재확인이 필요한 교차로는 빠집니다.",
+        "Only intersections CONFIRMED all the way to their network binding are included in the signals input — an upload with no binding yet, or one needing re-confirmation, is left out.",
+        "signals入力には、ネットワーク結縛まで確認済み（CONFIRMED）の交差点のみが含まれます — アップロードのみで結縛がない、または再確認が必要な交差点は除外されます。",
+      ],
+      [
+        "템플릿을 내려받아 채운 뒤 올리거나, 화면에서 빈 양식을 새로 만들거나, 이미 있는 기록을 엑셀 초안으로 내보내 고친 뒤 다시 올릴 수 있습니다. 세 가지 모두 결과는 올린 사람의 기록이며, 그 기록이 어느 초안 노드·링크에 묶이는지는 이후 네트워크 결박에서 사람이 정합니다.",
+        "Download the template and upload it filled in, create a blank form on the screen, or export an existing record as a draft workbook, correct it and send it back. All three produce THAT PERSON'S OWN RECORD -- which draft node and links it binds to is decided afterward, by a human, in 네트워크 결박.",
+        "テンプレートを記入して送るか、画面で空の様式を作るか、既存の記録を草案として書き出し修正して再送します。三つとも結果は送った本人自身の記録であり、どの草案ノード・リンクに結びつくかはその後、人が네트워크 결박で決めます。",
+      ],
+      [
+        "엑셀로 만든 검토와 직접 만든 빈 양식에는 현시도 그림이 없습니다. 이 앱은 그 자리에 가짜 이미지를 넣지 않고 '이미지 없음'이라고 적습니다 — 결박 확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로, 없는 그림을 있는 것처럼 표시하면 그 기록이 거짓이 됩니다. 또한 한 줄이라도 거부되면 그 교차로 전체를 가져오지 않습니다.",
+        "A review made from a spreadsheet, or created blank on the screen, has no 현시도 image. This app writes '이미지 없음' there instead of a stand-in picture: the binding attestation is bound to the hash of the drawing the person actually looked at, so a fake image would make that record a lie. And if one row is refused, the whole intersection is left out rather than half-imported.",
+        "エクセルから作成した検討や画面で作成した空の様式には現示図の画像がありません。本アプリは代わりの画像を置かず「画像なし」と記します — 結縛確認の記録は人が実際に見た図面のハッシュに紐づくためです。また一行でも拒否されればその交差点全体を取り込みません。",
+      ],
+      [
+        "업로드나 빈 양식에는 현시도 그림이 없으므로, 이 화면은 파싱된 접근로·현시 값으로 도식을 새로 그립니다. 이 도식은 방위 열이 없는 템플릿(v1)의 한계를 그대로 물려받아, 접근로의 위치를 시트에 적힌 순서로만 배치합니다 — 실제 방위를 주장하지 않으며, 판독되지 않은(미상) 이동류는 화살표가 아니라 글로 적힌 칩으로만 나타납니다.",
+        "An upload or a blank form carries no 현시도 image, so this screen draws its own diagram from the parsed approach and phase values. That drawing inherits the v1 template's own limit -- no bearing column -- and places each leg only in the order the sheet lists it; it makes no claim about a real compass direction, and any movement the sheet left unresolved (미상) renders as a text chip, never as an arrow.",
+        "アップロードや空の様式には現示図の画像がないため、この画面は解析された流入路・現示の値から独自に図を描きます。この図はv1テンプレート自体の制約(方位の列がない)をそのまま引き継ぎ、各流入路をシートに記載された順序のみで配置します — 実際の方位を主張せず、判読できなかった(不明な)移動流は矢印ではなく文字のチップとしてのみ表示されます。",
+      ],
+    ]);
+
+    pin.match(
+      `titles=${phasesEntryTriples("title")}`,
+      new RegExp(`^titles=${literalPattern(EXPECTED_TITLES).source}$`),
+      "expected phasesHelpEntries' 5 titles to equal this EXACT ko+en+ja set -- any insertion, appended clause, reorder, or per-language drift (ko OR en OR ja) fails here",
+    );
+    pin.match(
+      `bodies=${phasesEntryTriples("body")}`,
+      new RegExp(`^bodies=${literalPattern(EXPECTED_BODIES).source}$`),
+      "expected phasesHelpEntries' 5 bodies to equal this EXACT ko+en+ja set -- same guarantee as titles, extended to the doctrine's actual claims (this is what caught the round-2 EN-body insertion the ko-only version of this pin missed)",
+    );
+  },
+);
 
 contractTest("the demand side-input UI never invents a link id and stays one door", (pin) => {
   const page = read("app/genesis/demand/page.tsx");
@@ -4703,6 +5449,15 @@ contractTest("U-1: three accent colours, tint in the fill, ink in the text", (pi
     ["app/genesis/region/page.tsx", read("app/genesis/region/page.tsx")],
     ["app/genesis/demand/page.tsx", read("app/genesis/demand/page.tsx")],
     ["app/genesis/phases/page.tsx", read("app/genesis/phases/page.tsx")],
+    // #55b (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자 결정: 현시도 화면은
+    // 엑셀 업로드로 통합 ... (#55)") moved the drawn diagram into its own file.
+    // VACUITY MEASURED 2026-08-24 (unit #55b refuter): the three rules below
+    // (RULE 1 fill-not-ink, RULE 2 no-amber, RULE 3 12px floor) all walk this
+    // `files` array, so a component created after this test was written got
+    // none of them for free -- appended here so the sweep actually covers it
+    // rather than passing by never looking. Fixed-index pins below
+    // (files[0]/[1]/[2]) are unaffected: this entry is appended, not inserted.
+    ["components/genesis/PhaseDiagramSketch.tsx", read("components/genesis/PhaseDiagramSketch.tsx")],
   ];
 
   // ---- RULE 1: a tinted box is a FILL, never an INK -------------------------

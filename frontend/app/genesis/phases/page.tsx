@@ -1,32 +1,50 @@
 "use client";
 
-// Roadmap C1-b — 현시도 제안+확인. The confirm screen.
+// Roadmap C1-b, re-cut by unit #55 — 현시도 업로드 + 도식.
 //
-// C1 was blocked on the client transcribing each 현시도 into a table, because the
-// sheet prints it as a PICTURE and no parse can produce it. This page unblocks it
-// without violating 추측 금지: a vision model PROPOSES a reading offline, and a
-// named human confirms or corrects it here. The confirmation — not the proposal —
-// is what becomes data.
+// THE USER'S DECISION (docs/phase2/DECISIONS.md:6826, 2026-08-24): "아예 엑셀
+// 올리는걸로 통합하자 — user uploads excel in the template structure (template
+// downloadable), and the page renders the diagram. no other extra confirmation
+// etc. keep it simple."
+//
+// WHAT THAT CHANGED, AND WHY IT DOES NOT BREAK C1-b's DOCTRINE. The confirmation
+// click existed to turn a MACHINE reading into a fact. An Excel a person filled
+// in and uploaded is ALREADY that person's own statement, so demanding a second
+// per-intersection click on their own words was ceremony — and the measured cost
+// of that ceremony was the Daejeon batch's ZERO attestations. Upload therefore
+// stamps `uploaded_by` (server-side) as the authoring word for the READING.
+//
+// WHAT UPLOAD CANNOT CARRY, and therefore what stays a human act: the BINDING of
+// sheet approaches to a generated draft's node id and link ids
+// (MappingAttestation). The whole confirm apparatus still exists, unchanged, in
+// the 네트워크 결박 section of each card — one click below the fold, reached
+// when somebody is actually building signals, not as the page's spine.
+// `generate_node_signals`' refusal of unbound mappings is untouched, and so is
+// every backend refusal string on this screen.
 //
 // WHAT THIS PAGE MUST NOT DO, and why it is written this way:
 //
-//   1. **No string here may imply the machine verified anything.** The proposal
-//      panel is labelled as a reading, every phase shows the model's own
-//      ambiguity note, and the cross-check's `observation` findings are rendered
-//      in their own muted style with their own word — they corroborate a
-//      measurement, they do not endorse a mapping. The only sentence on this page
-//      that means "this is right" is the attestation line, and it carries a name.
-//   2. **A refused or missing proposal is the SAME screen with a blank form.**
-//      That is roadmap C1 option (b), delivered as a byproduct rather than as a
-//      separate page — so an intersection the model could not read is one banner
-//      different from one it could, not one workflow different.
-//   3. **The form never builds a `genesis.signals.v1` document.** It POSTs the
+//   1. **No string here may imply the machine verified anything.** A vision
+//      proposal is still labelled as a model READING with its own ambiguity
+//      note. An uploaded sheet is labelled as the UPLOADER'S RECORD — which
+//      names an author, not a verdict — and says in the same breath that this
+//      app does not judge whether it is right. The cross-check's `observation`
+//      findings keep their own muted word: they corroborate a measurement, they
+//      do not endorse a mapping.
+//   2. **The drawn diagram is LAYOUT, NOT GEOGRAPHY.** The v1 template has no
+//      방위 column, so `components/genesis/PhaseDiagramSketch.tsx` places legs by
+//      the sheet's own approach ORDER and prints that fact beside every strip.
+//      An `unknown` turn is never promoted to an arrow.
+//   3. **A refused or missing proposal is the SAME screen with a blank form.**
+//      That is roadmap C1 option (b): an intersection the model could not read
+//      is one banner different from one it could, not one workflow different.
+//   4. **The form never builds a `genesis.signals.v1` document.** It POSTs the
 //      confirmation and asks the server to stage the side input. A second
 //      document builder in TypeScript could drift from the validator, and worse,
-//      "an unconfirmed proposal is inert" would become a client-side convention
+//      "an unbound mapping is inert" would become a client-side convention
 //      instead of a server-side refusal.
-//   4. **Stale is not unconfirmed.** A confirmation made against a different
-//      render is shown as 재확인 필요 WITH the attester's name still on screen —
+//   5. **Stale is not unconfirmed.** A binding made against a different render
+//      is shown as 재확인 필요 WITH the attester's name still on screen —
 //      collapsing it into "nobody confirmed" would hide that somebody did.
 //
 // Chrome strings use the three-argument t() form (explicit ja) so nothing here
@@ -48,6 +66,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { PhaseDiagramSketch } from "@/components/genesis/PhaseDiagramSketch";
 import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
@@ -86,6 +105,12 @@ type ApproachRow = {
 };
 
 /** 확인됨 / 재확인 필요 / 미확인 — three states, three words, never two.
+ *
+ * SINCE #55 THEY DESCRIBE THE BINDING, not the reading: a reading is complete
+ * the moment somebody uploads their own sheet. What these words answer is
+ * "has a named human tied this sheet's approaches to a draft node's links?",
+ * which is the one claim an upload cannot carry.
+ *
  * `stale` deliberately does NOT read as unconfirmed: somebody did confirm, and
  * the reason it no longer applies is shown beside it. */
 function reviewStateLabel(row: { confirmed: boolean; stale_reasons: string[] }, t: Translate): string {
@@ -125,9 +150,13 @@ function mediumLabel(medium: PhaseDiagramSummary["medium"], t: Translate): strin
   return null;
 }
 
-/** The named absence where the drawing would be. NEVER a stand-in image: an
- * attestation is bound to the sha of the picture the human looked at, and a
- * placeholder that looked like a diagram would make that binding a lie. */
+/** The named absence where the SCANNED drawing would be. NEVER a stand-in
+ * image: an attestation is bound to the sha of the picture the human looked at,
+ * and a placeholder that looked like a scan would make that binding a lie.
+ *
+ * #55 note: this is about the SCAN, not about the diagram. The Φ strip below is
+ * drawn from the parsed rows themselves and is not a picture of anything — it
+ * claims no provenance and is bound to no sha. */
 function noImageSentence(medium: PhaseDiagramReview["render"]["medium"], t: Translate): string {
   if (medium === "excel_upload") {
     return t(
@@ -137,9 +166,9 @@ function noImageSentence(medium: PhaseDiagramReview["render"]["medium"], t: Tran
     );
   }
   return t(
-    "이미지 없음 — 화면에서 직접 만든 빈 양식입니다. 아래 표에 직접 입력하십시오.",
-    "No image — a blank form created on this screen. Fill in the table below by hand.",
-    "画像なし — 画面で作成した空の様式です。下の表に直接入力してください。",
+    "이미지 없음 — 화면에서 직접 만든 빈 양식입니다. 아래 네트워크 결박 절의 표에 직접 입력하십시오.",
+    "No image — a blank form created on this screen. Fill in the table in the 네트워크 결박 section below.",
+    "画像なし — 画面で作成した空の様式です。下の네트워크 결박の表に直接入力してください。",
   );
 }
 
@@ -224,7 +253,7 @@ function PhaseDiagramReviewPageContent() {
   // -- unit #52 ④: arriving from the network diagram ----------------------
   // /network deep-links here as ?node=<id>&name=<node name>. The NAME is what
   // is used: /network draws the ACTIVE VISSIM DATASET, whose node ids come from
-  // the .inpx, while the confirm form below binds a node from a GENERATION'S
+  // the .inpx, while the binding form below binds a node from a GENERATION'S
   // DRAFT (fetchPhaseDiagramCandidates over a job's own DraftNetwork). Those are
   // two different id spaces, so matching on the number would be a coincidence
   // dressed as a fact. The id rides along as a breadcrumb — it is recorded as
@@ -303,9 +332,9 @@ function PhaseDiagramReviewPageContent() {
     void Promise.resolve().then(() => loadReview(selectedId));
   }, [selectedId, loadReview]);
 
-  /** The model's reading, indexed label → the first phase it appears in. Used
-   * only to prefill the form and to compute `changes`; it is never sent as the
-   * mapping on its own. */
+  /** The stored reading, indexed label → the first phase it appears in. Used
+   * only to prefill the binding form and to compute `changes`; it is never sent
+   * as the mapping on its own. */
   const proposedPhaseByLabel = useMemo(() => {
     const index = new Map<string, string>();
     for (const phase of review?.proposal?.phases ?? []) {
@@ -331,7 +360,7 @@ function PhaseDiagramReviewPageContent() {
   }, [selectedId, jobId]);
 
   /** Binding a node fills the form with that node's OWN approach links. The
-   * phase column is prefilled from the proposal where a label matches, and left
+   * phase column is prefilled from the reading where a label matches, and left
    * empty otherwise — an empty row is a visible gap, not a default. */
   const bindNode = useCallback(
     (candidate: PhaseDiagramNodeCandidate) => {
@@ -401,9 +430,10 @@ function PhaseDiagramReviewPageContent() {
     }
   }, [review, nodeId, planChoice, approachRows, proposedPhaseByLabel, amber, amberNote, note, refreshList]);
 
-  /** Upload one filled-in template. What comes back is a PROPOSAL per 교차로명
-   * in the file — never a confirmation — plus every row the parser refused,
-   * which stays on screen until the next upload. */
+  /** Upload one filled-in template. What comes back is, per 교차로명 in the
+   * file, THAT PERSON'S OWN RECORD of the reading (`uploaded_by` is stamped
+   * server-side) — plus every row the parser refused, which stays on screen
+   * until the next upload. */
   const submitUpload = useCallback(async () => {
     if (!uploadFile) return;
     setBusy(true);
@@ -484,9 +514,12 @@ function PhaseDiagramReviewPageContent() {
     approachRows.some((row) => row.phaseId) &&
     !busy;
   const hasImage = review?.render.medium === "pdf_band" && review.render.image_sha256 != null;
-  const uploadedProposal = review?.proposal?.source === "excel_upload";
+  /** #55: an uploaded sheet is not a proposal awaiting a click — it is the
+   * uploader's own record of the reading. The vision path is still a PROPOSAL,
+   * and the two are titled apart on that difference. */
+  const uploadedRecord = review?.proposal?.source === "excel_upload";
 
-  // UNIT #20's help drawer is RETIRED (2026-08-14). 확인 절차 and signals 입력
+  // UNIT #20's help drawer is RETIRED (2026-08-14). 업로드 도식 and signals 입력
   // are verbatim in lib/help-content.tsx (`phasesHelpEntries`) and render at
   // /docs, opened by the book icon in the app topbar. The always-visible intro
   // paragraph below the h1 STAYS: it is this page's foundational claim, not a
@@ -500,13 +533,13 @@ function PhaseDiagramReviewPageContent() {
         * dark remap and rendered as stock #0369a1 on a near-black page. */}
       <header className="mb-6">
         <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-slate-900">
-          {t("현시도 확인", "Phase-diagram review", "現示図の確認")}
+          {t("현시도", "Phase diagrams", "現示図")}
         </h1>
         <p className="mt-1.5 max-w-4xl text-[15px] leading-relaxed text-slate-600">
           {t(
-            "시트의 현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 산출할 수 없습니다. 아래 제안은 모델이 도면을 읽은 결과일 뿐이며, 이 앱이 검증한 것이 아닙니다. 확인 버튼을 누른 사람의 진술만이 실제로 사용됩니다.",
-            "The 현시도 is a drawing, so no parse can produce the approach→phase mapping. The proposal below is a model READING the picture — this app has not verified it. Only the statement of the person who confirms is used.",
-            "現示図は図面であり、解析では流入路と現示の対応を得られません。以下の提案はモデルの判読であり、本アプリが検証したものではありません。確認した人の申告のみが使用されます。",
+            "현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 산출할 수 없습니다. 템플릿을 채워 올린 엑셀은 올린 사람 자신의 기록이며, 이 화면은 그 기록을 그대로 도식으로 그릴 뿐 정오를 판단하지 않습니다. 초안 네트워크의 어느 노드·링크에 묶이는지만은 사람이 카드의 네트워크 결박에서 정합니다.",
+            "The 현시도 is a drawing, so no parse can produce the approach→phase mapping. A template somebody filled in and uploaded is THAT PERSON'S OWN RECORD; this screen draws it exactly as written and judges nothing. Only which draft node and links it binds to is still decided by a human, in each card's 네트워크 결박 section.",
+            "現示図は図面であり、解析では流入路と現示の対応を得られません。テンプレートを記入して送られたエクセルは提出者自身の記録であり、この画面はそれをそのまま図として描くだけで正誤は判断しません。草案ネットワークのどのノード・リンクに結びつくかのみ、カードの네트워크 결박で人が決めます。",
           )}
         </p>
         <Link href="/genesis" className="mt-2 inline-block text-[14px] font-semibold text-slate-500 underline">
@@ -531,77 +564,23 @@ function PhaseDiagramReviewPageContent() {
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div>
+          {/* #55 — THE SPINE. Two doors, in the order a reader meets them: take
+            * the template away, bring it back filled in. The uploaded file is
+            * the person's own statement of the reading, so this panel leads the
+            * column and the intersection list follows it. The blank form and
+            * the network deep-link stay below the divider as tertiary doors --
+            * they were never wrong, they are just not what most work starts
+            * with. The doctrine sentence lives at /docs (unit #20's rule) and
+            * inside the downloaded file itself. */}
           <Panel
             density="console"
-            title={t("교차로", "Intersections", "交差点")}
+            title={t("현시도 올리기", "Upload a 현시도", "現示図をアップロード")}
             subtitle={t(
-              `${rows.length}건 중 ${confirmedCount}건 확인됨`,
-              `${confirmedCount} of ${rows.length} confirmed`,
-              `${rows.length}件中${confirmedCount}件確認済`,
+              "템플릿을 내려받아 채운 뒤 올리면, 그 엑셀이 올린 사람의 기록이 되고 아래 카드가 그대로 도식으로 그립니다.",
+              "Download the template, fill it in and send it back: the workbook becomes the uploader's own record, and the card below draws it as written.",
+              "テンプレートを記入して送ると、そのエクセルが提出者の記録となり、下のカードがそのまま図として描きます。",
             )}
           >
-            {rows.length === 0 ? (
-              <p className="text-[15px] leading-relaxed text-slate-500">
-                {t(
-                  "렌더링된 현시도가 없습니다.",
-                  "No rendered 현시도 yet.",
-                  "レンダリング済みの現示図がありません。",
-                )}
-              </p>
-            ) : (
-              <ul className="space-y-1.5">
-                {rows.map((row) => (
-                  <li key={row.review_id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(row.review_id)}
-                      className={`w-full rounded-lg border px-3 py-2.5 text-left text-[15px] ${
-                        row.review_id === selectedId
-                          ? "border-sky-400 bg-sky-50"
-                          : "border-slate-200 bg-transparent hover:bg-slate-50"
-                      }`}
-                    >
-                      <span className="block truncate font-semibold text-slate-900">
-                        {row.intersection_name || row.source_file}
-                      </span>
-                      {mediumLabel(row.medium, t) && (
-                        <span className="mt-1.5 mr-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[14px] text-slate-600">
-                          {mediumLabel(row.medium, t)}
-                        </span>
-                      )}
-                      {/* The three state chips were 10px. This is the list that
-                        * says which intersections still need a human, so it is
-                        * the last place on the screen to shrink type. */}
-                      <span
-                        className={`mt-1.5 inline-block rounded border px-2 py-0.5 text-[14px] font-semibold ${reviewStateClasses(row)}`}
-                      >
-                        {reviewStateLabel(row, t)}
-                      </span>
-                      {row.proposal_outcome === "refused" && (
-                        <span className="ml-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[14px] text-slate-600">
-                          {t("제안 거부", "proposal refused", "提案拒否")}
-                        </span>
-                      )}
-                      {row.flags.length > 0 && (
-                        <span className="ml-1 inline-block rounded border border-slate-400 bg-slate-100 px-2 py-0.5 text-[14px] font-semibold text-slate-800">
-                          {t(`대조 ${row.flags.length}건`, `${row.flags.length} flags`, `照合${row.flags.length}件`)}
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
-
-          {/* Unit #52 — the three ways to get a 현시도 INTO this screen, in the
-            * order a reader meets them: take the form away, bring it back, or
-            * skip the paper entirely. Each one lands on the same review list
-            * above and the same confirm form on the right; none of them
-            * confirms anything. The doctrine sentence lives at /docs (unit
-            * #20's rule) and inside the downloaded file itself — this panel
-            * carries actions, not an education. */}
-          <Panel density="console" title={t("현시도 입력", "Add a 현시도", "現示図の入力")}>
             <a
               href={phaseDiagramTemplateUrl()}
               className="ui-button-ghost block rounded-lg px-3 py-2 text-center text-[15px] font-semibold"
@@ -624,7 +603,7 @@ function PhaseDiagramReviewPageContent() {
                 disabled={!uploadFile || busy}
                 className="mt-2 w-full rounded-lg bg-slate-900 px-3 py-2 text-[15px] font-semibold text-ink disabled:opacity-40"
               >
-                {t("엑셀 올리기 (제안으로)", "Upload as a proposal", "エクセルを提案として送る")}
+                {t("엑셀 올리기", "Upload the workbook", "エクセルを送る")}
               </button>
             </div>
 
@@ -638,9 +617,9 @@ function PhaseDiagramReviewPageContent() {
                         "登録された交差点はありません。以下の理由をご確認ください。",
                       )
                     : t(
-                        `${uploadResult.created.length}개 교차로가 제안으로 등록되었습니다. 확인 전에는 사용되지 않습니다.`,
-                        `${uploadResult.created.length} intersection(s) registered as proposals. Nothing is used before 확인.`,
-                        `${uploadResult.created.length}件の交差点が提案として登録されました。確認前は使用されません。`,
+                        `${uploadResult.created.length}개 교차로가 올린 사람의 기록으로 등록되었습니다.`,
+                        `${uploadResult.created.length} intersection(s) registered as the uploader's own record.`,
+                        `${uploadResult.created.length}件の交差点が提出者の記録として登録されました。`,
                       )}
                 </p>
                 {/* Whether the upload can actually reach a generation, per
@@ -688,12 +667,15 @@ function PhaseDiagramReviewPageContent() {
             )}
 
             <div className="mt-4 border-t border-slate-200 pt-3">
+              <p className="mb-2 text-[14px] font-semibold text-slate-500">
+                {t("엑셀 없이 시작하기", "Start without a workbook", "エクセルなしで始める")}
+              </p>
               {(nodeParam || nodeNameParam) && (
                 <p className="mb-2 text-[14px] leading-relaxed text-slate-600">
                   {t(
-                    `네트워크 도식에서 노드 ${nodeParam ?? "—"}을(를) 선택해 왔습니다. 이 이름은 참고용이며, 어느 노드에 배정되는지는 아래 확인 양식에서 정해집니다.`,
-                    `Arrived from node ${nodeParam ?? "—"} on the network diagram. The name is a starting point; which node the mapping binds to is decided on the confirm form.`,
-                    `ネットワーク図のノード${nodeParam ?? "—"}から来ました。名称は参考であり、どのノードに対応するかは確認様式で決まります。`,
+                    `네트워크 도식에서 노드 ${nodeParam ?? "—"}을(를) 선택해 왔습니다. 이 이름은 참고용이며, 어느 노드에 결박되는지는 카드의 네트워크 결박 절에서 정해집니다.`,
+                    `Arrived from node ${nodeParam ?? "—"} on the network diagram. The name is a starting point; which node it binds to is decided in the card's 네트워크 결박 section.`,
+                    `ネットワーク図のノード${nodeParam ?? "—"}から来ました。名称は参考であり、どのノードに結縛されるかはカードの네트워크 결박で決まります。`,
                   )}
                 </p>
               )}
@@ -712,7 +694,7 @@ function PhaseDiagramReviewPageContent() {
                   void createBlank(blankName, nodeParam ? `네트워크 도식 노드 ${nodeParam}` : undefined)
                 }
                 disabled={blankName.trim() === "" || busy}
-                className="mt-2 w-full rounded-lg bg-slate-900 px-3 py-2 text-[15px] font-semibold text-ink disabled:opacity-40"
+                className="ui-button-ghost mt-2 w-full rounded-lg px-3 py-2 text-[15px] font-semibold disabled:opacity-40"
               >
                 {t("새 현시도 입력", "New blank 현시도", "新しい現示図を入力")}
               </button>
@@ -725,6 +707,70 @@ function PhaseDiagramReviewPageContent() {
               >
                 {t("전체 내보내기 (미확인 초안)", "Export all (unconfirmed draft)", "全体を書き出す(未確認の草案)")}
               </a>
+            )}
+          </Panel>
+
+          <Panel
+            density="console"
+            title={t("교차로", "Intersections", "交差点")}
+            subtitle={t(
+              `${rows.length}건 중 ${confirmedCount}건 네트워크 결박 확인됨`,
+              `${confirmedCount} of ${rows.length} bound to a draft node`,
+              `${rows.length}件中${confirmedCount}件がネットワーク結縛済`,
+            )}
+          >
+            {rows.length === 0 ? (
+              <p className="text-[15px] leading-relaxed text-slate-500">
+                {t(
+                  "등록된 현시도가 없습니다. 위에서 템플릿을 내려받아 채운 뒤 올리십시오.",
+                  "No 현시도 yet. Download the template above, fill it in and upload it.",
+                  "登録された現示図がありません。上でテンプレートを取得し記入して送ってください。",
+                )}
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {rows.map((row) => (
+                  <li key={row.review_id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(row.review_id)}
+                      className={`w-full rounded-lg border px-3 py-2.5 text-left text-[15px] ${
+                        row.review_id === selectedId
+                          ? "border-sky-400 bg-sky-50"
+                          : "border-slate-200 bg-transparent hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="block truncate font-semibold text-slate-900">
+                        {row.intersection_name || row.source_file}
+                      </span>
+                      {mediumLabel(row.medium, t) && (
+                        <span className="mt-1.5 mr-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[14px] text-slate-600">
+                          {mediumLabel(row.medium, t)}
+                        </span>
+                      )}
+                      {/* The three state chips were 10px. This is the list that
+                        * says which intersections still need a human for the
+                        * BINDING, so it is the last place on the screen to
+                        * shrink type. */}
+                      <span
+                        className={`mt-1.5 inline-block rounded border px-2 py-0.5 text-[14px] font-semibold ${reviewStateClasses(row)}`}
+                      >
+                        {reviewStateLabel(row, t)}
+                      </span>
+                      {row.proposal_outcome === "refused" && (
+                        <span className="ml-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[14px] text-slate-600">
+                          {t("판독 거부", "reading refused", "判読拒否")}
+                        </span>
+                      )}
+                      {row.flags.length > 0 && (
+                        <span className="ml-1 inline-block rounded border border-slate-400 bg-slate-100 px-2 py-0.5 text-[14px] font-semibold text-slate-800">
+                          {t(`대조 ${row.flags.length}건`, `${row.flags.length} flags`, `照合${row.flags.length}件`)}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </Panel>
 
@@ -754,22 +800,22 @@ function PhaseDiagramReviewPageContent() {
           </Panel>
         </div>
 
-        {/* UX pass U-1: the right column used to render SIX panels open at once
-          * (image, stale banner, proposal, cross-check, confirm form,
-          * attestation record) in one scroll, with nothing selected producing a
-          * panel whose only content was "pick one on the left". It is now
-          * state-gated and severity-gated, in that order:
+        {/* UX pass U-1, re-cut by #55. The right column is state-gated and
+          * severity-gated, in that order:
           *   * nothing selected -> one empty-state line, no panel chrome;
-          *   * selected -> the image and the model's reading are OPEN (they are
-          *     what a reviewer reads before deciding), and the confirm form is
-          *     OPEN because confirming IS the purpose of this page;
+          *   * selected -> the scan (when there is one) and THE DRAWN READING
+          *     are OPEN: rendering what the sheet says is what this page is
+          *     for now;
           *   * the machine cross-check opens only when it FLAGGED something --
           *     the same "collapse by default, auto-open on the state that
           *     matters" rule the genesis findings map already sets, keyed on
           *     the review so switching intersections recomputes it;
+          *   * 네트워크 결박 starts COLLAPSED. It is the one act an upload
+          *     cannot perform, and it belongs to signals-build time, not to
+          *     reading a sheet somebody already filled in;
           *   * the attestation record starts collapsed: it is a record of a
           *     decision already made, not an input to the next one.
-          * The stale banner stays ALWAYS visible when present -- a confirmation
+          * The stale banner stays ALWAYS visible when present -- a binding
           * that no longer applies is exactly the thing that must not be one
           * click away. */}
         <div>
@@ -810,9 +856,11 @@ function PhaseDiagramReviewPageContent() {
                   </div>
                 ) : (
                   /* The named absence. Unit #52 puts two media on this screen
-                    * that have no drawing at all, and a placeholder that LOOKED
-                    * like a diagram would make the attestation's image binding
-                    * — "the picture this person actually looked at" — a lie. */
+                    * that have no scan at all, and a placeholder that LOOKED
+                    * like a photographed diagram would make the attestation's
+                    * image binding — "the picture this person actually looked
+                    * at" — a lie. The Φ strip below is not that picture: it is
+                    * the parsed rows redrawn, and it claims no sha. */
                   <p className="rounded border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[15px] leading-relaxed text-slate-600">
                     {noImageSentence(review.render.medium, t)}
                   </p>
@@ -830,10 +878,18 @@ function PhaseDiagramReviewPageContent() {
               {review.stale_reasons.length > 0 && (
                 /* MONO with the heavy ring: this banner is the one thing on the
                   * screen that must not be one click away, and it is neither a
-                  * pass nor a proven fault. Weight and shape carry it. */
+                  * pass nor a proven fault. Weight and shape carry it. It is
+                  * about the BINDING record, never about the reading. */
                 <div className="mb-5 rounded-lg border border-slate-400 bg-slate-100 px-4 py-3.5 text-slate-800 ring-1 ring-slate-400">
                   <p className="text-[15px] font-semibold">
                     {t("재확인 필요", "Re-confirmation needed", "再確認が必要です")}
+                  </p>
+                  <p className="mt-1 text-[14px] leading-relaxed">
+                    {t(
+                      "결박 기록이 지금의 시트·렌더와 맞지 않습니다. 판독 자체가 취소된 것은 아닙니다.",
+                      "The binding record no longer matches the current sheet or render. The reading itself is not withdrawn.",
+                      "結縛の記録が現在のシート・レンダーと一致しません。判読そのものが取り消されたわけではありません。",
+                    )}
                   </p>
                   <ul className="mt-1.5 list-disc pl-5 text-[15px] leading-relaxed">
                     {review.stale_reasons.map((reason) => (
@@ -845,22 +901,22 @@ function PhaseDiagramReviewPageContent() {
 
               <Panel
                 density="console"
-                /* Two sources, two honest titles, ONE status. A spreadsheet was
-                  * not read by a model, so calling it 모델의 판독 would name the
-                  * wrong author — but it is a 제안 for exactly the same reason
-                  * the model's reading is, and both wait for the same 확인. */
+                /* Two sources, two honest titles. A spreadsheet was not read by
+                  * a model, and since #55 it is not a 제안 either: a person
+                  * filled it in and sent it, which IS their statement of the
+                  * reading. A model's reading is still only a proposal. */
                 title={
-                  uploadedProposal
-                    ? t("업로드된 시트 (제안)", "The uploaded sheet (a proposal)", "アップロードされた表(提案)")
+                  uploadedRecord
+                    ? t("업로드된 시트 (올린 사람의 기록)", "The uploaded sheet (the uploader's own record)", "アップロードされた表(提出者の記録)")
                     : t("모델의 판독 (제안)", "The model's reading (a proposal)", "モデルの判読(提案)")
                 }
                 subtitle={
                   review.proposal
-                    ? uploadedProposal
+                    ? uploadedRecord
                       ? t(
-                          `올린 사람: ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · 이 앱이 검증한 것이 아닙니다`,
-                          `uploaded by ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · not verified by this app`,
-                          `アップロード: ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · 本アプリの検証ではありません`,
+                          `올린 사람: ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · 이 앱은 기록의 정오를 판단하지 않습니다`,
+                          `uploaded by ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · this app does not judge whether the record is right`,
+                          `アップロード: ${review.proposal.uploaded_by ?? "—"} · ${review.proposal.proposed_at} · 本アプリは記録の正誤を判断しません`,
                         )
                       : t(
                           `${review.proposal.model} · ${review.proposal.proposed_at} · 이 앱이 검증한 것이 아닙니다`,
@@ -874,9 +930,9 @@ function PhaseDiagramReviewPageContent() {
                   <div className="rounded-md border border-slate-300 bg-slate-50 px-3.5 py-2.5 text-[15px] leading-relaxed text-slate-700">
                     <p className="font-semibold">
                       {t(
-                        "판독 결과가 없습니다 — 아래 양식에 직접 입력하십시오.",
-                        "No reading — fill in the form below by hand.",
-                        "判読結果がありません — 下の様式に直接入力してください。",
+                        "판독 결과가 없습니다 — 아래 네트워크 결박 절의 표에 직접 입력하십시오.",
+                        "No reading — fill in the table in the 네트워크 결박 section below by hand.",
+                        "判読結果がありません — 下の네트워크 결박の表に直接入力してください。",
                       )}
                     </p>
                     {review.proposal?.refusal && (
@@ -888,42 +944,31 @@ function PhaseDiagramReviewPageContent() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {uploadedProposal && (
-                      /* PROVENANCE, not attestation. It says who sent the file
-                        * in — which is a different claim from "this mapping is
-                        * right", and the only place that claim can be made is
-                        * the 확인 button below. */
+                    {uploadedRecord && (
+                      /* THE AUTHORING WORD for the reading. It names who wrote
+                        * the sheet down -- which is a claim about AUTHORSHIP,
+                        * never about correctness, and never about the binding:
+                        * that one is made in 네트워크 결박 below and carries its
+                        * own name. */
                       <p className="rounded-md border border-slate-300 bg-slate-50 px-3.5 py-2 text-[14px] leading-relaxed text-slate-700">
                         {t(
-                          `${review.proposal.uploaded_by ?? "—"}님이 올린 엑셀의 내용입니다. 올린 것은 확인이 아닙니다 — 아래에서 확인해야 사용됩니다.`,
-                          `This is the content of the spreadsheet ${review.proposal.uploaded_by ?? "—"} uploaded. Uploading is not confirming — it is used only after 확인 below.`,
-                          `${review.proposal.uploaded_by ?? "—"}さんがアップロードしたエクセルの内容です。アップロードは確認ではありません。`,
+                          `${review.proposal.uploaded_by ?? "—"}님이 채워 올린 엑셀의 내용이며, 그 시트 자체가 그 사람의 진술입니다. 이 앱은 그대로 그릴 뿐 배정의 정오를 판단하지 않습니다.`,
+                          `This is the content of the workbook ${review.proposal.uploaded_by ?? "—"} filled in and sent — the sheet IS that person's statement. This app draws it as written and does not judge whether the assignment is correct.`,
+                          `${review.proposal.uploaded_by ?? "—"}さんが記入して送ったエクセルの内容であり、そのシート自体が本人の申告です。本アプリはそのまま描くだけで対応の正誤は判断しません。`,
                         )}
                       </p>
                     )}
-                    <p className="text-[14px] leading-relaxed text-slate-500">
-                      {t("도면에 인쇄된 접근로", "Approach legs printed on the drawing", "図面に印刷された流入路")}:{" "}
-                      {review.proposal.approaches.map((a) => `${a.label} (${a.side})`).join(", ") || "—"}
-                    </p>
-                    {review.proposal.phases.map((phase) => (
-                      <div key={phase.phase_id} className="rounded-md border border-slate-200 px-3.5 py-2.5">
-                        <p className="text-[15px] font-semibold text-slate-900">{phase.phase_id}</p>
-                        <ul className="mt-1 text-[15px] leading-relaxed text-slate-700">
-                          {phase.movements.map((movement, index) => (
-                            <li key={`${phase.phase_id}-${index}`}>
-                              {movement.approach_label} — {movement.turn}
-                              {movement.note ? ` (${movement.note})` : ""}
-                            </li>
-                          ))}
-                        </ul>
-                        {phase.ambiguity && (
-                          <p className="mt-1.5 rounded border border-slate-400 bg-slate-100 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
-                            {t("모델이 확정하지 못한 부분", "What the model could not resolve", "モデルが確定できなかった点")}:{" "}
-                            {phase.ambiguity}
-                          </p>
-                        )}
-                      </div>
-                    ))}
+                    {/* THE DIAGRAM. Drawn from the parsed rows and nothing else
+                      * -- see components/genesis/PhaseDiagramSketch.tsx for the
+                      * three rules it enforces (layout is not a bearing;
+                      * `unknown` never becomes an arrow; 보행 is not a vehicle
+                      * arrow). */}
+                    <PhaseDiagramSketch
+                      phases={review.proposal.phases}
+                      approaches={review.proposal.approaches}
+                      notes={review.proposal.notes}
+                      t={t}
+                    />
                   </div>
                 )}
               </Panel>
@@ -962,13 +1007,26 @@ function PhaseDiagramReviewPageContent() {
                 )}
               </Panel>
 
+              {/* #55 — THE SECONDARY ACT. Everything below this line is
+                * unchanged in behaviour: the same job picker, the same node
+                * candidates, the same approach table, the same `canSubmit`
+                * (which still requires a node id), the same POST, and the same
+                * server-side refusal of an unbound mapping. What changed is
+                * where it sits. Binding a sheet's legs to a DRAFT NETWORK's
+                * link ids is the one claim an uploaded workbook cannot carry,
+                * so it is reached deliberately rather than met on arrival.
+                * Re-keyed per review so one intersection's open state does not
+                * travel to another's. */}
               <Panel
                 density="console"
-                title={t("확인 — 접근로와 현시 배정", "Confirm — approach to phase", "確認 — 流入路と現示の対応")}
+                key={`binding-${review.review_id}`}
+                collapsible
+                defaultOpen={false}
+                title={t("네트워크 결박 — 초안 노드에 묶기", "Bind to the draft network", "ネットワーク結縛 — 草案ノードへ")}
                 subtitle={t(
-                  "이 화면에서 확인한 내용만 신호 입력이 됩니다. 제안은 확인 전에는 사용되지 않습니다.",
-                  "Only what you confirm here becomes signal input. A proposal is never used unconfirmed.",
-                  "この画面で確認した内容のみが信号入力になります。提案は確認前には使用されません。",
+                  "업로드는 판독을 기록할 뿐, 어느 초안 노드의 어느 링크인지는 담지 못합니다. 그 결박만이 사람의 행위로 남아 있고, signals 입력은 결박된 교차로에서만 만들어집니다.",
+                  "An upload records the reading, but it cannot carry WHICH draft node and which link ids it belongs to. That binding is what stays a human act, and a signals input is built only from bound intersections.",
+                  "アップロードは判読を記録するだけで、どの草案ノードのどのリンクかまでは持てません。その結縛のみが人の行為として残り、signals入力は結縛済みの交差点からのみ作られます。",
                 )}
               >
                 <div className="mb-4 flex flex-wrap items-end gap-3">
@@ -1181,13 +1239,13 @@ function PhaseDiagramReviewPageContent() {
                   disabled={!canSubmit}
                   className="mt-5 rounded-lg bg-sky-700 px-4 py-2 text-[15px] font-semibold text-white disabled:opacity-40"
                 >
-                  {t("이 배정을 확인합니다", "I confirm this mapping", "この対応を確認します")}
+                  {t("이 결박을 확인합니다", "I confirm this binding", "この結縛を確認します")}
                 </button>
                 <p className="mt-2 text-[14px] leading-relaxed text-slate-500">
                   {t(
-                    "확인하면 로그인한 사용자의 이름과 시각, 그리고 이 이미지의 해시가 함께 기록됩니다.",
-                    "Confirming records the signed-in user's name, the time, and this image's hash.",
-                    "確認すると、ログイン中の利用者名・時刻・この画像のハッシュが記録されます。",
+                    "확인하면 로그인한 사용자의 이름과 시각, 그리고 이 이미지의 해시가 함께 기록됩니다. 이것은 결박에 대한 진술이며, 시트 내용의 정오에 대한 진술이 아닙니다.",
+                    "Confirming records the signed-in user's name, the time, and this image's hash. It is a statement about the BINDING, not about whether the sheet's contents are right.",
+                    "確認すると、ログイン中の利用者名・時刻・この画像のハッシュが記録されます。これは結縛についての申告であり、シート内容の正誤についてのものではありません。",
                   )}
                 </p>
               </Panel>
@@ -1202,7 +1260,7 @@ function PhaseDiagramReviewPageContent() {
                   key={`attestation-${review.review_id}`}
                   collapsible
                   defaultOpen={false}
-                  title={t("확인 기록", "The attestation", "確認記録")}
+                  title={t("결박 확인 기록", "The binding attestation", "結縛の確認記録")}
                 >
                   <p className="text-[15px] text-slate-800">
                     {t("확인자", "attested by", "確認者")}: <b>{review.attestation.attested_by}</b> ·{" "}
@@ -1216,7 +1274,7 @@ function PhaseDiagramReviewPageContent() {
                     {review.attestation.image_sha256
                       ? `${review.attestation.image_sha256.slice(0, 16)}…`
                       : t("이미지 없음", "no image", "画像なし")}{" "}
-                    · {t("제안", "proposal", "提案")}: {review.attestation.proposal_outcome}
+                    · {t("판독", "reading", "判読")}: {review.attestation.proposal_outcome}
                   </p>
                   {review.attestation.changes.length > 0 && (
                     <ul className="mt-2.5 list-disc pl-5 text-[14px] leading-relaxed text-slate-700">

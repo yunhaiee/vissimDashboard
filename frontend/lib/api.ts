@@ -4977,11 +4977,23 @@ export type PhaseDiagramApproach = {
 /** A READING. An artifact, never a fact -- no field here asserts correctness,
  * and no string in this UI may imply one does.
  *
- * Two sources since unit #52, one status. `vision` is a model reading a
- * rendered band (`model` names it, `image_sha256` binds it). `excel_upload` is
- * a spreadsheet somebody sent in: no model read it, it has no image, and
- * `uploaded_by` is PROVENANCE -- who supplied the sheet -- which the review
- * screen must never render beside the word 확인. */
+ * Two sources. `vision` is a model reading a rendered band (`model` names it,
+ * `image_sha256` binds it) -- still a proposal, and the screen labels it one.
+ * `excel_upload` is a spreadsheet somebody filled in and sent: no model read
+ * it, it has no image, and since unit #55 (docs/phase2/DECISIONS.md,
+ * "2026-08-24 -- 사용자 결정: 현시도 화면은 엑셀 업로드로 통합 ... (#55)") it is no
+ * longer a proposal awaiting a per-intersection click -- the upload itself IS
+ * that person's own statement of the reading.
+ *
+ * `uploaded_by` therefore carries TWO things that must not be collapsed into
+ * one: it is the authoring word for THIS reading (who read the sheet and typed
+ * it in -- a claim this app makes about the record's origin, never about
+ * whether it is correct), and it is still never the 확인자 of anything. The
+ * word 확인 on this screen belongs exclusively to the BINDING -- the human act
+ * of tying this reading's approaches to a generated draft's node and link ids
+ * (MappingAttestation.attested_by), reached from each card's 네트워크 결박
+ * section at signals-build time. `uploaded_by` must never render beside that
+ * attested_by, and `attested_by` must never be filled from `uploaded_by`. */
 export type PhaseDiagramProposal = {
   source: "vision" | "excel_upload";
   uploaded_by: string | null;

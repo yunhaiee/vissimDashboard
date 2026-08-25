@@ -130,45 +130,66 @@ export function regionHelpEntries(t: Translate, maxVertices?: number | null): He
 }
 
 /**
- * /genesis/phases -- the 현시도 review. `확인 절차` restates the same doctrine
- * the page's own always-visible intro paragraph carries; that paragraph stays on
- * the page (it is that screen's foundational claim, not a tooltip), and this is
- * the copy a reader finds when they come to the documentation instead.
+ * /genesis/phases -- the 현시도 review. Re-cut by unit #55
+ * (docs/phase2/DECISIONS.md, "2026-08-24 -- 사용자 결정: 현시도 화면은 엑셀 업로드로
+ * 통합, 판독 확인 클릭은 제거 (#55)"): an uploaded workbook is no longer a proposal
+ * awaiting a per-intersection click -- it IS the uploader's own statement of the
+ * reading, the moment it lands. What stays a human act is the BINDING of that
+ * reading's approaches to a generated draft's node and link ids, reached from
+ * each card's 네트워크 결박 section at signal-build time. `결박이 사람의 몫입니다`
+ * restates that split; it is the doctrine the page's own always-visible intro
+ * paragraph carries too (that paragraph stays ON the page -- it is that
+ * screen's foundational claim, not a tooltip), and this is the copy a reader
+ * finds when they come to the documentation instead.
  */
 export function phasesHelpEntries(t: Translate): HelpEntry[] {
   return [
     {
-      title: t("확인 절차", "The confirmation step", "確認手順"),
+      title: t("결박이 사람의 몫입니다", "Binding stays a human act", "結縛は人の仕事です"),
       body: t(
-        "현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 산출할 수 없습니다. 모델의 판독은 제안일 뿐이며, 확인 버튼을 누른 사람의 진술만이 실제 신호 입력이 됩니다 — 현시도는 사람 확인만이 사실을 만듭니다.",
-        "The 현시도 is a drawing, so no parse can produce the approach→phase mapping. The model's reading is only a proposal; only the statement of the person who confirms becomes actual signal input — for a 현시도, only a human confirmation makes a fact.",
-        "現示図は図面であり、解析では流入路と現示の対応を得られません。モデルの判読は提案に過ぎず、確認した人の申告のみが実際の信号入力になります — 現示図は人の確認だけが事実を作ります。",
+        "현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 자동으로 만들어내지 못합니다. 템플릿을 채워 올린 엑셀은 올린 사람 자신의 판독 기록이며, 이 화면은 그 기록을 그대로 도식으로 그릴 뿐 정오를 판단하지 않습니다. 초안 네트워크의 어느 노드·링크에 묶이는지만은 signals 입력을 만들 때 사람이 각 카드의 네트워크 결박 절에서 정하며, 그 결박이 이 제품에서 사람 손으로 남아 있는 유일한 확인입니다.",
+        "The 현시도 is a drawing, so no parse can produce the approach→phase mapping on its own. A workbook somebody filled in and uploaded is THAT PERSON'S OWN reading; this screen draws it exactly as written and judges nothing. Only which draft node and link ids it binds to is still decided by a human, in each card's 네트워크 결박 section, at the moment a signals input is built -- that binding is the one human-confirmed act left in this product.",
+        "現示図は図面であり、解析だけでは流入路と現示の対応を自動的には作れません。テンプレートを記入して送られたエクセルは提出者自身の判読記録であり、この画面はそれをそのまま図として描くだけで正誤は判断しません。草案ネットワークのどのノード・リンクに結びつくかのみ、signals入力を作るときに人がカードの네트워크 결박で決めます — その結縛が、この製品に残る唯一の人による確認です。",
       ),
     },
     {
       title: t("signals 입력", "Signals input", "信号入力"),
       body: t(
-        "확인된(CONFIRMED) 교차로만 signals 입력에 포함됩니다 — 미확인이거나 재확인이 필요한 교차로는 빠집니다.",
-        "Only CONFIRMED intersections are included in the signals input — an unconfirmed or re-confirmation-needed intersection is left out.",
-        "確認済み（CONFIRMED）の交差点のみが信号入力に含まれます — 未確認または再確認が必要な交差点は除外されます。",
+        "네트워크 결박까지 확인된(CONFIRMED) 교차로만 signals 입력에 포함됩니다 — 업로드만 되고 결박이 없거나 재확인이 필요한 교차로는 빠집니다.",
+        "Only intersections CONFIRMED all the way to their network binding are included in the signals input — an upload with no binding yet, or one needing re-confirmation, is left out.",
+        "signals入力には、ネットワーク結縛まで確認済み（CONFIRMED）の交差点のみが含まれます — アップロードのみで結縛がない、または再確認が必要な交差点は除外されます。",
       ),
     },
-    // Unit #52 — three ways in, one status. The screen itself carries buttons;
-    // the reason they all end at the same 확인 button lives here.
+    // Unit #52 — three ways in, one status; re-worded by #55 for what that
+    // status now IS. The screen itself carries the three buttons; the reason
+    // they all land on the same store lives here.
     {
       title: t("입력하는 세 가지 방법", "Three ways to add one", "入力する三つの方法"),
       body: t(
-        "템플릿을 내려받아 채운 뒤 올리거나, 화면에서 빈 양식을 새로 만들거나, 이미 판독된 제안을 엑셀 초안으로 내보내 고친 뒤 다시 올릴 수 있습니다. 세 가지 모두 결과는 '제안'이며, 확인 버튼을 누르기 전에는 어느 것도 사실이 아닙니다.",
-        "Download the template and upload it filled in, create a blank form on the screen, or export an existing reading as a draft workbook, correct it and send it back. All three produce a PROPOSAL — none of them is a fact until somebody clicks 확인.",
-        "テンプレートを記入して送るか、画面で空の様式を作るか、既存の判読を草案として書き出し修正して再送します。三つとも結果は「提案」であり、確認を押すまで事実ではありません。",
+        "템플릿을 내려받아 채운 뒤 올리거나, 화면에서 빈 양식을 새로 만들거나, 이미 있는 기록을 엑셀 초안으로 내보내 고친 뒤 다시 올릴 수 있습니다. 세 가지 모두 결과는 올린 사람의 기록이며, 그 기록이 어느 초안 노드·링크에 묶이는지는 이후 네트워크 결박에서 사람이 정합니다.",
+        "Download the template and upload it filled in, create a blank form on the screen, or export an existing record as a draft workbook, correct it and send it back. All three produce THAT PERSON'S OWN RECORD -- which draft node and links it binds to is decided afterward, by a human, in 네트워크 결박.",
+        "テンプレートを記入して送るか、画面で空の様式を作るか、既存の記録を草案として書き出し修正して再送します。三つとも結果は送った本人自身の記録であり、どの草案ノード・リンクに結びつくかはその後、人が네트워크 결박で決めます。",
       ),
     },
     {
       title: t("엑셀에는 도면이 없습니다", "A spreadsheet carries no drawing", "エクセルに図面はありません"),
       body: t(
-        "엑셀로 만든 검토와 직접 만든 빈 양식에는 현시도 그림이 없습니다. 이 앱은 그 자리에 가짜 이미지를 넣지 않고 '이미지 없음'이라고 적습니다 — 확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로, 없는 그림을 있는 것처럼 표시하면 그 기록이 거짓이 됩니다. 또한 한 줄이라도 거부되면 그 교차로 전체를 가져오지 않습니다.",
-        "A review made from a spreadsheet, or created blank on the screen, has no 현시도 image. This app writes '이미지 없음' there instead of a stand-in picture: a confirmation is bound to the hash of the drawing the person actually looked at, so a fake image would make that record a lie. And if one row is refused, the whole intersection is left out rather than half-imported.",
-        "エクセルから作成した検討や画面で作成した空の様式には現示図の画像がありません。本アプリは代わりの画像を置かず「画像なし」と記します — 確認記録は人が実際に見た図面のハッシュに紐づくためです。また一行でも拒否されればその交差点全体を取り込みません。",
+        "엑셀로 만든 검토와 직접 만든 빈 양식에는 현시도 그림이 없습니다. 이 앱은 그 자리에 가짜 이미지를 넣지 않고 '이미지 없음'이라고 적습니다 — 결박 확인 기록은 사람이 실제로 본 그림의 해시에 묶이므로, 없는 그림을 있는 것처럼 표시하면 그 기록이 거짓이 됩니다. 또한 한 줄이라도 거부되면 그 교차로 전체를 가져오지 않습니다.",
+        "A review made from a spreadsheet, or created blank on the screen, has no 현시도 image. This app writes '이미지 없음' there instead of a stand-in picture: the binding attestation is bound to the hash of the drawing the person actually looked at, so a fake image would make that record a lie. And if one row is refused, the whole intersection is left out rather than half-imported.",
+        "エクセルから作成した検討や画面で作成した空の様式には現示図の画像がありません。本アプリは代わりの画像を置かず「画像なし」と記します — 結縛確認の記録は人が実際に見た図面のハッシュに紐づくためです。また一行でも拒否されればその交差点全体を取り込みません。",
+      ),
+    },
+    // #55's new drawn strip is not a scan substitute -- it is a redrawing of
+    // the parsed rows, and it inherits the template's own missing-bearing
+    // limit. See components/genesis/PhaseDiagramSketch.tsx for the rule as
+    // code; this is the same claim as prose, for the reader who never opens
+    // the source.
+    {
+      title: t("그려진 도식은 배치이지 실제 지리가 아닙니다", "The drawn strip is a layout, not real geography", "描かれた図は配置であり実際の地理ではありません"),
+      body: t(
+        "업로드나 빈 양식에는 현시도 그림이 없으므로, 이 화면은 파싱된 접근로·현시 값으로 도식을 새로 그립니다. 이 도식은 방위 열이 없는 템플릿(v1)의 한계를 그대로 물려받아, 접근로의 위치를 시트에 적힌 순서로만 배치합니다 — 실제 방위를 주장하지 않으며, 판독되지 않은(미상) 이동류는 화살표가 아니라 글로 적힌 칩으로만 나타납니다.",
+        "An upload or a blank form carries no 현시도 image, so this screen draws its own diagram from the parsed approach and phase values. That drawing inherits the v1 template's own limit -- no bearing column -- and places each leg only in the order the sheet lists it; it makes no claim about a real compass direction, and any movement the sheet left unresolved (미상) renders as a text chip, never as an arrow.",
+        "アップロードや空の様式には現示図の画像がないため、この画面は解析された流入路・現示の値から独自に図を描きます。この図はv1テンプレート自体の制約(方位の列がない)をそのまま引き継ぎ、各流入路をシートに記載された順序のみで配置します — 実際の方位を主張せず、判読できなかった(不明な)移動流は矢印ではなく文字のチップとしてのみ表示されます。",
       ),
     },
   ];
