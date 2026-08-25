@@ -59,6 +59,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from routers.auth import current_user
 from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
 from services.report import figures as report_figures
+from services.report import graphics as report_graphics
 from services.report import style_profile
 from services.report.spine import spine_payload
 from services.report_builder import build_report, geh_validation_csv_rows
@@ -195,6 +196,47 @@ def report_figures_route(
             observation_period=observation_period,
             session_id=session_id,
             language=language,
+        )
+    }
+
+
+@router.get("/graphics")
+def report_graphics_route(
+    scenario_id: str | None = Query(None, description="Run to grade for the node map"),
+    period: str | None = Query(None, description="AM/PM window for the base counts workbook"),
+    observation_set_id: str | None = Query(
+        None, description="Score the node map / before-after chart against a stored observation set instead"
+    ),
+    observation_period: str | None = Query(None, description="Window within the observation set"),
+    before_scenario_id: str | None = Query(None, description="'Before' run for the before/after GEH chart"),
+    after_scenario_id: str | None = Query(None, description="'After' run for the before/after GEH chart"),
+):
+    """Track R unit R-3's three GRAPHIC figures (Track R layer 2), gathered in
+    one call — open like ``GET /figures`` above it (that route's own docstring
+    states the measured precedent this one follows: these are new VIEWS of
+    readers ``/api/calibration``'s own GETs already expose unauthenticated,
+    and ``tests/test_auth_core.py``'s route-scope test names that whole
+    GET-side as staying open).
+
+    Each of the three (``services.report.graphics.all_graphics``) is
+    gathered INDEPENDENTLY: a request naming no ``scenario_id`` still returns
+    a real network sketch and two named absences, never a 4xx for the whole
+    set — the identical "degrade one, not all" contract ``GET /figures``
+    documents for its own four.
+
+    A SEPARATE key from ``GET /figures``' response (``"graphics"``, not
+    ``"figures"``) — the two response shapes are not interchangeable (rows
+    vs. an SVG string + JSON meta), so mixing them into one list would make a
+    caller branch on each element's shape to know which kind it got.
+    """
+    return {
+        "graphics": report_graphics.all_graphics(
+            scenario_id=scenario_id,
+            period=period,
+            observation_set_id=observation_set_id,
+            observation_period=observation_period,
+            before_scenario_id=before_scenario_id,
+            after_scenario_id=after_scenario_id,
         )
     }
 
