@@ -131,6 +131,9 @@ export function PhaseTimingTable({
 }: {
   timing: readonly PhaseDiagramPlanTiming[];
   declaredAmberS: number | null;
+  /** The server-composed `amber_declaration_note` -- #60a (2026-08-25)
+   * retired its ON-SCREEN sentence, but the wire field stays: the type here
+   * is unchanged and app/genesis/phases/page.tsx still passes it through. */
   amberNote: string | null;
   amberDeclaredBy: string | null;
   amberDeclaredAt: string | null;
@@ -232,16 +235,17 @@ export function PhaseTimingTable({
           </span>
         )}
       </div>
-      <p className="mt-1 text-[14px] leading-relaxed text-slate-500">
-        {t(
-          "이 값이 아래 네트워크 결박에 기록되는 선언 황색시간입니다. 시트는 황색+전적색을 하나의 값으로만 인쇄하므로, 황색시간은 이 표에 적는 사람의 선언입니다.",
-          "This is the declared amber the binding below records. The sheet prints 황색+전적색 as ONE number, so the amber is the declaration of whoever types it here.",
-          "この値が下のネットワーク結縛に記録される申告黄色時間です。シートは黄色+全赤を一つの値でのみ印刷するため、黄色時間はここに記入する人の申告です。",
-        )}
-      </p>
-      {amberNote && (
-        <p className="mt-1 text-[14px] leading-relaxed text-slate-600">{amberNote}</p>
-      )}
+      {/* #60a (2026-08-25, live-test feedback): the two prose sentences that
+        * used to sit here -- this explainer, and the server-composed
+        * `amber_declaration_note` line below it -- are RETIRED from the
+        * screen. The RULE they explained is untouched (the table cell IS the
+        * declaration; see the rule-4 header comment and the amend path
+        * below), only the paragraphs are gone. `amberNote` stays a real prop
+        * -- `amber_declaration_note` is still server-composed and still rides
+        * the wire from app/genesis/phases/page.tsx -- this component simply
+        * stops rendering it. The compact "선언: who · when" badge two lines
+        * above is NOT this sentence: it is the server-stamped attribution,
+        * which #60a does not touch. */}
 
       {!timingEditable && (
         <p className="mt-2.5 rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-[14px] leading-relaxed text-slate-600">

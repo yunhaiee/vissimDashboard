@@ -3376,6 +3376,70 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
 });
 
 // ---------------------------------------------------------------------------
+// #60a (2026-08-25, live-test feedback) -- two of the "화면 정리 5건": the
+// polygon/bbox explainer sentence is gone, and the provenance record moves
+// behind a fold. Its own test, single-concern, so a future style pass on
+// either of these two cannot hide inside an unrelated failure.
+// ---------------------------------------------------------------------------
+
+contractTest("#60a: the region page drops the polygon/bbox sentence and folds provenance behind 자세히", (pin) => {
+  const page = read("app/genesis/region/page.tsx");
+
+  // THE POLYGON/BBOX EXPLAINER, gone in all three languages -- the user's own
+  // words were "지워". `withoutComments` because the removal note left in the
+  // source legitimately names the retired sentence while explaining why it
+  // left (this file's own convention for exactly this shape of pin).
+  pin.doesNotMatch(
+    withoutComments(page),
+    /폴리곤 \$\{selected\.polygon\.vertices\.length\}점으로 질의했고|Queried as a \$\{selected\.polygon\.vertices\.length\}-corner polygon|ポリゴン \$\{selected\.polygon\.vertices\.length\} 点で問い合わせ/,
+    "expected the polygon/bounding-box explainer sentence to be gone in ko, en AND ja -- #60a retired it, and a partial removal in one language is not a removal",
+  );
+  // `selected.polygon` itself is untouched -- this is a prose deletion, not a
+  // data one. The lasso payload, its trim and its model-boundary decision are
+  // still pinned as the drawn ring in the B2 lasso test below.
+  pin.match(
+    page,
+    /return vertices\.length >= 3 \? \{ polygon: vertices \} : null;/,
+    "expected the lasso's own polygon payload to be untouched -- #60a removed a sentence about it, not the shape it describes",
+  );
+
+  // THE PROVENANCE BLOCK, still whole, now behind a fold. `withoutFolds`
+  // (this file's own helper -- see its doc comment, "removes fold CONTENTS
+  // and keeps the surface") is reused rather than a bespoke slice: it already
+  // balances nested `<details>` and fails closed (keeps the whole file) when
+  // it cannot, so a mutation that unbalances the markup surfaces as a pin
+  // failure instead of a silently-vacuous check.
+  const surface = withoutFolds(page);
+  for (const field of ["endpoint", "fetched_at", "bytes", "sha256", "licence", "query"]) {
+    pin.doesNotMatch(
+      surface,
+      new RegExp(`selected\\.provenance\\.${field}`),
+      `expected the extract's ${field} to render ONLY inside the provenance fold -- #60a moved the record one click away, it did not put a second copy on the surface`,
+    );
+  }
+  // ...and every one of those fields is STILL in the raw file -- #60a moved
+  // data, it did not cut it. (The same six-field loop already runs against
+  // raw `page` earlier in this file, "Provenance is the product thesis" --
+  // this is the fold-scoped half of that same claim.)
+  for (const field of ["endpoint", "fetched_at", "bytes", "sha256", "licence", "query"]) {
+    pin.match(
+      page,
+      new RegExp(`selected\\.provenance\\.${field}`),
+      `expected the extract's ${field} to still exist in the raw source -- folded, never deleted`,
+    );
+  }
+
+  // THE FOLD ITSELF is a real `<details>`, and its own heading is the
+  // `<summary>` trigger -- so what a reader always sees is the LABEL
+  // ("출처 기록 (provenance)"), never the seven lines under it.
+  pin.match(
+    page,
+    /<details className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-\[14px\] leading-relaxed text-slate-700">\s*\n\s*<summary className="cursor-pointer text-\[15px\] font-semibold text-slate-800">\s*\n\s*\{t\("출처 기록 \(provenance\)", "Provenance", "出所の記録 \(provenance\)"\)\}/,
+    "expected the provenance record's own container to be the <details> element, with its heading as the <summary> trigger",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // The lasso (stage (a)) -- one shape at a time, and what it is judged as
 // ---------------------------------------------------------------------------
 //
@@ -4930,10 +4994,47 @@ contractTest("unit #58: the table's 황색시간 IS the declaration, and no seco
     /field: "declared_amber_s"/,
     "expected the table's amber cell to amend the declaration itself, through the same stamped path as every other value",
   );
+  // REWRITTEN under #60a authority (docs/phase2/DECISIONS.md, "2026-08-25 —
+  // 사용자 테스트 1차 피드백 ... (#60a)"): the user's live test ordered this
+  // exact sentence OFF the screen ("황색 선언의 두 안내 문장 ... 제거 -- 표가
+  // 곧 선언이라는 규칙은 유지하되 산문은 걷어낸다"). The RULE this pin used to
+  // guard survives unowned by prose -- it is the `field: "declared_amber_s"`
+  // structural pin immediately above, which #60a does not touch -- so the
+  // sentence itself is now pinned ABSENT, in all three languages (the #55b/
+  // threat-model idiom: a partial ban gets bypassed by translating around it).
+  pin.doesNotMatch(
+    timing,
+    /이 값이 아래 네트워크 결박에 기록되는 선언 황색시간입니다|This is the declared amber the binding below records|この値が下のネットワーク結縛に記録される申告黄色時間です/,
+    "expected the #58 explainer sentence to stay OFF the screen in every language -- #60a retired the prose, not the rule it explained",
+  );
+
+  // #60a's SECOND retired sentence: the SERVER-composed provenance line
+  // (`amber_declaration_note`, "yunha님이 …에 화면에서 선언한 황색시간입니다
+  // (이전 값: 없음)."). Unlike the explainer above, this is not a string this
+  // file can quote-match -- the sentence is composed server-side per amendment
+  // and never appears verbatim in the frontend source -- so the pin is on the
+  // JSX SHAPE that used to print it: no branch reads `amberNote` inside a
+  // render at all any more.
+  pin.doesNotMatch(
+    withoutComments(timing),
+    /\{amberNote/,
+    "expected no JSX branch to render `amberNote` any more -- #60a stops the UI from printing the server's provenance sentence",
+  );
+  // THE WIRE STAYS (the DECISIONS authority's own words: "the wire field
+  // stays, the UI stops rendering it"). `amber_declaration_note` is still a
+  // real prop on this component, still typed, and app/genesis/phases/page.tsx
+  // still threads `review.sheet.amber_declaration_note` into it (pinned
+  // separately, "the timing table renders the SERVER's stored times" above) --
+  // #60a deleted a paragraph, not the data path underneath it.
   pin.match(
     timing,
-    /이 값이 아래 네트워크 결박에 기록되는 선언 황색시간입니다/,
-    "expected the table to SAY that its amber is the number the binding records -- the provenance sentence #58 asks for",
+    /amberNote,\s*\n\s*amberDeclaredBy,/,
+    "expected `amberNote` to stay a real destructured prop on PhaseTimingTable -- the wire stays even though the render does not",
+  );
+  pin.match(
+    timing,
+    /amberNote: string \| null;/,
+    "expected `amberNote` to stay typed on PhaseTimingTable's props -- retiring the sentence must not retire the field",
   );
 
   // ROUND 3 — THE LOST-HISTORY DISCLOSURE, AND ITS REACHABILITY. MEASURED
@@ -5119,6 +5220,45 @@ contractTest("unit #58: the binding's node map is the draft's own map, and a cli
   // A draft with no geometry degrades to a NAMED absence, never a blank box.
   pin.match(pickMap, /function MapAbsence\(/, "expected one shape for every named absence this map can have");
   pin.match(pickMap, /data\.links\.length === 0/, "expected a draft with nothing to draw to say so rather than render an empty canvas");
+});
+
+contractTest("#60a: the binding map's background is the theme's own surface token, never a literal light-mode hex", (pin) => {
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  // REPORTED FROM LIVE USE (the user, 2026-08-25, screenshot of the 결박
+  // section's node-pick map): a white box on a dark screen. MEASURED root
+  // cause: the SVG's own background `<rect>` carried a LITERAL light-mode
+  // fill (`#f8fafc`, Tailwind's stock slate-50), left over from before this
+  // app's single dark theme locked in (globals.css, "PALETTE LOCK") -- it
+  // painted OVER the container div's own `bg-surface` one line above it,
+  // opaque, on every generation's map. `withoutComments`: the fix's own
+  // comment legitimately quotes the retired hex while explaining why it left.
+  pin.doesNotMatch(
+    withoutComments(localMap),
+    /fill="#f8fafc"|fill="#fff"|fill="#ffffff"|fill="#fafafa"|fill="#fefefe"/i,
+    "expected NO literal light-mode hex fill on the background rect -- that is exactly the white-box-on-dark-theme defect the user reported",
+  );
+  // THE FIX, structurally: the rect carries the SAME `fill-surface` utility
+  // the container next to it already resolves through Tailwind v4's
+  // `--color-surface` theme token (globals.css) -- one source of truth, so
+  // the rect can never drift from the container's own colour again. Anchored
+  // on the full element (x/y/width/height through the pointer handlers) so a
+  // mutation cannot keep the className while re-adding a `fill=` attribute
+  // beside it -- SVG's `fill` PRESENTATION ATTRIBUTE would still win the
+  // paint over the `fill-surface` CLASS in that case, and only a structural
+  // pin that also bans the literal attribute (above) catches it.
+  pin.match(
+    localMap,
+    /<rect\s*\n\s*x=\{0\}\s*\n\s*y=\{0\}\s*\n\s*width=\{VIEW_W\}\s*\n\s*height=\{VIEW_H\}\s*\n\s*className="fill-surface"\s*\n\s*onPointerDown=\{handleBackgroundPointerDown\}/,
+    "expected the background rect to carry the SAME fill-surface token the container around it uses -- measured, not invented, from DraftLocalMap's own container className",
+  );
+  // The container this rect sits inside is the thing it must MATCH -- pinned
+  // on both sides so a future edit cannot drift the two apart again.
+  pin.match(
+    localMap,
+    /className="overflow-hidden rounded-lg border border-slate-200 bg-surface"/,
+    "expected the container DraftLocalMap's rect must match to still carry bg-surface -- the token this fix measures itself against",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -5333,11 +5473,12 @@ contractTest("unit #58: every string this unit added is a real ko/en/ja triple",
     ["소거(초)", "clearance (s)", "クリアランス(秒)"],
     ["최소녹색", "min green", "最小青"],
     ["최대녹색", "max green", "最大青"],
-    [
-      "이 값이 아래 네트워크 결박에 기록되는 선언 황색시간입니다. 시트는 황색+전적색을 하나의 값으로만 인쇄하므로, 황색시간은 이 표에 적는 사람의 선언입니다.",
-      "This is the declared amber the binding below records. The sheet prints 황색+전적색 as ONE number, so the amber is the declaration of whoever types it here.",
-      "この値が下のネットワーク結縛に記録される申告黄色時間です。シートは黄色+全赤を一つの値でのみ印刷するため、黄色時間はここに記入する人の申告です。",
-    ],
+    // #60a (2026-08-25) RETIRED this triple's own entry -- the explainer
+    // sentence it pinned is now pinned ABSENT instead, in the "no second 선언
+    // field" test above. Removing the array entry rather than leaving a
+    // stale one is deliberate: TIMING_TRIPLES states "every t() this file
+    // still calls is a full triple", and a retired call has no business in
+    // that inventory any more.
     [
       "아래 시간은 의뢰인 시트의 텍스트에서 읽은 값이라 화면에서 고칠 수 없습니다. 고치려면 엑셀로 내보내 수정한 뒤 다시 올리십시오.",
       "The times below were read out of the client's own sheet, so they cannot be edited here. Export to Excel, correct it there and upload it again.",
@@ -12200,6 +12341,54 @@ contractTest(
     // reserved footer rather than each defining its own.
     pin.match(grid, /passes === false && node\.diagnosis && \(/, "expected the rung link only where the node FAILED");
     pin.match(grid, /passes === null && \(/, "expected the ungradable label inside the same reserved footer");
+  },
+);
+
+contractTest(
+  "#60a: every tile's bordered box fills its stretched grid row -- the #50-e footer reserve alone was not enough",
+  (pin) => {
+    const table = read("components/calibration/NodeScoreTable.tsx");
+    const grid = table.slice(
+      table.indexOf("export default function NodeScoreTable"),
+      table.indexOf("export function NodeScoreDetail"),
+    );
+
+    // REPORTED FROM LIVE USE (the user, 2026-08-25): "node 5 is shorter" --
+    // a tile with a diagnosis line reads taller than one without.
+    //
+    // MEASURED (static reproduction of this exact markup, at the grid's own
+    // real column width, the SAME discipline #50-e's own refuter measurement
+    // used): #50-e's min-h-[40px]/line-clamp-2 footer already equalises a
+    // PASS tile against a FAIL/ungradable one -- both measured 117px in the
+    // repro. The remaining gap is a DIFFERENT mechanism entirely: the `<ul>`
+    // is `grid`, and CSS Grid's default `align-items: stretch` already
+    // equalises every `<li>` in a row to its tallest neighbour (a wrapped
+    // node name, or a wrapped rung label past the footer's own 2-line cap)
+    // -- but the visible bordered `<button>` inside each `<li>` was never
+    // told to FILL that stretched height, so the invisible `<li>` grew while
+    // the bordered box a reader actually sees stayed shrink-wrapped to its
+    // own shorter content. Without `h-full` the repro measured 117/117/161px
+    // across three tiles built to differ on purpose; with it, all three
+    // measured 161px.
+    pin.match(
+      grid,
+      /className=\{`w-full h-full rounded-lg border px-3 py-2\.5 text-left transition \$\{/,
+      "expected the tile's bordered button to carry h-full -- the mechanism that lets it fill its grid-stretched <li> instead of shrink-wrapping to its own content",
+    );
+
+    // THE MECHANISM THIS DEPENDS ON, still in place: the grid must still
+    // default to `align-items: stretch` (i.e. no `items-start` override) for
+    // `h-full` to have a stretched parent height to fill in the first place.
+    pin.match(
+      grid,
+      /<ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">/,
+      "expected the tile grid to keep CSS Grid's default stretch (no items-start) -- h-full on the button has nothing to fill without it",
+    );
+    pin.doesNotMatch(
+      grid,
+      /<ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 items-start">/,
+      "expected the grid never to opt OUT of row stretch -- that would silently reopen the exact mismatch this pin exists to catch",
+    );
   },
 );
 

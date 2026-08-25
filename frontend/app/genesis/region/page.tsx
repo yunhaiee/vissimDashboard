@@ -1113,19 +1113,14 @@ export default function GenesisRegionPage() {
               {selected.name} · {selected.region.south}, {selected.region.west} → {selected.region.north},{" "}
               {selected.region.east}
             </p>
-            {selected.polygon && (
-              /* A lasso extract says so, and says what the rectangle printed
-                * above it actually is — the record's `region` is that bounding
-                * box in both shapes' case, so without this line a lasso and a
-                * rectangle fetch would be indistinguishable in the history. */
-              <p className="mt-1">
-                {t(
-                  `폴리곤 ${selected.polygon.vertices.length}점으로 질의했고 잘라내기도 그 폴리곤 기준입니다. 위 사각형은 폴리곤의 바운딩 박스입니다.`,
-                  `Queried as a ${selected.polygon.vertices.length}-corner polygon, and trimmed at that polygon too; the rectangle above is its bounding box.`,
-                  `ポリゴン ${selected.polygon.vertices.length} 点で問い合わせ、切り詰めもそのポリゴン基準です。上の矩形はポリゴンのバウンディングボックスです。`,
-                )}
-              </p>
-            )}
+            {/* #60a (2026-08-25, live-test feedback): the polygon/bounding-box
+              * explainer sentence that used to sit here is RETIRED -- the
+              * user's own words were "지워". `selected.polygon` itself is
+              * untouched (the lasso payload, the trim and the model boundary
+              * are still the drawn ring, unchanged); only the paragraph
+              * explaining the rectangle above it is gone. A lasso extract and
+              * a rectangle extract now read identically in this status box,
+              * which is the tradeoff the user chose over the extra sentence. */}
             {!isTerminal(selected.status) && (
               <p className="mt-1">
                 {t("진행", "Phase", "進行")}: {selected.phase} ({Math.round(selected.progress * 100)}%)
@@ -1150,47 +1145,56 @@ export default function GenesisRegionPage() {
              * written into the .osm itself as a leading XML comment, so it
              * survives into the generation's source document and into the
              * artifact download -- a network whose origin cannot be
-             * reconstructed is not auditable. */
-            <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[14px] leading-relaxed text-slate-700">
-              <p className="text-[15px] font-semibold text-slate-800">
+             * reconstructed is not auditable.
+             *
+             * #60a (2026-08-25, live-test feedback): the DATA below is
+             * UNCHANGED -- every field is the same field, nothing was cut --
+             * but the whole record now sits behind this page's own
+             * 자세히/접기 fold idiom instead of sitting fully open on the
+             * surface. A native disclosure element, the SAME one this block
+             * already used for just its "보낸 질의" line (now folded into
+             * the block rather than double-nested), so the app grows no
+             * second disclosure mechanism for this. */
+            <details className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[14px] leading-relaxed text-slate-700">
+              <summary className="cursor-pointer text-[15px] font-semibold text-slate-800">
                 {t("출처 기록 (provenance)", "Provenance", "出所の記録 (provenance)")}
-              </p>
-              <p className="mt-1.5">
-                {t("인스턴스", "Instance", "インスタンス")}: <span className="font-mono">{selected.provenance.endpoint}</span>
-              </p>
-              <p className="mt-0.5">
-                {t("받은 시각", "Fetched", "取得時刻")}: {formatTimestamp(selected.provenance.fetched_at, lang)} ·{" "}
-                {selected.provenance.elapsed_ms} ms · {t("시도", "attempts", "試行")} {selected.provenance.attempts}
-              </p>
-              <p className="mt-0.5">
-                {formatBytes(selected.provenance.bytes)} · {t("도로", "ways", "道路")} {selected.provenance.ways} ·{" "}
-                {t("노드", "nodes", "ノード")} {selected.provenance.nodes}
-              </p>
-              <p className="mt-0.5 break-all font-mono">sha256 {selected.provenance.sha256.slice(0, 32)}</p>
-              {selected.provenance.osm_base && (
-                <p className="mt-0.5">
-                  {t("지도 기준 시각", "Map base", "地図の基準時刻")}: {selected.provenance.osm_base}
+              </summary>
+              <div className="mt-1.5 flex flex-col gap-1">
+                <p>
+                  {t("인스턴스", "Instance", "インスタンス")}: <span className="font-mono">{selected.provenance.endpoint}</span>
                 </p>
-              )}
-              <p className="mt-1">
-                {t("라이선스", "Licence", "ライセンス")}: {selected.provenance.licence}
-                {!selected.provenance.attribution_note_present && (
-                  <span className="ml-1 opacity-80">
-                    {t(
-                      "(이 인스턴스는 ODbL 고지를 응답에 포함하지 않았습니다 — 없는 고지를 지어내지 않고 그대로 기록합니다.)",
-                      "(this instance did not restate the ODbL note in its response — recorded as absent rather than invented)",
-                      "（このインスタンスは応答に ODbL の告知を含めませんでした — 無いものを作らずそのまま記録します。）",
-                    )}
-                  </span>
+                <p>
+                  {t("받은 시각", "Fetched", "取得時刻")}: {formatTimestamp(selected.provenance.fetched_at, lang)} ·{" "}
+                  {selected.provenance.elapsed_ms} ms · {t("시도", "attempts", "試行")} {selected.provenance.attempts}
+                </p>
+                <p>
+                  {formatBytes(selected.provenance.bytes)} · {t("도로", "ways", "道路")} {selected.provenance.ways} ·{" "}
+                  {t("노드", "nodes", "ノード")} {selected.provenance.nodes}
+                </p>
+                <p className="break-all font-mono">sha256 {selected.provenance.sha256.slice(0, 32)}</p>
+                {selected.provenance.osm_base && (
+                  <p>
+                    {t("지도 기준 시각", "Map base", "地図の基準時刻")}: {selected.provenance.osm_base}
+                  </p>
                 )}
-              </p>
-              <details className="mt-2">
-                <summary className="cursor-pointer font-semibold">{t("보낸 질의", "The query sent", "送信した問い合わせ")}</summary>
-                <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap rounded bg-white/[0.04] px-2.5 py-2 font-mono text-[14px]">
+                <p>
+                  {t("라이선스", "Licence", "ライセンス")}: {selected.provenance.licence}
+                  {!selected.provenance.attribution_note_present && (
+                    <span className="ml-1 opacity-80">
+                      {t(
+                        "(이 인스턴스는 ODbL 고지를 응답에 포함하지 않았습니다 — 없는 고지를 지어내지 않고 그대로 기록합니다.)",
+                        "(this instance did not restate the ODbL note in its response — recorded as absent rather than invented)",
+                        "（このインスタンスは応答に ODbL の告知を含めませんでした — 無いものを作らずそのまま記録します。）",
+                      )}
+                    </span>
+                  )}
+                </p>
+                <p className="font-semibold">{t("보낸 질의", "The query sent", "送信した問い合わせ")}</p>
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-white/[0.04] px-2.5 py-2 font-mono text-[14px]">
                   {selected.provenance.query}
                 </pre>
-              </details>
-            </div>
+              </div>
+            </details>
           )}
 
           {selected.status === "staged" && (

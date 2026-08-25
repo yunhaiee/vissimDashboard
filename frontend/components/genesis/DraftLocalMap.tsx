@@ -318,12 +318,21 @@ export default function DraftLocalMap({
               </feMerge>
             </filter>
           </defs>
+          {/* #60a (2026-08-25, live-test feedback): this rect used to carry a
+            * LITERAL light-mode fill (`#f8fafc`, slate-50) left over from
+            * before this app's single dark theme locked in -- it painted an
+            * opaque white box straight over the container's own `bg-surface`
+            * one line up, on every generation's node-pick map. `fill-surface`
+            * is the SAME token that container uses (globals.css's
+            * `--color-surface`, Tailwind v4 auto-generating the `fill-*`
+            * utility for any `--color-*` theme entry), so this rect can never
+            * drift from the surface colour again -- one source, not two. */}
           <rect
             x={0}
             y={0}
             width={VIEW_W}
             height={VIEW_H}
-            fill="#f8fafc"
+            className="fill-surface"
             onPointerDown={handleBackgroundPointerDown}
             onPointerMove={handleBackgroundPointerMove}
             onPointerUp={handleBackgroundPointerUp}

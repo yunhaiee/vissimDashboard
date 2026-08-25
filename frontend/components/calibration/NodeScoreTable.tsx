@@ -165,12 +165,32 @@ export default function NodeScoreTable({
                 ? t("등급 불가", "ungradable", "評価不可")
                 : "";
           return (
+            // #60a (2026-08-25, live-test feedback -- "node 5 is shorter"):
+            // MEASURED (static reproduction of this exact markup at the
+            // grid's real column width, mirroring #50-e's own
+            // measure-before-fix discipline): the `<ul>`'s default CSS Grid
+            // `align-items: stretch` already equalises every `<li>` in a row
+            // to its tallest neighbour -- but the visible bordered `<button>`
+            // inside was never told to FILL that stretched height, so it
+            // stayed shrink-wrapped to its own content. #50-e's min-h-[40px]
+            // footer (below) already equalises the FOOTER between a passing
+            // and a failing/ungradable tile (measured: both 117px in the
+            // repro); the remaining gap was purely a taller sibling (a
+            // wrapped node name, or a wrapped rung label past what the
+            // footer's own 2-line cap absorbs) stretching the invisible
+            // `<li>` while a shorter tile's visible button never grew to
+            // match -- exactly "node 5 is shorter" while its row-mate carries
+            // a diagnosis line. `h-full` on the button is the fix: with it,
+            // three tiles built to differ on purpose (no footer content, a
+            // one-line diagnosis, a wrapped node name) all measured the SAME
+            // 161px button height in the repro; without it they measured
+            // 117/117/161.
             <li key={node.node_id}>
               <button
                 type="button"
                 onClick={() => onNodeClick(node.node_id, String(node.node_name ?? node.node_id))}
                 aria-pressed={active}
-                className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
+                className={`w-full h-full rounded-lg border px-3 py-2.5 text-left transition ${
                   passes === null
                     ? "border-slate-300 bg-surface hover:bg-slate-50"
                     : passes
