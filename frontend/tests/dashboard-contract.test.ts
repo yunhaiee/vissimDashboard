@@ -16578,3 +16578,204 @@ contractTest(
     );
   },
 );
+
+contractTest("unit #65: the calibration banner and run picker name an empty run list honestly", (pin) => {
+  const page = read("app/calibration/page.tsx");
+  const surface = withoutComments(page);
+
+  // THE GATE, structural: "zero runs" is decided ONLY once the fetch resolved
+  // WITHOUT error -- loading and a failed fetch are not evidence of absence,
+  // so both a mutation that drops the loading guard and one that drops the
+  // error guard (inlining `scenarios.length === 0` alone) fail here.
+  pin.match(
+    surface,
+    /const scenariosEmpty = !scenariosLoading && !scenariosError && scenarios\.length === 0;/,
+    "expected 'zero runs' to require a RESOLVED, error-free fetch -- loading and a failed fetch must not read as absence",
+  );
+
+  const banner = sliceBetween(page, "{!scenarioId ? (", ") : nextStep ? (");
+  pin.match(banner, /\S/, "expected to find the #65 banner's own source slice (markers moved?)");
+
+  // FOUR STATES, not three (orchestrator correction, 2026-08-26): a fetch that
+  // FAILED is its own absence, distinct from "still loading" and from "resolved
+  // empty" -- the original two-branch banner let a failed fetch fall through to
+  // the same neutral "choose a run" prompt an empty <select> could never
+  // satisfy, which was the exact dead-end this unit exists to close, just moved
+  // one branch over. `errorBranchStart` anchors the search so the later
+  // `scenariosEmpty ? (` found is the one AFTER the error check, not some future
+  // unrelated occurrence.
+  const errorBranchStart = banner.indexOf("scenariosError ? (");
+  const zeroBranchStart = banner.indexOf("scenariosEmpty ? (", errorBranchStart);
+  const zeroBranchEnd = banner.indexOf(") : (", zeroBranchStart);
+  assert.ok(
+    errorBranchStart > -1 && zeroBranchStart > errorBranchStart && zeroBranchEnd > zeroBranchStart,
+    "expected the banner's error/zero-runs/neutral ternary chain to be found, in that order (markers moved?)",
+  );
+  const errorBranch = banner.slice(errorBranchStart, zeroBranchStart);
+  const zeroBranch = banner.slice(zeroBranchStart, zeroBranchEnd);
+  const neutralBranch = banner.slice(zeroBranchEnd);
+
+  // (a) THE ZERO-STATE SENTENCE -- states the absence AND where to fix it --
+  // byte-exact in all three languages, and present ONLY in the branch that
+  // fires once the fetch resolved to an empty list. Loading, a failed fetch,
+  // AND a real non-empty list must never carry it: none of those is evidence
+  // that the dataset has zero runs.
+  pin.match(
+    zeroBranch,
+    tripleArgs(
+      "이 데이터셋에는 완료된 실행이 없습니다 — ③ 시뮬레이션에서 먼저 실행하세요",
+      "No completed runs in this dataset — run one on ③ Simulation first",
+      "このデータセットには完了した実行がありません — まず③シミュレーションで実行してください",
+    ),
+    "expected the zero-runs branch to state the absence and name ③ Simulation as where to fix it, in all three languages",
+  );
+  pin.doesNotMatch(
+    errorBranch + neutralBranch,
+    /완료된 실행이 없습니다|No completed runs in this dataset|完了した実行がありません/,
+    "expected the loading/error/non-empty branches to NEVER claim absence -- that sentence belongs only to the resolved, empty-list case",
+  );
+
+  // (b) THE ZERO-STATE BANNER'S NAVIGATION TARGET IS /simulation -- where a
+  // run is actually created (POST /api/simulations, live Vissim via the job
+  // queue). A plain `next/link` Link, this file's own idiom for a pure route
+  // change that mutates no client state (contrast `onClick={() => runSelectRef
+  // .current?.focus()}`, which the zero-runs branch must NOT keep -- there is
+  // nothing useful to focus in a selector this page just said has no options).
+  pin.match(
+    zeroBranch,
+    /<Link\s+href="\/simulation"/,
+    "expected the zero-runs banner to navigate to /simulation, where runs are actually created",
+  );
+  pin.doesNotMatch(
+    zeroBranch,
+    /onClick=\{\(\) => runSelectRef\.current\?\.focus\(\)\}/,
+    "expected the zero-runs banner to send the user to /simulation, not focus a selector it just said is empty",
+  );
+
+  // (d) THE FAILURE SENTENCE -- names the fetch FAILING, distinct from "zero
+  // runs" -- byte-exact in all three languages, and present ONLY in the branch
+  // that fires on a resolved, FAILED fetch. This is the orchestrator's own
+  // correction: the zero-runs and neutral branches must never carry it either.
+  pin.match(
+    errorBranch,
+    tripleArgs(
+      "실행 목록을 불러오지 못했습니다 — 새로고침하거나 서버 상태를 확인하세요",
+      "Could not load the run list — refresh the page, or check the server",
+      "実行一覧を読み込めませんでした — 再読み込みするか、サーバーの状態を確認してください",
+    ),
+    "expected the error branch to name the fetch FAILURE and suggest a fix, in all three languages",
+  );
+  pin.doesNotMatch(
+    zeroBranch + neutralBranch,
+    /불러오지 못했습니다|Could not load the run list|読み込めませんでした/,
+    "expected the failure sentence to appear ONLY in the scenariosError branch",
+  );
+  // The failure branch offers no click action: nothing a click can do fixes a
+  // fetch failing (contrast the zero-runs branch's Link, and the neutral
+  // branch's focus handler). It must not smuggle either.
+  pin.doesNotMatch(
+    errorBranch,
+    /<Link\b|onClick=/,
+    "expected the error branch to offer no navigation or click action -- there is nothing that fixes a fetch failure by clicking",
+  );
+  // ...and it must not fall back to claiming "choose a run" either -- that
+  // sentence implies options exist to choose from, which a failed fetch never
+  // established one way or the other.
+  pin.doesNotMatch(
+    errorBranch,
+    /채점할 실행을 선택하세요|Choose a run to score|採点する実行を選択してください/,
+    "expected the error branch to never fall back to the neutral 'choose a run' sentence -- a failed fetch is its own named absence",
+  );
+
+  // (c) THE RUNS-EXIST BRANCH IS UNCHANGED: #50-d's exact sentence and its
+  // exact focus handler both still stand, reached whenever BOTH scenariosError
+  // and scenariosEmpty are false -- covering loading AND a real non-empty list.
+  pin.match(
+    neutralBranch,
+    literalPattern('t("채점할 실행을 선택하세요", "Choose a run to score", "採点する実行を選択してください")'),
+    "expected the loading/non-empty branch to keep #50-d's exact neutral sentence, byte-identical",
+  );
+  pin.match(
+    neutralBranch,
+    /onClick=\{\(\) => runSelectRef\.current\?\.focus\(\)\}/,
+    "expected the neutral branch to keep focusing the run selector",
+  );
+
+  // THE PICKER'S EMPTY STATE reads the SAME two gates the banner does, so the
+  // banner and the <select> can never disagree about which of the three
+  // absences (loading is not one) applies.
+  const picker = sliceBetween(page, '<option value="">', "</option>");
+  pin.match(picker, /\S/, "expected to find the run picker's placeholder <option> (markers moved?)");
+  pin.match(
+    picker,
+    /scenariosError/,
+    "expected the picker's placeholder to branch on the SAME scenariosError the banner reads",
+  );
+  pin.match(
+    picker,
+    /scenariosEmpty/,
+    "expected the picker's placeholder to branch on the SAME scenariosEmpty the banner reads",
+  );
+  pin.match(
+    picker,
+    tripleArgs("목록을 불러오지 못함", "Couldn't load list", "リスト読み込み失敗"),
+    "expected the placeholder to name the fetch failure once scenariosError, in all three languages",
+  );
+  pin.match(
+    picker,
+    tripleArgs("완료된 실행 없음", "No completed runs", "完了した実行なし"),
+    "expected the placeholder to name the absence once scenariosEmpty, in all three languages",
+  );
+  pin.match(
+    picker,
+    tripleArgs("선택하세요", "Choose a run", "選択してください"),
+    "expected the placeholder to keep its original prompt for every other state",
+  );
+  // MUTUALLY EXCLUSIVE, structurally: one nested ternary, scenariosError
+  // checked first, scenariosEmpty second, the original prompt as the only
+  // fallback -- so a mutation that checks them in an if/else outside the
+  // ternary (letting two conditions both apply) or that reorders the checks
+  // fails here, not just a mutation that deletes one branch's text.
+  pin.match(
+    picker,
+    /scenariosError\s*\?[\s\S]{0,160}?:\s*scenariosEmpty\s*\?[\s\S]{0,200}?:\s*t\(/,
+    "expected the placeholder to be ONE nested ternary -- scenariosError, then scenariosEmpty, then the default -- so the three labels are mutually exclusive by construction",
+  );
+  const errorLabelAt = picker.search(tripleArgs("목록을 불러오지 못함", "Couldn't load list", "リスト読み込み失敗"));
+  const emptyLabelAt = picker.search(tripleArgs("완료된 실행 없음", "No completed runs", "完了した実行なし"));
+  const defaultLabelAt = picker.search(tripleArgs("선택하세요", "Choose a run", "選択してください"));
+  assert.ok(
+    errorLabelAt > -1 && emptyLabelAt > -1 && defaultLabelAt > -1,
+    "expected all three placeholder labels to be found in the picker slice (markers moved?)",
+  );
+  assert.ok(
+    errorLabelAt < emptyLabelAt && emptyLabelAt < defaultLabelAt,
+    "expected the placeholder's ternary to test scenariosError before scenariosEmpty before falling back to the default label",
+  );
+
+  // THE FETCH ITSELF now goes through this file's OWN async-resource
+  // convention (lib/asyncResource.ts) instead of a bare `useState([])` whose
+  // `.catch` collapsed a failed fetch into the same value an empty list
+  // produces -- which is exactly what made "no runs yet" and "could not ask"
+  // indistinguishable before this unit.
+  pin.match(
+    surface,
+    /const \[scenariosLoaded, setScenariosLoaded\] = useState<Loaded<ScenarioMeta\[\]>\s*\|\s*null>\(null\);/,
+    "expected the scenario list to be tracked as a Loaded<T>, not a bare useState([])",
+  );
+  pin.match(
+    surface,
+    /setScenariosLoaded\(ok\(SCENARIOS_KEY, list\)\)/,
+    "expected a successful scenarios fetch to be recorded through ok(), not a bare setScenarios(list)",
+  );
+  pin.match(
+    surface,
+    /setScenariosLoaded\(failed\(SCENARIOS_KEY, caught\)\)/,
+    "expected a failed scenarios fetch to be recorded through failed(), not silently collapsed into an empty list",
+  );
+  pin.doesNotMatch(
+    surface,
+    /\.catch\(\(\) => setScenarios\(\[\]\)\)/,
+    "expected the old catch-to-empty-array shape to be gone -- that is exactly what made a failed fetch indistinguishable from zero runs",
+  );
+});

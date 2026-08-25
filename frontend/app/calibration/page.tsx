@@ -176,10 +176,17 @@ function buildRouteSplitPrompt(step: CalibrationRailStep, lang: string, t: Trans
  * the request that never varies. */
 const APPLIED_ROWS_KEY = "applied-rows";
 const DATASET_KEY = "active-dataset";
+const SCENARIOS_KEY = "scenarios";
 
 /** "The rail has no steps" — one array, so an absent rail is a stable value
  * rather than a new empty array on every render. */
 const NO_STEPS: CalibrationRailStep[] = [];
+
+/** Same reason, same shape, for #65: "no runs yet" and "haven't asked yet"
+ * are different facts, and only `resolve`'s `loading`/`error`/`data` triad
+ * can tell them apart -- a plain `useState<ScenarioMeta[]>([])` cannot, since
+ * both start and end at `[]`. */
+const NO_SCENARIOS: ScenarioMeta[] = [];
 
 /** The report's nodes in the shape `BaseValidationMap` already speaks, so the
  * table and the map cross-highlight through one contract rather than two. */
@@ -232,7 +239,21 @@ function nodesForSteps(
 export default function CalibrationWorkspacePage() {
   const { t, lang } = useLanguage();
 
-  const [scenarios, setScenarios] = useState<ScenarioMeta[]>([]);
+  // #65: loading / failed / "asked and there are none" are three different
+  // facts about the run list, and only the `Loaded<T>` triad this file already
+  // uses for the rail, the report and the dataset can keep them apart -- see
+  // `NO_SCENARIOS` above for why a plain `useState([])` could not.
+  const [scenariosLoaded, setScenariosLoaded] = useState<Loaded<ScenarioMeta[]> | null>(null);
+  const {
+    data: scenariosData,
+    error: scenariosError,
+    loading: scenariosLoading,
+  } = resolve(scenariosLoaded, SCENARIOS_KEY);
+  const scenarios = scenariosData ?? NO_SCENARIOS;
+  // The one fact the banner and the picker both read: the fetch RESOLVED,
+  // it did not FAIL, and what came back was empty. Loading and error are
+  // both false here on purpose -- neither is evidence of "zero runs".
+  const scenariosEmpty = !scenariosLoading && !scenariosError && scenarios.length === 0;
   const [scenarioId, setScenarioId] = useState<string>("");
   const [compareOn, setCompareOn] = useState(false);
   const [compareIntent, setCompareIntent] = useState<string>("");
@@ -364,9 +385,17 @@ export default function CalibrationWorkspacePage() {
   const proposals = usePendingProposals({ steps: railSteps, onResolved: handleProposalResolved });
 
   useEffect(() => {
+    let cancelled = false;
     fetchScenarios()
-      .then((list) => setScenarios(list))
-      .catch(() => setScenarios([]));
+      .then((list) => {
+        if (!cancelled) setScenariosLoaded(ok(SCENARIOS_KEY, list));
+      })
+      .catch((caught) => {
+        if (!cancelled) setScenariosLoaded(failed(SCENARIOS_KEY, caught));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Mirror the floating assistant's current agent session id -- see
@@ -660,13 +689,44 @@ export default function CalibrationWorkspacePage() {
       {/* ramp only to 600, and a 700 here would land dark-blue-on-navy.     */}
       {/* ---------------------------------------------------------------- */}
       {!scenarioId ? (
-        <button
-          type="button"
-          onClick={() => runSelectRef.current?.focus()}
-          className="flex w-full items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-sky-600 transition hover:border-sky-400"
-        >
-          {t("채점할 실행을 선택하세요", "Choose a run to score", "採点する実行を選択してください")}
-        </button>
+        // #65: "zero runs" is a fact only the RESOLVED, ERROR-FREE fetch gets to
+        // state. While the list is still in flight, this stays the neutral
+        // prompt below -- that is not evidence of absence. The fetch FAILING is
+        // its own, THIRD absence (orchestrator correction, 2026-08-26): the
+        // original two-branch shape let a failed fetch fall through to the same
+        // neutral "choose a run" prompt the empty <select> could never satisfy --
+        // the exact dead-end this unit exists to close, just moved one branch
+        // over. `scenariosError` and `scenariosEmpty` (both reused on the
+        // `<select>` placeholder below) are the two places truth is decided, so
+        // the banner and the picker cannot disagree about which absence this is.
+        scenariosError ? (
+          <div className="flex w-full items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-rose-700">
+            {t(
+              "실행 목록을 불러오지 못했습니다 — 새로고침하거나 서버 상태를 확인하세요",
+              "Could not load the run list — refresh the page, or check the server",
+              "実行一覧を読み込めませんでした — 再読み込みするか、サーバーの状態を確認してください",
+            )}
+          </div>
+        ) : scenariosEmpty ? (
+          <Link
+            href="/simulation"
+            className="flex w-full items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-sky-600 transition hover:border-sky-400"
+          >
+            {t(
+              "이 데이터셋에는 완료된 실행이 없습니다 — ③ 시뮬레이션에서 먼저 실행하세요",
+              "No completed runs in this dataset — run one on ③ Simulation first",
+              "このデータセットには完了した実行がありません — まず③シミュレーションで実行してください",
+            )}
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => runSelectRef.current?.focus()}
+            className="flex w-full items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-sky-600 transition hover:border-sky-400"
+          >
+            {t("채점할 실행을 선택하세요", "Choose a run to score", "採点する実行を選択してください")}
+          </button>
+        )
       ) : nextStep ? (
         <button
           type="button"
@@ -711,7 +771,13 @@ export default function CalibrationWorkspacePage() {
             }}
             className="h-9 min-w-[220px] rounded-md border border-slate-300 bg-surface px-2 text-[14px] text-slate-900"
           >
-            <option value="">{t("선택하세요", "Choose a run", "選択してください")}</option>
+            <option value="">
+              {scenariosError
+                ? t("목록을 불러오지 못함", "Couldn't load list", "リスト読み込み失敗")
+                : scenariosEmpty
+                  ? t("완료된 실행 없음", "No completed runs", "完了した実行なし")
+                  : t("선택하세요", "Choose a run", "選択してください")}
+            </option>
             {scenarios.map((scenario) => (
               <option key={scenario.id} value={scenario.id}>
                 {scenario.name}
