@@ -423,6 +423,14 @@ async def upload_style_profile(
             status_code=400,
             detail="No filename given (X-Filename header or ?filename= query param).",
         )
+    # NFC-normalize at the door, before either string can become the stored
+    # profile name (style_profile._clean_name defaults the name to the
+    # filename's stem). macOS filenames are NFD -- see
+    # services.report.style_profile.normalize_display_text's docstring for
+    # the full measurement of why an un-normalized stem renders as bare jamo
+    # in the composed DOCX rather than the Korean syllables it should be.
+    filename = style_profile.normalize_display_text(filename) or filename
+    name = style_profile.normalize_display_text(name)
     _reject_oversized_body(request)
     content = await request.body()
     # Second check on the bytes actually received: a chunked upload carries no

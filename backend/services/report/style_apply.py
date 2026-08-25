@@ -87,6 +87,11 @@ from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 
 from services.report.default_style import PRISM_DEFAULT_PROFILE
+# A plain function import, not the module -- style_profile.py imports
+# nothing from this module, so there is no cycle, but a direct import
+# keeps the "one normalization helper" doctrine (see typeset.py) without
+# introducing a second name to reason about.
+from services.report.style_profile import normalize_display_text
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +256,40 @@ _FALLBACK_TEXT = {
 }
 
 
+#: The four leaves that are FONT-FAMILY STRINGS matched against installed
+#: font names by Word (never displayed as document text otherwise) -- see
+#: _Resolver.get's docstring for why these specifically need NFC.
+_FONT_FAMILY_PATHS = frozenset(
+    {
+        "fonts.body_family.ascii",
+        "fonts.body_family.eastAsia",
+        "fonts.heading_family.ascii",
+        "fonts.heading_family.eastAsia",
+    }
+)
+
+#: Every OTHER profile leaf that lands as LITERAL DOCUMENT TEXT (a run's
+#: w:t, not an attribute Word matches by name) -- the same NFD-jamo defect
+#: as fonts.*_family above, but for text a reader actually SEES rather
+#: than a name Word matches internally. Swept exhaustively over
+#: APPLIED_FIELDS (2026-08-26): every OTHER string leaf is either a hex
+#: colour, an enum keyword (footer.page_number.position,
+#: heading_numbering.scheme), or read only for its STRUCTURAL shape
+#: (heading_numbering.detected.h1-3 -- see typeset._number, which reads
+#: only whether the string ends in "." and how many "."-separated parts it
+#: has, never the string itself). A NEW string leaf that becomes document
+#: text must be added HERE (or to _FONT_FAMILY_PATHS if it is a font name
+#: instead) -- silence in both sets is how this class of defect slips back
+#: in.
+_DISPLAY_TEXT_PATHS = frozenset(
+    {
+        "header.text",
+        "footer.page_number.format",
+        "caption.prefix",
+    }
+)
+
+
 class _Resolver:
     """Profile-leaf-or-default, with every fallback named. One instance per
     :func:`apply_profile` call."""
@@ -287,6 +326,33 @@ class _Resolver:
         self.fallbacks.append(entry)
 
     def get(self, path: str) -> Any:
+        """A profile leaf, or the named-fallback default -- see the module
+        docstring.
+
+        Font-FAMILY strings (:data:`_FONT_FAMILY_PATHS`) get one extra step:
+        NFC normalization. Unlike every other string leaf this module writes
+        (which becomes document TEXT, rendered through whatever font is in
+        effect), a family name becomes a ``w:rFonts`` ATTRIBUTE VALUE that
+        Word matches against installed font names by exact string. An NFD
+        family name (e.g. a client's DOCX authored on a Mac) therefore
+        matches NOTHING installed -- not a mis-rendered glyph but a total
+        substitution for the whole style, worse than the NFD-display-name
+        defect this same normalization fixed at the door in
+        routers/report.py and services/report/style_profile.py's
+        ``_style_rfonts`` (this is the SAME function's job at the OTHER
+        boundary: an already-stored NFD profile, uploaded before the
+        extraction-time fix existed, heals here on its next compose).
+        Normalizing here also means ``self.resolved`` -- and therefore the
+        manifest's ``style.resolved`` -- reports the NFC form, never the raw
+        NFD the profile happened to carry.
+
+        :data:`_DISPLAY_TEXT_PATHS` gets the SAME normalization for the
+        opposite reason: those leaves become literal document TEXT (a run's
+        ``w:t``) rather than a matched attribute, so an un-normalized one
+        renders as bare jamo instead of composed syllables -- the ORIGINAL
+        display-text defect this unit fixed for the profile's own name,
+        recurring on a leaf drawn from the PROFILE'S CONTENT instead.
+        """
         default_found, default_value = _get_path(PRISM_DEFAULT_PROFILE, path)
         if not default_found:
             raise KeyError(
@@ -300,8 +366,26 @@ class _Resolver:
             self._record_fallback(path, cause, default_value)
             self.resolved[path] = default_value
             return default_value
+        if path in _FONT_FAMILY_PATHS or path in _DISPLAY_TEXT_PATHS:
+            if isinstance(value, str):
+                value = normalize_display_text(value)
         self.resolved[path] = value
         return value
+
+    def resolved_value(self, path: str) -> Any:
+        """Read a leaf ALREADY resolved by an earlier step in THIS
+        :func:`apply_profile` call, without re-resolving it and without
+        recording a second fallback for it.
+
+        ``fonts.body_family.ascii``/``.eastAsia`` are resolved once in
+        ``_apply_styles`` and then needed again by ``_apply_header``,
+        ``_apply_footer`` and the table writer (all body-class text, per the
+        one-body-family/one-heading-family doctrine) — calling :meth:`get`
+        a second time for the same path would, for a profile that genuinely
+        has a hole there, append the SAME ``fallbacks`` entry twice into the
+        honesty record. This reads the cache :meth:`get` already filled.
+        """
+        return self.resolved.get(path)
 
     def unusable(self, path: str) -> Any:
         """A present-but-unwritable value: fall back and name it separately."""
@@ -410,6 +494,64 @@ def _style_font(style: Any, *, ascii_family: str, east_asia: str, size_pt: float
     _set_east_asia(style.element, east_asia)
 
 
+def set_run_fonts(run: Any, *, ascii_family: str, east_asia: str) -> None:
+    """Explicit ``w:rFonts`` DIRECTLY on one run — public because
+    ``services/report/typeset.py``'s table-cell writer needs the exact same
+    write ``_apply_header``/``_apply_footer`` below use.
+
+    MEASURED (unzipping a composed .docx's ``word/styles.xml``): a table
+    cell's paragraph carries no ``w:pStyle`` at all (falls back to whichever
+    style is marked ``w:default="1"``, i.e. Normal, by convention rather than
+    by direct assignment) and ``Header``/``Footer`` carry their OWN ``pPr``
+    but no ``rPr`` of their own — they resolve fonts only by walking
+    ``w:basedOn`` up to Normal. Both are spec-legal, but a run is the
+    HIGHEST-priority formatting level in OOXML: writing the family directly
+    on the run removes any dependency on a renderer correctly walking a
+    default-style or basedOn chain for ``w:eastAsia`` specifically, which is
+    the exact class of cross-renderer inconsistency the mixed-font report
+    (this unit's #2) was measured against.
+    """
+    run.font.name = ascii_family
+    _set_east_asia(run._r, east_asia)
+
+
+def _set_doc_defaults_fonts(document: Any, *, ascii_family: str, east_asia: str) -> None:
+    """Floor ``w:docDefaults/w:rPrDefault`` on the profile's BODY family.
+
+    python-docx's template ships this element with ``w:asciiTheme=
+    "minorHAnsi"``/``w:eastAsiaTheme="minorEastAsia"`` and no literal font
+    name at all — Word resolves those through ``word/theme/theme1.xml``'s
+    minor font, which is Calibri-class and carries no dependable Korean
+    member. This is the LAST resort in the resolution order (below every
+    style and every direct run write this module and the typesetter make),
+    so it is not expected to fire for output this codebase produces — it is
+    a floor against any run this unit forgets to font explicitly, not the
+    primary fix. Literal ``w:ascii``/``w:eastAsia`` attributes win over their
+    ``*Theme`` siblings when both are present on one ``w:rFonts``, so the
+    theme attributes are left in place rather than removed.
+    """
+    styles_element = document.styles.element
+    doc_defaults = styles_element.find(qn("w:docDefaults"))
+    if doc_defaults is None:
+        doc_defaults = OxmlElement("w:docDefaults")
+        styles_element.insert(0, doc_defaults)
+    rpr_default = doc_defaults.find(qn("w:rPrDefault"))
+    if rpr_default is None:
+        rpr_default = OxmlElement("w:rPrDefault")
+        doc_defaults.append(rpr_default)
+    rpr = rpr_default.find(qn("w:rPr"))
+    if rpr is None:
+        rpr = OxmlElement("w:rPr")
+        rpr_default.append(rpr)
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.insert(0, rfonts)
+    rfonts.set(qn("w:ascii"), ascii_family)
+    rfonts.set(qn("w:hAnsi"), ascii_family)
+    rfonts.set(qn("w:eastAsia"), east_asia)
+
+
 def _paragraph_bottom_rule(paragraph: Any, color_hex: str, width_pt: float) -> None:
     p_pr = paragraph._p.get_or_add_pPr()
     borders = p_pr.find(qn("w:pBdr"))
@@ -426,16 +568,24 @@ def _paragraph_bottom_rule(paragraph: Any, color_hex: str, width_pt: float) -> N
     bottom.set(qn("w:color"), color_hex)
 
 
-def _page_field_runs(paragraph: Any, *, size_pt: float, color_hex: str) -> None:
+def _page_field_runs(
+    paragraph: Any, *, size_pt: float, color_hex: str, ascii_family: str, east_asia: str
+) -> None:
     """A live ``{ PAGE }`` field: begin / instrText / end, and NO cached
     result. The cached-result form (begin / separate / "1" / end) would put a
     literal ``w:t`` inside the field, which R-4's footer reader would read as
-    part of the format string — "- N -" would come back as "- N1 -"."""
+    part of the format string — "- N -" would come back as "- N1 -".
+
+    The field's RENDERED result is Word's own page-number numerals, so the
+    font here is mostly cosmetic (ascii digits render identically in nearly
+    any face) — set anyway so the whole footer line, prefix through field to
+    suffix, is one font run rather than a font seam at each fldChar."""
 
     def _run_with_rpr() -> Any:
         run = paragraph.add_run()
         run.font.size = Pt(size_pt)
         run.font.color.rgb = RGBColor.from_string(color_hex)
+        set_run_fonts(run, ascii_family=ascii_family, east_asia=east_asia)
         return run
 
     begin = _run_with_rpr()
@@ -583,6 +733,11 @@ def _apply_styles(document: Any, resolver: _Resolver) -> None:
     heading_ascii = str(resolver.get("fonts.heading_family.ascii"))
     heading_east = str(resolver.get("fonts.heading_family.eastAsia"))
 
+    # The floor beneath every style this function sets below — see
+    # _set_doc_defaults_fonts's docstring for why this is defense-in-depth
+    # and not the primary fix.
+    _set_doc_defaults_fonts(document, ascii_family=body_ascii, east_asia=body_east)
+
     _style_font(
         document.styles["Normal"],
         ascii_family=body_ascii,
@@ -629,6 +784,12 @@ def _apply_header(document: Any, resolver: _Resolver, logo_bytes: bytes | None) 
 
     text_color = resolver.hex_color("header.text_color")
     text_size = resolver.points("header.text_size_pt")
+    # Header/footer text is body-class, not its own font family in the
+    # schema — read the value _apply_styles already resolved (see
+    # _Resolver.resolved_value's docstring for why this must not re-call
+    # .get() and risk a duplicate fallback entry).
+    body_ascii = str(resolver.resolved_value("fonts.body_family.ascii"))
+    body_east = str(resolver.resolved_value("fonts.body_family.eastAsia"))
 
     logo = resolver.get("header.logo")
     logo_present = bool(isinstance(logo, Mapping) and logo.get("present"))
@@ -674,11 +835,13 @@ def _apply_header(document: Any, resolver: _Resolver, logo_bytes: bytes | None) 
     tab_stops.add_tab_stop(text_width, WD_TAB_ALIGNMENT.RIGHT)
     spacer = paragraph.add_run("\t")
     spacer.font.size = Pt(text_size)
+    set_run_fonts(spacer, ascii_family=body_ascii, east_asia=body_east)
 
     header_text = resolver.get("header.text")
     text_run = paragraph.add_run(str(header_text))
     text_run.font.size = Pt(text_size)
     text_run.font.color.rgb = RGBColor.from_string(text_color)
+    set_run_fonts(text_run, ascii_family=body_ascii, east_asia=body_east)
 
     if bool(resolver.get("header.rule_below")):
         _paragraph_bottom_rule(paragraph, text_color, 0.5)
@@ -707,6 +870,9 @@ def _apply_footer(document: Any, resolver: _Resolver) -> None:
 
     size_pt = resolver.points("footer.page_number.size_pt")
     color_hex = resolver.hex_color("footer.page_number.color")
+    # Same body-class reasoning as the header — see _apply_header.
+    body_ascii = str(resolver.resolved_value("fonts.body_family.ascii"))
+    body_east = str(resolver.resolved_value("fonts.body_family.eastAsia"))
 
     template = resolver.get("footer.page_number.format")
     if not isinstance(template, str) or "N" not in template:
@@ -726,15 +892,20 @@ def _apply_footer(document: Any, resolver: _Resolver) -> None:
         run = paragraph.add_run(prefix)
         run.font.size = Pt(size_pt)
         run.font.color.rgb = RGBColor.from_string(color_hex)
-    _page_field_runs(paragraph, size_pt=size_pt, color_hex=color_hex)
+        set_run_fonts(run, ascii_family=body_ascii, east_asia=body_east)
+    _page_field_runs(
+        paragraph, size_pt=size_pt, color_hex=color_hex, ascii_family=body_ascii, east_asia=body_east
+    )
     if suffix:
         run = paragraph.add_run(suffix)
         run.font.size = Pt(size_pt)
         run.font.color.rgb = RGBColor.from_string(color_hex)
+        set_run_fonts(run, ascii_family=body_ascii, east_asia=body_east)
 
 
 __all__ = [
     "APPLIED_FIELDS",
     "AppliedStyle",
     "apply_profile",
+    "set_run_fonts",
 ]

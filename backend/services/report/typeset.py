@@ -132,6 +132,11 @@ from services.report import figures as report_figures
 from services.report import graphics as report_graphics
 from services.report import spine, style_apply
 from services.report.default_style import DEFAULT_PROFILE_NAME, PRISM_DEFAULT_PROFILE
+# A plain function import, not ``from services.report import style_profile``
+# -- every composer function in this module takes a parameter literally
+# NAMED ``style_profile`` (the profile dict), which would shadow a module
+# import of the same name inside the function body.
+from services.report.style_profile import normalize_display_text
 
 logger = logging.getLogger(__name__)
 
@@ -498,14 +503,39 @@ def _write_table(
     header_bold = bool(applied.value("table_style.header_row.bold"))
     header_size = float(applied.value("table_style.header_row.size_pt"))
     body_size = float(applied.value("fonts.ladder_pt.table"))
+    # Table text is body-class, not its own font family in the schema (there
+    # is no "table family" leaf — only body_family/heading_family exist).
+    # MEASURED: a table cell's paragraph carries no w:pStyle at all, so it
+    # resolves fonts only through whichever style is marked w:default="1" —
+    # correct today because that IS Normal, but a run is the highest-priority
+    # OOXML formatting level, so writing the family directly here removes the
+    # dependency on that indirection entirely (see style_apply.set_run_fonts's
+    # docstring for the fuller measurement).
+    ascii_family = str(applied.value("fonts.body_family.ascii"))
+    east_asia = str(applied.value("fonts.body_family.eastAsia"))
 
     for index, text in enumerate(headers):
         cell = table.rows[0].cells[index]
-        _write_cell(cell, text, size_pt=header_size, bold=header_bold, color_hex=header_color, fill=header_fill)
+        _write_cell(
+            cell,
+            text,
+            size_pt=header_size,
+            bold=header_bold,
+            color_hex=header_color,
+            fill=header_fill,
+            ascii_family=ascii_family,
+            east_asia=east_asia,
+        )
     for row_index, row in enumerate(rows, start=1):
         for index in range(len(headers)):
             value = row[index] if index < len(row) else NULL_CELL
-            _write_cell(table.rows[row_index].cells[index], value, size_pt=body_size)
+            _write_cell(
+                table.rows[row_index].cells[index],
+                value,
+                size_pt=body_size,
+                ascii_family=ascii_family,
+                east_asia=east_asia,
+            )
     return table
 
 
@@ -514,6 +544,8 @@ def _write_cell(
     text: str,
     *,
     size_pt: float,
+    ascii_family: str,
+    east_asia: str,
     bold: bool = False,
     color_hex: str | None = None,
     fill: str | None = None,
@@ -522,6 +554,7 @@ def _write_cell(
     paragraph = cell.paragraphs[0]
     run = paragraph.add_run(text if text not in (None, "") else NULL_CELL)
     run.font.size = Pt(size_pt)
+    style_apply.set_run_fonts(run, ascii_family=ascii_family, east_asia=east_asia)
     # ALWAYS written, never only when true: a profile whose header row is
     # deliberately NOT bold is a real style statement, and leaving ``run.bold``
     # unset would make R-4 read it back as ``None`` — "no explicit bold on the
@@ -769,6 +802,13 @@ def _compose(
     after_scenario_id: str | None = None,
 ) -> dict[str, Any]:
     language = _validate_language(language)
+    # Heals an ALREADY-STORED NFD profile name (uploaded before the door fix
+    # in routers/report.py normalized it) on this compose, with no re-upload
+    # required -- see services.report.style_profile.normalize_display_text's
+    # docstring for the full measurement. Both this manifest's "profile_name"
+    # and the front-matter line _write_front_matter renders read this same
+    # normalized value, so there is exactly one place this heals from.
+    profile_name = normalize_display_text(profile_name)
     sections = spine.build_spine()
 
     gathered = _gather_figures(

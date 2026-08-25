@@ -161,6 +161,7 @@ import re
 import struct
 import threading
 import time
+import unicodedata
 import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
@@ -319,11 +320,27 @@ def _get_style(document: "docx.document.Document", style_name: str):
 
 
 def _style_rfonts(style: Any) -> dict[str, str | None]:
+    """The ONE place ``fonts.body_family``/``fonts.heading_family`` are read
+    off a style's ``w:rFonts``. NFC-normalized here, at the point of
+    EXTRACTION -- same "point of storage" doctrine as ``_clean_name``'s
+    filename/name normalization above, but for a different reason: a font
+    FAMILY string is not displayed text, it is a ``w:rFonts`` attribute
+    value Word matches against installed font names by EXACT string. An
+    NFD family name (a client DOCX authored on a Mac, same as the filename
+    defect this module already fixes) matches no installed font at all --
+    Word silently substitutes a fallback for the WHOLE style, not a
+    mis-rendered glyph. See ``style_apply._Resolver.get``'s docstring for
+    this same normalization's OTHER boundary: an already-stored NFD
+    profile, extracted before this fix existed, heals there at compose.
+    """
     rpr = style.element.find(qn("w:rPr")) if style is not None else None
     rfonts = rpr.find(qn("w:rFonts")) if rpr is not None else None
     if rfonts is None:
         return {"ascii": None, "eastAsia": None}
-    return {"ascii": rfonts.get(qn("w:ascii")), "eastAsia": rfonts.get(qn("w:eastAsia"))}
+    return {
+        "ascii": normalize_display_text(rfonts.get(qn("w:ascii"))),
+        "eastAsia": normalize_display_text(rfonts.get(qn("w:eastAsia"))),
+    }
 
 
 def _style_color_hex(style: Any) -> tuple[str | None, str | None]:
@@ -926,7 +943,11 @@ def _extract_caption(
             continue
         match = _CAPTION_PREFIX_RE.match(paragraph.text.strip())
         if match:
-            prefixes.append(match.group(1))
+            # DISPLAY-TEXT leaf (see style_apply._DISPLAY_TEXT_PATHS's
+            # comment) -- normalized HERE, at capture, not after the
+            # dedup below, so an NFD/NFC pair of the SAME prefix is not
+            # mistaken for two distinct forms.
+            prefixes.append(normalize_display_text(match.group(1)))
     if not prefixes:
         _mark_missing(
             not_extracted,
@@ -1079,7 +1100,11 @@ def _extract_header(
     if paragraph is not None:
         text_run = next((r for r in paragraph.runs if r.text.strip()), None)
         if text_run is not None:
-            text_value = text_run.text.strip()
+            # DISPLAY-TEXT leaf (see style_apply._DISPLAY_TEXT_PATHS's
+            # comment) -- a Mac-authored header run's text can be NFD,
+            # same origin as the filename/profile-name defect this
+            # module already fixes.
+            text_value = normalize_display_text(text_run.text.strip())
             text_size_pt = _pt(text_run.font.size)
             text_color = _run_color_hex(text_run)
             if text_color is None:
@@ -1217,7 +1242,10 @@ def _extract_footer(
         "page_number": {
             "present": True,
             "position": position,
-            "format": "".join(parts),
+            # DISPLAY-TEXT leaf (see style_apply._DISPLAY_TEXT_PATHS's
+            # comment) -- everything in this template but the "N" slot
+            # is literal text this unit writes into the footer.
+            "format": normalize_display_text("".join(parts)),
             "size_pt": size_pt,
             "color": color,
         }
@@ -1475,10 +1503,35 @@ def _record_path(profile_id: str) -> Path:
     return _record_dir(profile_id) / PROFILE_FILENAME
 
 
+def normalize_display_text(value: str | None) -> str | None:
+    """NFC-normalize a string of PROFILE-IDENTITY origin (an uploaded
+    filename, a caller-supplied name, an already-stored profile's ``name``)
+    before it is used as a label or written into document text.
+
+    macOS filenames are NFD (a precomposed Hangul syllable like "샘" is
+    stored as the base jamo PLUS combining jamo, several codepoints instead
+    of one). Korean fonts carry precomposed (NFC) syllables as glyphs, not
+    conjoining-jamo COMPOSITION logic, so an un-normalized NFD string renders
+    in Word as bare jamo ("ㅅㅐㅁ...") instead of syllables ("샘...") — not a
+    missing-glyph box, a WRONG-but-present one, which is why this was not
+    caught by any existing "can this font render this text" check.
+
+    ONE helper, used at BOTH the point of storage (``_clean_name`` below, so
+    ``POST /style-profiles``' upload door normalizes before the filename stem
+    ever becomes a stored name) and the point of display
+    (``services/report/typeset.py``'s front matter), so an ALREADY-STORED NFD
+    profile heals on its NEXT compose without a re-upload.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
+
+
 def _clean_name(name: str | None, *, source_file: str) -> str:
-    candidate = (name or "").strip()
+    candidate = (normalize_display_text(name) or "").strip()
     if not candidate:
-        candidate = Path(source_file).stem or "style-profile"
+        stem_source = normalize_display_text(source_file) or source_file
+        candidate = Path(stem_source).stem or "style-profile"
     return candidate[:MAX_NAME_CHARS]
 
 

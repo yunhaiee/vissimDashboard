@@ -38,15 +38,19 @@ prove the doctrine holds by running real DOCX bytes through the real code:
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
+import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import docx
 import pytest
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from fastapi.testclient import TestClient
 
@@ -54,7 +58,7 @@ import main
 from conftest import bearer_headers
 from services import workspaces
 from services.dataimport import xlsx_guard as xlsx_guard_module
-from services.report import style_profile
+from services.report import default_style, style_apply, style_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_DIR = REPO_ROOT / "client-data" / "report-style-samples"
@@ -70,6 +74,17 @@ def _skip_without_sample() -> None:
         )
 
 
+#: Conjoining-jamo codepoint ranges (NFD's decomposed building blocks for a
+#: Hangul syllable) -- a string containing any of these is NOT the composed
+#: syllable form Korean fonts carry as glyphs. Used both here (upload door)
+#: and in test_report_typeset.py (compose-time healing + the font walker).
+_JAMO_RANGES = ((0x1100, 0x11FF), (0xA960, 0xA97F), (0xD7B0, 0xD7FF))
+
+
+def _has_conjoining_jamo(text: str) -> bool:
+    return any(any(lo <= ord(ch) <= hi for lo, hi in _JAMO_RANGES) for ch in text)
+
+
 def _build_minimal_docx() -> bytes:
     """A completely unstyled document: one Normal paragraph, no tables, no
     header/footer content, no run-level color overrides. Used by every test
@@ -79,6 +94,95 @@ def _build_minimal_docx() -> bytes:
     buf = io.BytesIO()
     document.save(buf)
     return buf.getvalue()
+
+
+def test_extraction_normalizes_an_nfd_font_family_name_to_nfc() -> None:
+    """The refuter's follow-on to unit #63: font-FAMILY strings themselves
+    (not just the profile's display name) were never NFC-normalized on
+    extraction. This is worse than a display glitch -- ``fonts.body_family``/
+    ``fonts.heading_family`` become a ``w:rFonts`` ATTRIBUTE VALUE that Word
+    matches against installed font names by EXACT string, so an NFD family
+    name (plausible from a client DOCX authored on a Mac, same origin as the
+    filename defect this module already fixes) matches NO installed font at
+    all -- Word silently substitutes a fallback for the WHOLE style, not a
+    mis-rendered glyph. ``_style_rfonts`` is the ONE place both families are
+    read off a style's ``w:rFonts`` -- normalized there, at the point of
+    extraction.
+    """
+    document = docx.Document()
+    document.add_paragraph("본문입니다", style="Normal")
+
+    nfd_family = unicodedata.normalize("NFD", "나눈고딕")
+    assert _has_conjoining_jamo(nfd_family), "fixture must actually be decomposed"
+
+    normal_style = document.styles["Normal"]
+    rpr = normal_style.element.get_or_add_rPr()
+    rfonts = OxmlElement("w:rFonts")
+    rfonts.set(qn("w:eastAsia"), nfd_family)
+    rpr.append(rfonts)
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    extracted = style_profile.extract_style_profile(buffer.getvalue(), source_file="a.docx")
+
+    resolved = extracted["fonts"]["body_family"]["eastAsia"]
+    assert resolved == unicodedata.normalize("NFC", nfd_family)
+    assert not _has_conjoining_jamo(resolved)
+
+
+def test_extraction_normalizes_nfd_display_text_leaves_to_nfc() -> None:
+    """Round 3 -- the refuter's follow-on to the follow-on: header.text,
+    footer.page_number.format and caption.prefix are DISPLAY-TEXT leaves
+    (see style_apply._DISPLAY_TEXT_PATHS's comment) -- the SAME NFD-jamo
+    defect as the profile's own name (unit #63's original defect 1), but on
+    strings drawn from the profile's CONTENT rather than its filename. The
+    user's actual violet sample renders its header from exactly
+    ``header.text``, so this is not a hypothetical leaf.
+
+    Builds one real DOCX via ``style_apply.apply_profile`` (so the
+    header/footer/caption structure is exactly what this codebase produces),
+    then corrupts each leaf's OWN ``w:t`` text node to its NFD form IN PLACE
+    (same content, decomposed -- standing in for a real Mac-authored client
+    DOCX), and asserts ``extract_style_profile`` heals all three back to NFC.
+    """
+    profile = copy.deepcopy(default_style.PRISM_DEFAULT_PROFILE)
+    profile["header"]["text"] = "머리글"
+    profile["footer"]["page_number"]["format"] = "쪽 N"
+
+    document = docx.Document()
+    style_apply.apply_profile(document, profile)
+    document.add_paragraph("그림 1. 설명", style="Caption")
+
+    header_run = document.sections[0].header.paragraphs[0].runs[-1]
+    footer_prefix_run = document.sections[0].footer.paragraphs[0].runs[0]
+    caption_run = document.paragraphs[-1].runs[0]
+
+    originals = {
+        id(header_run): "머리글",
+        id(footer_prefix_run): "쪽 ",
+        id(caption_run): "그림 1. 설명",
+    }
+    for run in (header_run, footer_prefix_run, caption_run):
+        t = run._r.find(qn("w:t"))
+        assert t is not None and t.text == originals[id(run)]
+        t.text = unicodedata.normalize("NFD", t.text)
+        assert _has_conjoining_jamo(t.text), "fixture must actually be decomposed"
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    extracted = style_profile.extract_style_profile(buffer.getvalue(), source_file="a.docx")
+
+    assert extracted["header"]["text"] == "머리글"
+    assert extracted["footer"]["page_number"]["format"] == "쪽 N"
+    assert extracted["caption"]["prefix"] == "그림 "
+    for value in (
+        extracted["header"]["text"],
+        extracted["footer"]["page_number"]["format"],
+        extracted["caption"]["prefix"],
+    ):
+        assert not _has_conjoining_jamo(value)
 
 
 # =============================================================================
@@ -958,6 +1062,52 @@ def test_http_upload_refuses_a_bomb_with_a_named_400(client: TestClient, headers
 def test_http_upload_requires_a_filename(client: TestClient, headers: dict[str, str]):
     response = client.post("/api/report/style-profiles", headers=headers, content=_build_minimal_docx())
     assert response.status_code == 400
+
+
+def test_http_upload_normalizes_an_nfd_filename_to_nfc(client: TestClient, headers: dict[str, str]):
+    """A macOS-authored filename is NFD -- jamo decomposed into the base
+    consonant/vowel PLUS combining pieces, several codepoints per syllable
+    instead of one. Un-normalized, that stem becomes the stored profile
+    name and later renders in Word as bare jamo, not syllables (this unit's
+    defect 1). The upload door must NFC-normalize BEFORE the filename's stem
+    ever becomes ``name`` -- proven here by checking BOTH ``source_file`` and
+    the defaulted ``name`` on the stored record.
+    """
+    nfd_stem = unicodedata.normalize("NFD", "샘플보고서")
+    assert _has_conjoining_jamo(nfd_stem), "fixture must actually BE decomposed, or this test proves nothing"
+    nfd_filename = f"{nfd_stem}.docx"
+
+    response = client.post(
+        f"/api/report/style-profiles?filename={quote(nfd_filename)}",
+        headers=headers,
+        content=_build_minimal_docx(),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["source_file"] == unicodedata.normalize("NFC", nfd_filename)
+    assert body["name"] == unicodedata.normalize("NFC", nfd_stem)
+    assert not _has_conjoining_jamo(body["source_file"])
+    assert not _has_conjoining_jamo(body["name"])
+
+
+def test_http_upload_normalizes_an_nfd_name_query_param_to_nfc(client: TestClient, headers: dict[str, str]):
+    """The SAME door-normalization, but for the caller-supplied ``?name=``
+    rather than the filename-derived default -- an explicit name is no less
+    likely to arrive NFD from a Mac-side caller than the filename is."""
+    nfd_name = unicodedata.normalize("NFD", "고객 스타일")
+    assert _has_conjoining_jamo(nfd_name)
+
+    response = client.post(
+        f"/api/report/style-profiles?filename=a.docx&name={quote(nfd_name)}",
+        headers=headers,
+        content=_build_minimal_docx(),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["name"] == unicodedata.normalize("NFC", nfd_name)
+    assert not _has_conjoining_jamo(body["name"])
 
 
 # =============================================================================

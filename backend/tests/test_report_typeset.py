@@ -50,10 +50,12 @@ Vissim.
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import io
 import json
 import re
+import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -1388,3 +1390,484 @@ def test_a_stored_profile_drives_the_composed_document(client: Any, fixed_figure
     stored = upload.json()["resolved_profile"]
     assert extracted["palette"]["title"] == stored["palette"]["title"]
     assert extracted["header"]["logo"]["sha256"] == stored["header"]["logo"]["sha256"]
+
+
+# =============================================================================
+# 10. FONTS — one body family, one heading family, every run
+#
+# The user-reported defect (a Word-for-Mac screenshot: "the text font are not
+# the same throughout the report"): MEASURED by unzipping a composed .docx's
+# word/document.xml + word/styles.xml. R-4's own extractor never catches this
+# class of bug -- it reads font FAMILY off style DEFINITIONS (Normal, Heading
+# N), never off actual runs, so a leak in a run that bypasses its style never
+# reaches it. This section IS that missing coverage: a walker that resolves
+# every Hangul-bearing run's EFFECTIVE eastAsia font the way OOXML itself
+# does (run rPr -> paragraph style, up its w:basedOn chain -> docDefaults),
+# over the REAL composed bytes.
+# =============================================================================
+
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+#: The paragraph styles this typesetter's headings use -- everything else
+#: (Normal, Caption, Header, Footer, a table cell's default paragraph) is
+#: body-class. There is no third font family in the schema.
+_HEADING_STYLE_NAMES = {"Title", "Heading 1", "Heading 2", "Heading 3"}
+
+
+def _style_own_east_asia(style: Any) -> str | None:
+    """ONE style's OWN ``w:rFonts/@w:eastAsia`` -- NOT its basedOn chain."""
+    rpr = style.element.find(qn("w:rPr"))
+    if rpr is None:
+        return None
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        return None
+    return rfonts.get(qn("w:eastAsia"))
+
+
+def _style_chain_east_asia(style: Any) -> str | None:
+    """Walk UP ``w:basedOn`` until a style states its own eastAsia, or the
+    chain ends. ``id()`` (not style name) breaks any pathological cycle."""
+    seen: set[int] = set()
+    current = style
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        value = _style_own_east_asia(current)
+        if value:
+            return value
+        current = current.base_style
+    return None
+
+
+def _doc_defaults_east_asia(document: Any) -> str | None:
+    """The LAST resort in OOXML's resolution order -- see
+    ``style_apply._set_doc_defaults_fonts``'s docstring for why this module
+    floors it on the body family rather than leaving python-docx's
+    theme-only default (Calibri-class, no dependable Korean member) in
+    place."""
+    styles_element = document.styles.element
+    doc_defaults = styles_element.find(qn("w:docDefaults"))
+    if doc_defaults is None:
+        return None
+    rpr_default = doc_defaults.find(qn("w:rPrDefault"))
+    if rpr_default is None:
+        return None
+    rpr = rpr_default.find(qn("w:rPr"))
+    if rpr is None:
+        return None
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        return None
+    return rfonts.get(qn("w:eastAsia"))
+
+
+def effective_east_asia_font(document: Any, run: Any, paragraph: Any) -> tuple[str | None, str]:
+    """The font a real OOXML consumer would use to render ``run``'s East
+    Asian text, and WHERE it came from (``"run-direct"``, ``"style-chain"``
+    or ``"docDefaults"``) -- the source lets a caller assert not just the
+    right family but that the specific leak sites (table cells, header,
+    footer) carry it DIRECTLY rather than depending on inheritance alone.
+
+    Resolution order: the run's own ``rPr/rFonts`` first (the run is the
+    highest-priority formatting level in OOXML); then the paragraph's style,
+    walked up its ``w:basedOn`` chain; then ``w:docDefaults`` as the final
+    floor. No character-style (``w:rStyle``) step -- nothing this codebase
+    writes ever applies one to a run.
+
+    Exported (no leading underscore) so a future report unit can reuse this
+    exact walker rather than re-measuring the same resolution order.
+    """
+    rpr = run._r.find(qn("w:rPr"))
+    if rpr is not None:
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is not None:
+            direct = rfonts.get(qn("w:eastAsia"))
+            if direct:
+                return direct, "run-direct"
+    style = paragraph.style
+    from_style = _style_chain_east_asia(style) if style is not None else None
+    if from_style:
+        return from_style, "style-chain"
+    return _doc_defaults_east_asia(document), "docDefaults"
+
+
+def _walk_hangul_runs(document: Any, paragraphs: Any, where: str) -> list[tuple[str, str | None, str, str | None, str]]:
+    """``(where, paragraph_style_name, run_text, resolved_east_asia, source)``
+    for every run in ``paragraphs`` whose text contains at least one Hangul
+    syllable."""
+    found: list[tuple[str, str | None, str, str | None, str]] = []
+    for paragraph in paragraphs:
+        style_name = paragraph.style.name if paragraph.style is not None else None
+        for run in paragraph.runs:
+            if _HANGUL_RE.search(run.text or ""):
+                resolved, source = effective_east_asia_font(document, run, paragraph)
+                found.append((where, style_name, run.text, resolved, source))
+    return found
+
+
+def _every_hangul_run(content: bytes) -> list[tuple[str, str | None, str, str | None, str]]:
+    """Every Hangul-bearing run in the WHOLE composed document: body
+    paragraphs, every table cell, the header, the footer."""
+    document = docx.Document(io.BytesIO(content))
+    runs = _walk_hangul_runs(document, document.paragraphs, "body")
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                runs.extend(_walk_hangul_runs(document, cell.paragraphs, "table-cell"))
+    section = document.sections[0]
+    runs.extend(_walk_hangul_runs(document, section.header.paragraphs, "header"))
+    runs.extend(_walk_hangul_runs(document, section.footer.paragraphs, "footer"))
+    return runs
+
+
+#: A DISTINCTIVE synthetic profile for the font walker: body and heading
+#: families both mix a Latin ascii face with a DIFFERENT-per-class Korean
+#: face (real mixed-script rendering, which is correct and not this unit's
+#: defect), and the two eastAsia values are deliberately different from each
+#: other AND from every value SYNTHETIC_PROFILE above uses, so a leaked
+#: Calibri/None/wrong-class value cannot coincidentally match by reusing a
+#: fixture constant.
+FONT_WALKER_PROFILE: dict[str, Any] = copy.deepcopy(SYNTHETIC_PROFILE)
+FONT_WALKER_PROFILE["fonts"]["body_family"] = {"ascii": "Times New Roman", "eastAsia": "궁서"}
+FONT_WALKER_PROFILE["fonts"]["heading_family"] = {"ascii": "Georgia", "eastAsia": "돋움"}
+# SYNTHETIC_PROFILE's own header/footer text is plain ASCII ("Synthetic
+# header text" / "Page N") -- neither exercises the Hangul walker at the
+# header/footer leak sites this unit measured, so both are overridden with
+# Korean text here specifically to reach them.
+FONT_WALKER_PROFILE["header"]["text"] = "머리글 예시"
+FONT_WALKER_PROFILE["footer"]["page_number"]["format"] = "쪽 N"
+
+
+def test_every_hangul_run_resolves_to_its_class_font_family(fixed_figures: None) -> None:
+    """THE regression net for defect #2. Composes with
+    :data:`FONT_WALKER_PROFILE` and walks EVERY Hangul run in the real
+    output bytes: body-class paragraphs (Normal/Caption), table cells, the
+    header and the footer must all resolve to the profile's BODY family;
+    Title/Heading 1-3 must resolve to the HEADING family. None may resolve to
+    ``None`` (docDefaults with no literal font -- the pre-fix state) or to
+    anything but those two exact values.
+
+    Also pins WHERE each of the three measured leak sites resolves its font
+    FROM: table cells, the header and the footer must show ``"run-direct"``
+    -- proving the explicit ``style_apply.set_run_fonts`` write actually
+    fired, not merely that inheritance happens to still cover for its
+    absence. Body/heading paragraphs are expected at ``"style-chain"``
+    (they are directly styled with Normal/Caption/Title/Heading N, which
+    already carry the right rFonts -- no leak was measured there).
+    """
+    content, _manifest = typeset.compose_report(style_profile=FONT_WALKER_PROFILE, profile_name="폰트 워커")
+    runs = _every_hangul_run(content)
+
+    body_east = FONT_WALKER_PROFILE["fonts"]["body_family"]["eastAsia"]
+    heading_east = FONT_WALKER_PROFILE["fonts"]["heading_family"]["eastAsia"]
+
+    seen_where: set[str] = set()
+    seen_class: set[str] = set()
+    for where, style_name, text, resolved, source in runs:
+        seen_where.add(where)
+        is_heading = style_name in _HEADING_STYLE_NAMES
+        seen_class.add("heading" if is_heading else "body")
+        expected = heading_east if is_heading else body_east
+        assert resolved == expected, (
+            f"{where} run under style {style_name!r} ({text!r}) resolved eastAsia to "
+            f"{resolved!r} via {source} -- expected the profile's "
+            f"{'heading' if is_heading else 'body'} family {expected!r}"
+        )
+        if where in ("table-cell", "header", "footer"):
+            assert source == "run-direct", (
+                f"{where} run ({text!r}) resolved via {source}, not a direct rFonts write on "
+                "the run itself -- the measured leak site's explicit-font write appears to be "
+                "missing even though it still resolves correctly by inheritance"
+            )
+
+    # A vacuous walk (zero runs found, or one class/location never visited)
+    # would make every assertion above trivially true and prove nothing --
+    # the exact failure mode test_report_typeset.py's own section 0 already
+    # guards ROUNDTRIP_NOT_CLAIMED / DERIVED_LEAVES against.
+    assert seen_where >= {"body", "table-cell", "header", "footer"}, seen_where
+    assert seen_class == {"body", "heading"}, seen_class
+    assert len(runs) >= 10, "too few Hangul runs walked for this to be a meaningful regression net"
+
+
+def test_doc_defaults_are_floored_to_the_profiles_body_family() -> None:
+    """Narrower and cheaper than the walk above: ``w:docDefaults`` itself,
+    directly off ``style_apply.apply_profile``'s output, regardless of
+    whether any run in THIS build's spine actually reaches it. See
+    ``style_apply._set_doc_defaults_fonts``'s docstring -- today every
+    paragraph style in this typesetter's output resolves through Normal
+    before reaching docDefaults, so this is a floor against a FUTURE style
+    that does not, not a claim that current output depends on it."""
+    document = docx.Document()
+    style_apply.apply_profile(document, FONT_WALKER_PROFILE)
+
+    styles_element = document.styles.element
+    doc_defaults = styles_element.find(qn("w:docDefaults"))
+    assert doc_defaults is not None
+    rfonts = doc_defaults.find(qn("w:rPrDefault")).find(qn("w:rPr")).find(qn("w:rFonts"))
+    assert rfonts.get(qn("w:ascii")) == "Times New Roman"
+    assert rfonts.get(qn("w:hAnsi")) == "Times New Roman"
+    assert rfonts.get(qn("w:eastAsia")) == "궁서"
+    # The theme references are LEFT IN PLACE, not removed -- literal
+    # w:ascii/w:eastAsia win over their *Theme siblings when both are
+    # present on one w:rFonts, per OOXML §17.3.2.26.
+    assert rfonts.get(qn("w:asciiTheme")) == "minorHAnsi"
+    assert rfonts.get(qn("w:eastAsiaTheme")) == "minorEastAsia"
+
+
+# =============================================================================
+# 10b. NFD FONT-FAMILY STRINGS -- one layer deeper than display text
+#
+# The refuter's follow-on to section 10: font-FAMILY strings themselves
+# (fonts.body_family.*/fonts.heading_family.*) flow through _Resolver.get
+# into every site section 10 just fixed (Normal/Heading/Caption styles,
+# docDefaults, header, footer, table cells) with NO normalization. This is
+# NOT the same class of harm as section 11's display-name defect: a family
+# string is a w:rFonts ATTRIBUTE VALUE Word matches against installed font
+# names by EXACT string, so an NFD family matches NOTHING installed and Word
+# substitutes a fallback for the WHOLE style -- worse than a bare-jamo label.
+# =============================================================================
+
+_JAMO_RANGES = ((0x1100, 0x11FF), (0xA960, 0xA97F), (0xD7B0, 0xD7FF))
+
+
+def _has_conjoining_jamo(text: str) -> bool:
+    return any(any(lo <= ord(ch) <= hi for lo, hi in _JAMO_RANGES) for ch in text)
+
+
+NFD_BODY_EAST_ASIA = unicodedata.normalize("NFD", "나눈고딕")
+NFD_HEADING_EAST_ASIA = unicodedata.normalize("NFD", "본고딕")
+
+#: FONT_WALKER_PROFILE, but the two eastAsia family strings are NFD --
+#: everything else (ascii faces, palette, page geometry) stays the same so
+#: this profile exercises the identical code paths section 10's test does.
+NFD_FONT_FAMILY_PROFILE: dict[str, Any] = copy.deepcopy(FONT_WALKER_PROFILE)
+NFD_FONT_FAMILY_PROFILE["fonts"]["body_family"] = {"ascii": "Times New Roman", "eastAsia": NFD_BODY_EAST_ASIA}
+NFD_FONT_FAMILY_PROFILE["fonts"]["heading_family"] = {"ascii": "Georgia", "eastAsia": NFD_HEADING_EAST_ASIA}
+
+
+def test_compose_normalizes_nfd_font_family_strings_at_every_leak_site(fixed_figures: None) -> None:
+    """End to end: compose with :data:`NFD_FONT_FAMILY_PROFILE` (an NFD
+    ``fonts.body_family.eastAsia``/``fonts.heading_family.eastAsia``, as if
+    read from a client DOCX authored on a Mac) and prove the healing at
+    BOTH consequences the refuter named:
+
+    (a) no conjoining-jamo codepoint survives into ANY XML part that carries
+        an rFonts attribute -- word/document.xml, word/styles.xml,
+        word/header1.xml, word/footer1.xml;
+    (b) the NFC family is written, as the literal w:eastAsia attribute
+        value, at each of section 10's three measured leak sites (table
+        cells and header/footer are body-class -- see word/document.xml's
+        table and word/header1.xml/word/footer1.xml) as well as in
+        word/styles.xml (Normal/Caption get body, Title/Heading N get
+        heading);
+    (c) the manifest's ``style.resolved`` reports the NFC form, never the
+        raw NFD the profile carried.
+
+    Also re-runs the section-10 walker over THIS document: every Hangul run
+    must resolve to the NFC family, proving the healing happens before
+    apply-time, not just at the raw-string level.
+    """
+    assert _has_conjoining_jamo(NFD_BODY_EAST_ASIA) and _has_conjoining_jamo(NFD_HEADING_EAST_ASIA), (
+        "fixture must actually be decomposed, or this test proves nothing"
+    )
+
+    content, manifest = typeset.compose_report(
+        style_profile=NFD_FONT_FAMILY_PROFILE, profile_name="NFD 글꼴 테스트"
+    )
+
+    nfc_body = unicodedata.normalize("NFC", NFD_BODY_EAST_ASIA)
+    nfc_heading = unicodedata.normalize("NFC", NFD_HEADING_EAST_ASIA)
+    assert nfc_body != NFD_BODY_EAST_ASIA and nfc_heading != NFD_HEADING_EAST_ASIA
+
+    # (c) manifest resolved values are NFC.
+    resolved = manifest["style"]["resolved"]
+    assert resolved["fonts.body_family.eastAsia"] == nfc_body
+    assert resolved["fonts.heading_family.eastAsia"] == nfc_heading
+    assert not _has_conjoining_jamo(resolved["fonts.body_family.eastAsia"])
+    assert not _has_conjoining_jamo(resolved["fonts.heading_family.eastAsia"])
+
+    archive = zipfile.ZipFile(io.BytesIO(content))
+    parts = {
+        name: archive.read(name).decode("utf-8")
+        for name in ("word/document.xml", "word/styles.xml", "word/header1.xml", "word/footer1.xml")
+    }
+
+    # (a) no conjoining jamo anywhere in any part that carries rFonts.
+    for name, xml_text in parts.items():
+        assert not _has_conjoining_jamo(xml_text), f"{name} still carries a conjoining-jamo codepoint"
+        assert NFD_BODY_EAST_ASIA not in xml_text, f"{name} carries the raw NFD body family string"
+        assert NFD_HEADING_EAST_ASIA not in xml_text, f"{name} carries the raw NFD heading family string"
+
+    # (b) the NFC family lands as the literal w:eastAsia attribute value at
+    # each measured leak site.
+    body_attr = f'w:eastAsia="{nfc_body}"'
+    heading_attr = f'w:eastAsia="{nfc_heading}"'
+    assert body_attr in parts["word/document.xml"], "table cell run: NFC body family not found"
+    assert body_attr in parts["word/header1.xml"], "header run: NFC body family not found"
+    assert body_attr in parts["word/footer1.xml"], "footer run: NFC body family not found"
+    assert body_attr in parts["word/styles.xml"], "Normal style: NFC body family not found"
+    assert heading_attr in parts["word/styles.xml"], "a heading style: NFC heading family not found"
+
+    # Re-run section 10's walker over this exact document: every Hangul run
+    # must resolve to the NFC family, never the raw NFD the profile carried.
+    for where, style_name, text, resolved_font, source in _every_hangul_run(content):
+        is_heading = style_name in _HEADING_STYLE_NAMES
+        expected = nfc_heading if is_heading else nfc_body
+        assert resolved_font == expected, (
+            f"{where} run under style {style_name!r} ({text!r}) resolved eastAsia to "
+            f"{resolved_font!r} via {source} -- expected the NFC family {expected!r}"
+        )
+        assert resolved_font is None or not _has_conjoining_jamo(resolved_font)
+
+
+# =============================================================================
+# 10c. THE WHOLE-ARCHIVE SCAN -- closes the class, not just the instances
+#
+# Round 3, the refuter's third pass: header.text leaked raw NFD into
+# word/header1.xml even after rounds 1-2 fixed the profile's own name and
+# the font-FAMILY strings. header.text, footer.page_number.format and
+# caption.prefix are all DISPLAY-TEXT leaves (style_apply._DISPLAY_TEXT_PATHS)
+# -- swept alongside the font families here so ONE profile carries every
+# NFD-capable leaf this unit's schema has, and ONE test scans every produced
+# XML part rather than re-deriving a per-leaf-site assertion by hand. A
+# FUTURE leaf that joins neither _FONT_FAMILY_PATHS nor _DISPLAY_TEXT_PATHS
+# fails THIS test without anyone writing a new one for it.
+# =============================================================================
+
+NFD_HEADER_TEXT = unicodedata.normalize("NFD", "화이트라벨 머리글")
+NFD_FOOTER_FORMAT = unicodedata.normalize("NFD", "쪽 N")
+NFD_CAPTION_PREFIX = unicodedata.normalize("NFD", "그림 ")
+
+#: NFD_FONT_FAMILY_PROFILE, plus NFD on every DISPLAY-TEXT leaf too -- every
+#: string leaf this unit's schema can leak NFD through, in ONE profile.
+WHOLE_ARCHIVE_NFD_PROFILE: dict[str, Any] = copy.deepcopy(NFD_FONT_FAMILY_PROFILE)
+WHOLE_ARCHIVE_NFD_PROFILE["header"]["text"] = NFD_HEADER_TEXT
+WHOLE_ARCHIVE_NFD_PROFILE["footer"]["page_number"]["format"] = NFD_FOOTER_FORMAT
+WHOLE_ARCHIVE_NFD_PROFILE["caption"]["prefix"] = NFD_CAPTION_PREFIX
+
+
+def test_no_conjoining_jamo_survives_anywhere_in_the_composed_archive(fixed_figures: None) -> None:
+    """Compose with :data:`WHOLE_ARCHIVE_NFD_PROFILE` and scan EVERY ``.xml``
+    member of the produced zip (not just document/styles/header1/footer1 --
+    whatever is actually in there, including parts this test never
+    specifically reasoned about) for conjoining-jamo codepoints. None may
+    survive ANYWHERE, and the NFC form of every swept leaf must be found
+    SOMEWHERE in the archive -- proving the healing actually happened, not
+    merely that the raw NFD vanished (which a silent drop of the whole field
+    would also produce).
+    """
+    fixture_strings = (
+        NFD_BODY_EAST_ASIA,
+        NFD_HEADING_EAST_ASIA,
+        NFD_HEADER_TEXT,
+        NFD_FOOTER_FORMAT,
+        NFD_CAPTION_PREFIX,
+    )
+    assert all(_has_conjoining_jamo(value) for value in fixture_strings), (
+        "every fixture string must actually be decomposed, or this test proves nothing"
+    )
+
+    content, _manifest = typeset.compose_report(
+        style_profile=WHOLE_ARCHIVE_NFD_PROFILE, profile_name="전체 아카이브 스캔"
+    )
+
+    archive = zipfile.ZipFile(io.BytesIO(content))
+    xml_members = [name for name in archive.namelist() if name.endswith(".xml")]
+    # A vacuous scan (too few parts) would make the loop below prove nothing
+    # -- document.xml, styles.xml, header1.xml and footer1.xml at minimum.
+    assert len(xml_members) >= 4, xml_members
+
+    parts = {name: archive.read(name).decode("utf-8") for name in xml_members}
+
+    for name, xml_text in parts.items():
+        assert not _has_conjoining_jamo(xml_text), f"{name} still carries a conjoining-jamo codepoint"
+
+    whole_archive_text = " ".join(parts.values())
+    expected_nfc = {
+        unicodedata.normalize("NFC", NFD_BODY_EAST_ASIA),
+        unicodedata.normalize("NFC", NFD_HEADING_EAST_ASIA),
+        unicodedata.normalize("NFC", NFD_HEADER_TEXT),
+        # The footer FORMAT's own NFC form still carries the literal "N"
+        # placeholder -- the run actually written to the document is only
+        # the text BEFORE it (see style_apply._apply_footer's prefix/suffix
+        # split), so that is what must be found in the archive.
+        unicodedata.normalize("NFC", NFD_FOOTER_FORMAT).split("N", 1)[0],
+        unicodedata.normalize("NFC", NFD_CAPTION_PREFIX),
+    }
+    for expected in expected_nfc:
+        assert expected in whole_archive_text, f"NFC form {expected!r} not found anywhere in the archive"
+
+
+# =============================================================================
+# 11. NFD -> NFC — an already-stored profile's name heals at compose time
+#
+# routers/report.py's upload door now NFC-normalizes a new upload (see
+# test_report_style_profile.py's door tests), but a profile uploaded BEFORE
+# that fix is already stored NFD. This section proves the SECOND boundary:
+# compose-time normalization heals it with no re-upload.
+# =============================================================================
+
+
+def test_compose_normalizes_an_already_stored_nfd_profile_name(fixed_figures: None) -> None:
+    """Simulates an already-stored NFD profile name (as if uploaded before
+    the door fix) by passing an NFD ``profile_name`` straight into
+    :func:`typeset.compose_report` -- the same parameter
+    ``_compose_kwargs`` in routers/report.py fills from a STORED record's
+    ``name``, never re-validated or re-normalized between storage and this
+    call in production. The manifest's ``style.profile_name`` AND the
+    document's own front-matter line must both come back NFC, with no
+    conjoining-jamo codepoint anywhere in either.
+    """
+    nfd_name = unicodedata.normalize("NFD", "샘플보고서-도착스타일")
+    assert any(0x1100 <= ord(ch) <= 0x11FF for ch in nfd_name), "fixture must actually be decomposed"
+
+    content, manifest = typeset.compose_report(profile_name=nfd_name)
+
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert manifest["style"]["profile_name"] == nfc_name
+
+    document_text = _document_text(content)
+    assert nfc_name in document_text
+    assert nfd_name not in document_text
+    for ch in document_text:
+        assert not (0x1100 <= ord(ch) <= 0x11FF), f"conjoining jamo survived into document text: {ch!r}"
+        assert not (0xA960 <= ord(ch) <= 0xA97F), f"conjoining jamo survived into document text: {ch!r}"
+        assert not (0xD7B0 <= ord(ch) <= 0xD7FF), f"conjoining jamo survived into document text: {ch!r}"
+
+
+def test_compose_route_normalizes_a_stored_nfd_profile_name_over_http(
+    client: Any, fixed_figures: None
+) -> None:
+    """The same healing, but through the REAL store + HTTP compose route --
+    an NFD name is written straight into the on-disk registry (bypassing
+    the upload-door normalization on purpose, to stand in for a profile that
+    was already stored before that fix existed), then composed by id."""
+    from services.report import style_profile as sp
+
+    nfd_name = unicodedata.normalize("NFD", "고객 스타일")
+
+    # A minimal, valid DOCX -- style_profile.store_profile only needs
+    # something extract_style_profile can open.
+    minimal = docx.Document()
+    minimal.add_paragraph("just one paragraph", style="Normal")
+    buffer = io.BytesIO()
+    minimal.save(buffer)
+
+    summary = sp.store_profile(content=buffer.getvalue(), source_file="a.docx", name=nfd_name)
+    # store_profile ALREADY normalizes (this unit's own door-adjacent fix in
+    # _clean_name) -- overwrite the persisted record directly to reproduce a
+    # profile that predates that fix, exactly like a real already-stored one.
+    record_path = sp._record_path(summary["id"])
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["name"] = nfd_name
+    record_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    payload = sp._read_registry_payload(sp.registry_path())
+    payload["profiles"][summary["id"]]["name"] = nfd_name
+    sp._write_json_atomic(sp.registry_path(), payload)
+
+    response = client.post("/api/report/compose", json={"style_profile_id": summary["id"]})
+    assert response.status_code == 200
+    document_text = _document_text(response.content)
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfc_name in document_text
+    assert nfd_name not in document_text
