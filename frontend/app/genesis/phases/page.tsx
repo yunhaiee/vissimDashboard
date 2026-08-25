@@ -66,10 +66,13 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { DraftNodePickMap } from "@/components/genesis/DraftNodePickMap";
 import { PhaseDiagramSketch } from "@/components/genesis/PhaseDiagramSketch";
+import { PhaseTimingTable, type TimingAmendment } from "@/components/genesis/PhaseTimingTable";
 import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
+  amendPhaseDiagramTiming,
   confirmPhaseDiagram,
   createBlankPhaseDiagram,
   fetchGenesisJobs,
@@ -220,9 +223,6 @@ function PhaseDiagramReviewPageContent() {
   const [nodeId, setNodeId] = useState<number | null>(null);
   const [approachRows, setApproachRows] = useState<ApproachRow[]>([]);
   const [planChoice, setPlanChoice] = useState<string>("");
-  const [amber, setAmber] = useState<string>("");
-  const [amberNote, setAmberNote] = useState<string>("");
-  const [note, setNote] = useState<string>("");
   const [stagedToken, setStagedToken] = useState<string | null>(null);
 
   // -- unit #52: the three ways IN ---------------------------------------
@@ -303,22 +303,21 @@ function PhaseDiagramReviewPageContent() {
       setError(null);
       const attested = loaded.attestation;
       setNodeId(attested ? attested.node_id : null);
-      setPlanChoice(attested ? `${attested.level_no}:${attested.plan_id}` : "");
-      // The amber comes from the attestation when one exists (what a human
-      // already declared), and otherwise from what the UPLOAD said, with its
-      // 근거 beside it. A prefill, not a default: the sentence under the field
-      // still says the number is the reviewer's declaration, and an empty
-      // upload leaves an empty box.
-      const uploadedAmber = loaded.sheet.declared_amber_s;
-      setAmber(
-        attested?.declared_amber_s != null
-          ? String(attested.declared_amber_s)
-          : uploadedAmber != null
-            ? String(uploadedAmber)
+      // 수준/계획: THE ONLY-UNIQUE-CANDIDATE IDIOM (#54's, reused per #58's
+      // "수준/계획 auto-resolve when unique … a picker appears only when
+      // several exist"). Resolving the pair when the sheet offers EXACTLY ONE
+      // is not a default — it is the answer, and there is no second one to
+      // choose between. Two or more, and nothing is picked: the form asks,
+      // because silently taking the first would be this app deciding which
+      // 시간분할 a mapping belongs to.
+      const onlyPlan = loaded.sheet.plan_choices.length === 1 ? loaded.sheet.plan_choices[0] : null;
+      setPlanChoice(
+        attested
+          ? `${attested.level_no}:${attested.plan_id}`
+          : onlyPlan
+            ? `${onlyPlan.level_no}:${onlyPlan.plan_id}`
             : "",
       );
-      setAmberNote(attested?.amber_declaration_note ?? loaded.sheet.amber_declaration_note ?? "");
-      setNote(attested?.note ?? "");
       setApproachRows([]);
       setCandidates([]);
     } catch (caught) {
@@ -382,6 +381,22 @@ function PhaseDiagramReviewPageContent() {
     [review, proposedPhaseByLabel],
   );
 
+  /** THE ONE SELECTION, reached from the map instead of from the list.
+   *
+   * #58's map and the candidate list below it are TWO VIEWS OF ONE selection,
+   * not two selections: a click on a dot lands in exactly the same `bindNode`
+   * the list's own button calls, so `nodeId` and the approach rows can never
+   * describe different nodes. A second piece of state here would be a fork, and
+   * the fork's first symptom would be a confirmation recorded against a node
+   * the person was no longer looking at. */
+  const selectCandidateNode = useCallback(
+    (candidateNodeId: number) => {
+      const candidate = candidates.find((entry) => entry.node_id === candidateNodeId);
+      if (candidate) bindNode(candidate);
+    },
+    [candidates, bindNode],
+  );
+
   const setRow = useCallback((linkId: number, patch: Partial<ApproachRow>) => {
     setApproachRows((current) =>
       current.map((row) => (row.linkId === linkId ? { ...row, ...patch } : row)),
@@ -415,10 +430,19 @@ function PhaseDiagramReviewPageContent() {
         source_sha256: review.render.source_sha256,
         proposal_sha256: review.proposal_sha256,
         proposal_outcome: review.proposal ? review.proposal.outcome : "none",
-        declared_amber_s: amber ? Number(amber) : null,
-        amber_declaration_note: amberNote || null,
+        // #58 — THE AMBER COMES FROM THE TABLE. There is no separate 선언
+        // 황색시간 box any more: the 신호 시간 table's own 황색시간 cell IS the
+        // declaration, stamped server-side with who typed it and when, and its
+        // 근거 sentence is composed by the server that stamped it. Sent
+        // VERBATIM from the stored review for exactly the reason the shas are:
+        // a number this page recomputed would be a claim this page made.
+        declared_amber_s: review.sheet.declared_amber_s,
+        amber_declaration_note: review.sheet.amber_declaration_note,
         changes,
-        note: note || null,
+        // #58 dropped the 확인 메모 input from the default surface (the user:
+        // "수준 계획 선언 황색시간 근거 확인 메모 이런 복잡한거 빼고"). The field
+        // stays optional on the attestation, so nothing server-side changed.
+        note: null,
       });
       setReview(updated);
       setError(null);
@@ -428,7 +452,31 @@ function PhaseDiagramReviewPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [review, nodeId, planChoice, approachRows, proposedPhaseByLabel, amber, amberNote, note, refreshList]);
+  }, [review, nodeId, planChoice, approachRows, proposedPhaseByLabel, refreshList]);
+
+  /** ONE amended 신호 시간 value — the uploader amending their own record.
+   *
+   * The server stamps the editor and the clock (there is no field on the body
+   * for either) and answers with the WHOLE review as it now holds it, which is
+   * what lands in `setReview`. Nothing here merges, patches or predicts: a
+   * refusal leaves the stored numbers exactly as they were and puts its own
+   * reason on screen. */
+  const amendTiming = useCallback(
+    async (amendment: TimingAmendment) => {
+      if (!review) return;
+      setBusy(true);
+      try {
+        const updated = await amendPhaseDiagramTiming(review.review_id, amendment);
+        setReview(updated);
+        setError(null);
+      } catch (caught) {
+        setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [review],
+  );
 
   /** Upload one filled-in template. What comes back is, per 교차로명 in the
    * file, THAT PERSON'S OWN RECORD of the reading (`uploaded_by` is stamped
@@ -971,8 +1019,41 @@ function PhaseDiagramReviewPageContent() {
                     />
                   </div>
                 )}
+                {/* #58 — THE TIMING TABLE. Outside the branch above on
+                  * purpose: the 황색시간 is a DECLARATION no sheet of any medium
+                  * supplies, so a review whose reading was refused still needs
+                  * somewhere to make it. Everything in it is the server's own
+                  * stored value; see components/genesis/PhaseTimingTable.tsx
+                  * for the four rules it enforces (no computed time, no empty
+                  * ceremony column, data entry is never confirmation, and a
+                  * client-owned timing is read-only WITH its reason printed). */}
+                <PhaseTimingTable
+                  timing={review.sheet.timing}
+                  declaredAmberS={review.sheet.declared_amber_s}
+                  amberNote={review.sheet.amber_declaration_note}
+                  amberDeclaredBy={review.sheet.amber_declared_by}
+                  amberDeclaredAt={review.sheet.amber_declared_at}
+                  quarantine={review.sheet.amendments_quarantine}
+                  timingEditable={review.render.medium !== "pdf_band"}
+                  busy={busy}
+                  onAmend={amendTiming}
+                  t={t}
+                />
               </Panel>
 
+              {/* #58 — THE CROSS-CHECK RENDERS ONLY WHERE A COMPARISON HAPPENED.
+                * `compared` is the SERVER's answer (phase_diagram.
+                * cross_check_compared), never this page's guess. It is false
+                * exactly for the media that have neither sheet text nor a
+                * rendered band, where the whole section could say nothing but
+                * "대조할 시트 텍스트도 도면 이미지도 없습니다" — noise the user
+                * struck out (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자
+                * 결정: 현시도 카드 단순화 — 도식+시간표, 짧은 확인 (#58)"). A
+                * vision review's cross-check is UNCHANGED, flags included:
+                * deleting a comparison that happened would be hiding
+                * evidence; deleting the sentence that none happened is
+                * removing noise. */}
+              {review.cross_check?.compared && (
               <Panel
                 density="console"
                 // Keyed on the review so the severity default is recomputed
@@ -1006,6 +1087,7 @@ function PhaseDiagramReviewPageContent() {
                   </ul>
                 )}
               </Panel>
+              )}
 
               {/* #55 — THE SECONDARY ACT. Everything below this line is
                 * unchanged in behaviour: the same job picker, the same node
@@ -1023,12 +1105,21 @@ function PhaseDiagramReviewPageContent() {
                 collapsible
                 defaultOpen={false}
                 title={t("네트워크 결박 — 초안 노드에 묶기", "Bind to the draft network", "ネットワーク結縛 — 草案ノードへ")}
-                subtitle={t(
-                  "업로드는 판독을 기록할 뿐, 어느 초안 노드의 어느 링크인지는 담지 못합니다. 그 결박만이 사람의 행위로 남아 있고, signals 입력은 결박된 교차로에서만 만들어집니다.",
-                  "An upload records the reading, but it cannot carry WHICH draft node and which link ids it belongs to. That binding is what stays a human act, and a signals input is built only from bound intersections.",
-                  "アップロードは判読を記録するだけで、どの草案ノードのどのリンクかまでは持てません。その結縛のみが人の行為として残り、signals入力は結縛済みの交差点からのみ作られます。",
-                )}
               >
+                {/* #58 — THE EXPLAINER. One sentence, above the picker, in
+                  * place of the paragraph that used to be this panel's
+                  * subtitle. It says what the binding is FOR, which is the one
+                  * thing a reader arriving here cannot infer from the controls
+                  * (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도
+                  * 카드 단순화 — 도식+시간표, 짧은 확인 (#58)"). */}
+                <p className="mb-4 text-[15px] leading-relaxed text-slate-600">
+                  {t(
+                    "엑셀은 접근로↔현시를 담지만, 어느 초안 노드의 어느 링크인지는 담지 못합니다 — 그 연결이 이 절입니다.",
+                    "The workbook carries approach↔phase, but not WHICH draft node and which link ids — that connection is what this section is.",
+                    "エクセルは流入路↔現示は持ちますが、どの草案ノードのどのリンクかは持てません — その接続がこの節です。",
+                  )}
+                </p>
+
                 <div className="mb-4 flex flex-wrap items-end gap-3">
                   <label className="text-[15px] text-slate-700">
                     <span className="block font-semibold">{t("생성 작업", "Generation", "生成ジョブ")}</span>
@@ -1060,6 +1151,37 @@ function PhaseDiagramReviewPageContent() {
                   )}
                 </div>
 
+                {/* #58 — MAP LEFT, BINDING RIGHT. The dashboard's own split
+                  * idiom (`app/dashboard/page.tsx`'s map row:
+                  * `grid gap-4 xl:grid-cols-[minmax(0,1fr)_460px]`), mirrored
+                  * rather than reinvented, so the two screens read the same
+                  * way. THE USER'S ADDITION to #58: "어느 노드인지 고르는건
+                  * 지도/도식이 있으면 편할 것 같은데 같이 놔줘 — 대시보드
+                  * 페이지에서 왼쪽에 지도 오른쪽 내용 있는 것처럼". */}
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_460px]">
+                  <div>
+                    {jobId ? (
+                      <DraftNodePickMap
+                        jobId={jobId}
+                        candidateNodeIds={candidates.map((candidate) => candidate.node_id)}
+                        selectedNodeId={nodeId}
+                        onSelectNode={selectCandidateNode}
+                        t={t}
+                      />
+                    ) : (
+                      /* NO DEAD MAP. Without a generation there is no draft to
+                        * draw, and a box that renders a basemap with nothing on
+                        * it invites a click that cannot be answered. */
+                      <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-[15px] leading-relaxed text-slate-600">
+                        {t(
+                          "생성 작업을 고르면 그 초안의 지도가 여기에 나타나고, 노드를 눌러 고를 수 있습니다.",
+                          "Pick a generation and its draft's map appears here, with its nodes clickable.",
+                          "生成ジョブを選ぶとその草案の地図がここに表示され、ノードを押して選べます。",
+                        )}
+                      </p>
+                    )}
+                  </div>
+                  <div>
                 {candidates.length > 0 && (
                   <ul className="mb-4 space-y-1.5">
                     {candidates.map((candidate) => (
@@ -1154,7 +1276,23 @@ function PhaseDiagramReviewPageContent() {
                 </datalist>
 
                 <div className="mt-5 flex flex-wrap items-end gap-3">
-                  {review.sheet.plan_choices.length > 0 ? (
+                  {/* #58 — 수준/계획: THE ONLY-UNIQUE-CANDIDATE IDIOM (#54's).
+                    * EXACTLY ONE pair on the sheet is not a choice, so it is
+                    * shown as the resolved VALUE and `loadReview` has already
+                    * set it. TWO OR MORE and the picker returns: picking the
+                    * first would be this app deciding which 시간분할 a mapping
+                    * belongs to, which is precisely the silent-default failure
+                    * every refusal on this screen exists to prevent. NONE and
+                    * the two numbers are asked for. */}
+                  {review.sheet.plan_choices.length === 1 ? (
+                    <p className="text-[15px] text-slate-700">
+                      <span className="block font-semibold">{t("수준 / 계획 ID", "level / plan", "水準 / 計画ID")}</span>
+                      <span className="mt-1.5 inline-block rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[14px]">
+                        {t("수준", "level", "水準")} {review.sheet.plan_choices[0].level_no} / ID{" "}
+                        {review.sheet.plan_choices[0].plan_id}
+                      </span>
+                    </p>
+                  ) : review.sheet.plan_choices.length > 1 ? (
                     <label className="text-[15px] text-slate-700">
                       <span className="block font-semibold">{t("수준 / 계획 ID", "level / plan", "水準 / 計画ID")}</span>
                       <select
@@ -1196,50 +1334,23 @@ function PhaseDiagramReviewPageContent() {
                       </label>
                     </div>
                   )}
-                  <label className="text-[15px] text-slate-700">
-                    <span className="block font-semibold">{t("선언 황색시간(초)", "declared amber (s)", "申告黄色時間(秒)")}</span>
-                    <input
-                      value={amber}
-                      onChange={(event) => setAmber(event.target.value)}
-                      inputMode="decimal"
-                      className="mt-1.5 w-28 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
-                      placeholder="3.0"
-                    />
-                  </label>
-                  <label className="flex-1 text-[15px] text-slate-700">
-                    <span className="block font-semibold">{t("황색시간 근거", "amber declaration note", "黄色時間の根拠")}</span>
-                    <input
-                      value={amberNote}
-                      onChange={(event) => setAmberNote(event.target.value)}
-                      className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
-                    />
-                  </label>
                 </div>
-                <p className="mt-2 text-[14px] leading-relaxed text-slate-500">
-                  {t(
-                    "시트는 황색+전적색을 하나의 값으로만 인쇄합니다. 황색시간은 확인자가 선언하는 값이며, 이 앱은 기본값을 넣지 않습니다.",
-                    "The sheet prints 황색+전적색 as one number. The amber is the reviewer's declaration — this app substitutes no default.",
-                    "シートは黄色+全赤を一つの値でのみ印刷します。黄色時間は確認者の申告であり、既定値は入れません。",
-                  )}
-                </p>
 
-                <label className="mt-5 block text-[15px] text-slate-700">
-                  <span className="block font-semibold">{t("확인 메모", "confirmation note", "確認メモ")}</span>
-                  <textarea
-                    value={note}
-                    onChange={(event) => setNote(event.target.value)}
-                    rows={2}
-                    className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
-                  />
-                </label>
-
+                {/* #58 — ONE SHORT BUTTON. The user: "'이 결박을 확인합니다' 같은
+                  * 긴 버튼 말고 '확인' 버튼 하나만". THE LABEL AND THE SURFACE
+                  * CHANGED, THE ACT DID NOT: the same `submit`, the same
+                  * `canSubmit` (still requiring a node id and a chosen plan),
+                  * the same MappingAttestation, the same server-stamped
+                  * attester, the same refusal of an unbound mapping. The
+                  * sentence under it is what the word 확인 means here, and it
+                  * stays. */}
                 <button
                   type="button"
                   onClick={submit}
                   disabled={!canSubmit}
                   className="mt-5 rounded-lg bg-sky-700 px-4 py-2 text-[15px] font-semibold text-white disabled:opacity-40"
                 >
-                  {t("이 결박을 확인합니다", "I confirm this binding", "この結縛を確認します")}
+                  {t("확인", "Confirm", "確認")}
                 </button>
                 <p className="mt-2 text-[14px] leading-relaxed text-slate-500">
                   {t(
@@ -1248,6 +1359,8 @@ function PhaseDiagramReviewPageContent() {
                     "確認すると、ログイン中の利用者名・時刻・この画像のハッシュが記録されます。これは結縛についての申告であり、シート内容の正誤についてのものではありません。",
                   )}
                 </p>
+                  </div>
+                </div>
               </Panel>
 
               {review.attestation && (

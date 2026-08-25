@@ -6932,3 +6932,37 @@ rather than pretend bearings.
 - 언어 우회 → ko만이 아니라 **ko/en/ja 세 본문 전부** 정확 문자열 핀 (#50-d가 측정한
   바로 그 결함 유형: fragment pins let en/ja drift).
 - 문서 우회 → 문장 조각이 아니라 **독스트링 블록 전체**를 핀(추가 문장도 실패).
+
+## 2026-08-24 — 사용자 결정: 현시도 카드 단순화 — 도식+시간표, 짧은 확인 (#58)
+
+User's words (verbatim intent), testing the live #55 page with a real upload: the machine
+cross-check section that says it compared NOTHING ("대조할 시트 텍스트도 도면 이미지도
+없습니다") is noise — "이건 필요없지 않아? 지워"; the Excel already carries 신호 시간 —
+"이런것도 같이 표로 렌더해줘"; strip the complex fields — "수준 계획 선언 황색시간 근거
+확인 메모 이런 복잡한거 빼고 현시도 + 시간 테이블로 보기 편하게"; make times editable —
+"황색시간 및 시간 같은거가 수정가능하게"; and one short confirm — "'이 결박을 확인합니다'
+같은 긴 버튼 말고 '확인' 버튼 하나만".
+
+Execution rules (doctrine reconciliation):
+- The cross-check section disappears ONLY where the machine genuinely compared nothing
+  (excel_upload/blank media). Vision reviews keep their real cross-check flags — deleting a
+  comparison that happened would be hiding evidence; deleting the sentence that no comparison
+  happened is removing noise.
+- Editing a timing value on screen is the uploader amending their own statement — same
+  authorship rule as #55's upload; server-stamps who/when. The edited 황색시간 IS the amber
+  declaration (the Daejeon sheets print 황색+전적색 combined and can never supply amber alone
+  — the person typing the number was always the declaration; the separate 선언 field was
+  ceremony once the table itself is editable).
+- 수준/계획 auto-resolve when unique (#54's only-unique idiom); a picker appears only when
+  several exist. 근거/메모 leave the default surface.
+- The binding's one short '확인' button changes the LABEL and surface, not the act: the
+  MappingAttestation it records is unchanged (node/link binding, server-stamped attester).
+
+### #58 추가 지시 (같은 날, 빌드 중 사용자 보강)
+
+"황색시간은 테이블에서 편집 가능하니까 그냥 놔두고, 어느 노드인지 고르는건 지도/도식이
+있으면 편할 것 같은데 같이 놔줘 — 대시보드 페이지에서 왼쪽에 지도 오른쪽 내용 있는
+것처럼." 결박 절의 노드 선택에 draft 지도를 붙인다: 지도 왼쪽/내용 오른쪽(대시보드 분할
+관용구 재사용), 노드 후보를 지도에 표시하고 클릭 = 선택(양방향 하이라이트), 기존 draft
+지도 컴포넌트(#19/#29 계열) 재사용 — 새 지도 금지. 클릭은 선택이지 확인이 아니며, 확인
+행위는 여전히 '확인' 버튼 하나뿐. geojson 없는 draft는 명명된 부재로 강등.

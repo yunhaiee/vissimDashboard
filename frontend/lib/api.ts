@@ -5030,7 +5030,74 @@ export type PhaseDiagramFinding = {
   context: Record<string, unknown>;
 };
 
-export type PhaseDiagramCrossCheck = { checked_at: string; findings: PhaseDiagramFinding[] };
+/** `compared` is the SERVER's answer to "did the machine hold anything up
+ * against anything?" — `services/genesis/phase_diagram.cross_check_compared`.
+ *
+ * It is FALSE only for the media that have neither a sheet text layer nor a
+ * rendered band (엑셀 업로드 / 직접 입력), where the whole section could say
+ * nothing but "대조할 시트 텍스트도 도면 이미지도 없습니다" — noise the user
+ * struck out (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도 카드
+ * 단순화 — 도식+시간표, 짧은 확인 (#58)"). A vision review keeps its cross-check
+ * exactly as it was, flags included: deleting a comparison that HAPPENED would
+ * be hiding evidence. The screen renders this answer; it never computes one. */
+export type PhaseDiagramCrossCheck = {
+  checked_at: string;
+  findings: PhaseDiagramFinding[];
+  compared: boolean;
+};
+
+/** A LOST amendment history, disclosed rather than healed.
+ *
+ * `null` when the ledger is healthy. When a review's `amendments.json` did not
+ * parse, the server quarantined its bytes and started a fresh ledger — and says
+ * so here, in all three languages, composed server-side
+ * (`phase_diagram.amendment_quarantine_payload`) because the sentence states
+ * what a machine did to a file. The screen prints its own heading beside this
+ * text and never rewrites it. The flag is STICKY: later amendments append to a
+ * history that is still missing what was lost, so the disclosure outlives them. */
+export type PhaseDiagramAmendmentQuarantine = {
+  quarantined: true;
+  quarantine_path: string | null;
+  quarantined_at: string | null;
+  message: { ko: string; en: string; ja: string };
+};
+
+/** One 현시's typed timing, exactly as `phase_template.ParsedPhaseTiming` wrote
+ * it. `min_green_s`/`max_green_s` are `null` when the cells were empty, which is
+ * a different statement from zero — an actuated controller prints them and a
+ * fixed one does not, and the card renders a column only where the value is. */
+export type PhaseDiagramPhaseTiming = {
+  phase_id: string;
+  green_s: number;
+  clearance_s: number;
+  min_green_s: number | null;
+  max_green_s: number | null;
+};
+
+/** One (수준, 계획 ID)'s timing. `cycle_s` is `null` when the 주기 cell was left
+ * empty (the converter derives it as Σ(green+소거) and says so in the program's
+ * provenance); `offset_s` is carried and never applied. */
+export type PhaseDiagramPlanTiming = {
+  level_no: number;
+  plan_id: number;
+  cycle_s: number | null;
+  offset_s: number | null;
+  time_of_day: string | null;
+  phases: PhaseDiagramPhaseTiming[];
+};
+
+/** Which single value one amendment changes. The same closed vocabulary the
+ * server's `AmendableField` declares — a field outside it is not amendable at
+ * all, and the request is refused rather than accepted-and-ignored. */
+export type PhaseDiagramTimingField =
+  | "declared_amber_s"
+  | "cycle_s"
+  | "offset_s"
+  | "time_of_day"
+  | "green_s"
+  | "clearance_s"
+  | "min_green_s"
+  | "max_green_s";
 
 /** A named human's claim that this approach-to-phase mapping is the site's.
  * `attested_by`/`attested_at` come from the session and the server clock. */
@@ -5068,10 +5135,26 @@ export type PhaseDiagramSheet = {
   /** Empty for a review with no 대전 TOD table. The confirm form then ASKS for
    * 수준/계획 ID instead of offering a choice nobody measured. */
   plan_choices: { level_no: number; plan_id: number }[];
-  /** What an uploaded sheet declared, for prefill only. The 대전 sheet prints
-   * 황색+전적색 as one number and never the amber alone, so that path is null. */
+  /** The 황색시간 this review currently declares. TWO possible authors, and
+   * `amber_declared_by` says which: a person who typed it into the card's 신호
+   * 시간 table (unit #58 — their word outranks the workbook's, because they
+   * amended their own record after the fact), or the workbook itself. `null`
+   * on both counts means nobody has declared one — the 대전 sheet prints
+   * 황색+전적색 as ONE number and never the amber alone, so no parse can fill it. */
   declared_amber_s: number | null;
+  /** The 근거. On the amended path this sentence is composed SERVER-SIDE
+   * (`amber_declaration_sentence`) and names who declared the number, when, and
+   * what it replaced — a provenance claim the browser does not get to author. */
   amber_declaration_note: string | null;
+  amber_declared_by: string | null;
+  amber_declared_at: string | null;
+  /** The 신호 시간 this review HOLDS, per (수준, 계획 ID) — the same numbers the
+   * export writes and the signals build converts, never a second derivation.
+   * Empty is a real state: the mapping is still confirmable and the signals
+   * build refuses BY NAME until timing exists. */
+  timing: PhaseDiagramPlanTiming[];
+  /** `null` when this review's amendment ledger is intact. */
+  amendments_quarantine: PhaseDiagramAmendmentQuarantine | null;
 };
 
 export type PhaseDiagramReview = {
@@ -5193,6 +5276,37 @@ export async function confirmPhaseDiagram(
 ): Promise<PhaseDiagramReview> {
   const r = await apiMutationFetch(`/api/genesis/phase-diagrams/${reviewId}/confirmation`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Correct ONE stored 신호 시간 value — the uploader amending their own record.
+ *
+ * THE USER'S DECISION (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도
+ * 카드 단순화 — 도식+시간표, 짧은 확인 (#58)"): "황색시간 및 시간 같은거가 수정
+ * 가능하게". There is deliberately no `edited_by` and no `edited_at` on this
+ * payload, for the same reason `PhaseDiagramConfirmation` carries no attester:
+ * the stamp says who changed a number and when, and a browser that could write
+ * it could write somebody else's name. The server takes both from the session
+ * and its own clock, and keeps the previous value in the review's ledger.
+ *
+ * Returns the WHOLE review as the server now holds it, so the card re-renders
+ * from stored data rather than from what the browser hoped it wrote. */
+export async function amendPhaseDiagramTiming(
+  reviewId: string,
+  payload: {
+    field: PhaseDiagramTimingField;
+    level_no?: number | null;
+    plan_id?: number | null;
+    phase_id?: string | null;
+    value: number | string | null;
+  },
+): Promise<PhaseDiagramReview> {
+  const r = await apiMutationFetch(`/api/genesis/phase-diagrams/${reviewId}/timing`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });

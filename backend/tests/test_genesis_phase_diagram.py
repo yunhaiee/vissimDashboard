@@ -225,6 +225,22 @@ def attestation_for(
     return pd.MappingAttestation(**fields)
 
 
+def declare_amber(
+    store: pd.PhaseDiagramStore, review_id: str, amber: float = DECLARED_AMBER_S
+) -> None:
+    """Declare the 황색시간 through the door the SCREEN uses (unit #58).
+
+    Since #58 the amber is not a field on the confirm form any more: it is typed
+    into the card's 신호 시간 table, stamped server-side, and read back off the
+    stored review. ``put_attestation`` therefore refuses a confirmation whose
+    amber is not the stored one (``phase_diagram_attestation_stale``), so a test
+    that signs WITH an amber declares it first — exactly as the screen does.
+    """
+    store.amend_timing(
+        review_id, field="declared_amber_s", value=amber, edited_by="yunha"
+    )
+
+
 # ---------------------------------------------------------------------------
 # §1 Render — the crop is derived from the document, never configured
 # ---------------------------------------------------------------------------
@@ -673,6 +689,7 @@ def test_a_re_render_makes_a_confirmation_stale_rather_than_deleting_it(tmp_path
     png, record = render
     store = pd.PhaseDiagramStore(tmp_path / "reviews")
     review_id = store.put_render(png, record, sheet_text=sheet_text())
+    declare_amber(store, review_id)
     store.put_attestation(review_id, attestation_for(record))
     assert store.review_payload(review_id)["confirmed"] is True
 
@@ -719,6 +736,7 @@ def test_the_blank_form_path_is_a_first_class_confirmation(tmp_path, render):
     png, record = render
     store = pd.PhaseDiagramStore(tmp_path / "reviews")
     review_id = store.put_render(png, record, sheet_text=sheet_text())
+    declare_amber(store, review_id)
     store.put_attestation(review_id, attestation_for(record, proposal_outcome="none"))
 
     payload = store.review_payload(review_id)
@@ -732,6 +750,7 @@ def test_what_the_human_changed_against_the_proposal_is_recorded(tmp_path, rende
     png, record = render
     store = pd.PhaseDiagramStore(tmp_path / "reviews")
     review_id = store.put_render(png, record, sheet_text=sheet_text())
+    declare_amber(store, review_id)
     store.put_attestation(
         review_id,
         attestation_for(
@@ -797,6 +816,7 @@ def test_end_to_end_a_confirmed_mapping_reaches_a_draft_whose_v5_runs(
     with pytest.raises(pd.PhaseDiagramRefused):
         store.confirmed_mapping(review_id)  # still inert
 
+    declare_amber(store, review_id)
     store.put_attestation(review_id, attestation_for(record, proposal_outcome="proposed"))
     document = pd.build_signals_document([store.confirmed_mapping(review_id)])
     signals = parse_side_input("signals", json.dumps(document).encode("utf-8"))
@@ -924,10 +944,25 @@ def _confirmation_body(record: pd.DiagramRender, **overrides: Any) -> dict[str, 
     return body
 
 
+def declare_amber_over_http(client, headers, review_id: str, amber: float = DECLARED_AMBER_S):
+    """The screen's own two-step, over HTTP: declare the 황색시간 in the 신호 시간
+    table (unit #58's stamped PATCH), THEN confirm. `put_attestation` refuses a
+    confirmation carrying an amber the store does not hold, so this is not test
+    scaffolding — it is the order the product performs."""
+    response = client.patch(
+        f"/api/genesis/phase-diagrams/{review_id}/timing",
+        headers=headers,
+        json={"field": "declared_amber_s", "value": amber},
+    )
+    assert response.status_code == 200, response.text
+    return response
+
+
 def test_the_attester_is_the_session_never_the_request_body(client, headers, seeded, render):
     """A caller naming somebody else as the attester is the one thing an
     attestation must not permit — so there is no field to put a name in."""
     _png, record = render
+    declare_amber_over_http(client, headers, seeded)
     rejected = client.post(
         f"/api/genesis/phase-diagrams/{seeded}/confirmation",
         headers=headers,
@@ -977,6 +1012,7 @@ def test_a_confirmed_review_stages_a_signals_side_input_through_the_shipped_door
     client, headers, seeded, render
 ):
     _png, record = render
+    declare_amber_over_http(client, headers, seeded)
     client.post(
         f"/api/genesis/phase-diagrams/{seeded}/confirmation",
         headers=headers,

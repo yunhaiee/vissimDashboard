@@ -2158,6 +2158,38 @@ class ConfirmPhaseDiagramRequest(BaseModel):
     note: str | None = None
 
 
+class AmendPhaseDiagramTimingRequest(BaseModel):
+    """ONE 신호 시간 value a person corrected on the card (unit #58).
+
+    ``edited_by`` and ``edited_at`` are NOT here, for exactly the reason
+    :class:`ConfirmPhaseDiagramRequest` carries no ``attested_by``: the stamp is
+    a claim about who said what and when, and the cheapest way to stop a caller
+    putting somebody else's name on it is to give them no field to put it in.
+    The server takes the editor from the session and the time from its own clock.
+
+    ``field`` is a closed vocabulary, built from the store's own three sets so
+    the route and the writer cannot drift apart. One field per request, because
+    the ledger records ``was → now`` per value and a batch would have to invent
+    an order for its own history.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: phase_diagram.AmendableField = Field(
+        description="Which value. 'declared_amber_s' is review-scoped; the rest name a plan."
+    )
+    level_no: int | None = Field(
+        default=None, description="Required for every field except declared_amber_s."
+    )
+    plan_id: int | None = None
+    phase_id: str | None = Field(
+        default=None, max_length=64, description="Required for the per-현시 fields."
+    )
+    #: The typed value, verbatim. ``None`` clears an optional field; the store
+    #: refuses it by name where the field may not be empty (green, 소거, amber).
+    value: float | str | None = None
+
+
 class BuildSignalsInputRequest(BaseModel):
     """Which confirmed reviews become one ``genesis.signals.v1`` side input."""
 
@@ -2656,6 +2688,52 @@ def confirm_phase_diagram(
             status_code=409,
             detail=(
                 "The confirmation could not be written. Nothing was recorded. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    return store.review_payload(review_id)
+
+
+@router.patch("/phase-diagrams/{review_id}/timing")
+def amend_phase_diagram_timing(
+    review_id: str,
+    payload: AmendPhaseDiagramTimingRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Correct ONE 신호 시간 value on the card — the uploader amending their record.
+
+    THE USER'S DECISION (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도
+    카드 단순화 — 도식+시간표, 짧은 확인 (#58)"): "황색시간 및 시간 같은거가 수정
+    가능하게". The doctrine reconciliation recorded there is what this route
+    implements — *editing a timing value on screen is the uploader amending
+    their own statement, same authorship rule as #55's upload; server-stamps
+    who/when* — so the editor is the signed-in user, the clock is this server's,
+    and the previous value is kept in the review's amendment ledger rather than
+    overwritten and forgotten.
+
+    Nothing here confirms anything. The 확인 button still writes the one
+    attestation, ``generate_node_signals`` still refuses an unbound mapping, and
+    an amendment made against a review that carries no such plan or 현시 is a
+    409 naming what IS on file — never a silently created row.
+    """
+    store = _phase_diagram_store()
+    try:
+        store.amend_timing(
+            review_id,
+            field=payload.field,
+            value=payload.value,
+            level_no=payload.level_no,
+            plan_id=payload.plan_id,
+            phase_id=payload.phase_id,
+            edited_by=str(user.get("username") or user.get("id") or "").strip(),
+        )
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The amended 신호 시간 could not be written. Nothing was changed. "
                 f"[{type(exc).__name__}: {exc}]"
             ),
         ) from exc

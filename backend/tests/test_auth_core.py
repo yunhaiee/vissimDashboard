@@ -1133,6 +1133,23 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
     the record of a decision (the rail, the score, the Table 5-6 verdicts, the
     pauses waiting), which is the same parity the genesis reads sit in.
 
+    **Unit #58 adds exactly one, and it is a stamp of the same species.**
+    ``PATCH /api/genesis/phase-diagrams/{review_id}/timing`` — correcting one
+    stored 신호 시간 value on the 현시도 card. The user's decision
+    (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도 카드 단순화 —
+    도식+시간표, 짧은 확인 (#58)") records the reason it must be authenticated
+    at all: *editing a timing value on screen is the uploader amending their own
+    statement — same authorship rule as #55's upload; server-stamps who/when.*
+    So the editor is the session, the clock is the server's, the request model
+    forbids extra fields (a body carrying ``edited_by`` is a 422), and the
+    previous value is kept in the review's amendment ledger. An anonymous caller
+    must not be able to change a number somebody else's name is on — least of
+    all the 황색시간, which since #58 IS the declaration the attestation records.
+
+    The rest of the ``phase-diagrams`` sub-tree is unchanged, and the only route
+    that mints a ``MappingAttestation`` is still
+    ``POST …/{review_id}/confirmation``.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1184,6 +1201,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/phase-diagrams/{review_id}/export.xlsx",
         "/api/genesis/phase-diagrams/{review_id}/image",
         "/api/genesis/phase-diagrams/{review_id}/network-candidates",
+        "/api/genesis/phase-diagrams/{review_id}/timing",
         "/api/genesis/region/fetches",
         "/api/admin/users",
         "/api/admin/users/{user_id}/password",

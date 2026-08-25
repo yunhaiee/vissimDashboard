@@ -69,19 +69,25 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import math
+import os
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..dataimport.base import IssueSeverity
 from .side_inputs import SIGNALS_DOC_KIND
 from .signals_daejeon import DaejeonSheet, parse_sheet_text
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Document kinds. Carried IN each file, for the reason ``side_inputs.py`` gives:
@@ -111,6 +117,23 @@ SHEET_TEXT_FILENAME = "sheet.txt"
 #: document with a different author (a person typing, not a parser reading).
 MANUAL_SHEET_FILENAME = "manual-sheet.json"
 MANUAL_SHEET_DOC_KIND = "prism.phase_diagram_manual_sheet.v1"
+
+#: unit #58 — the LEDGER of every timing value a person amended on screen, and
+#: the single home of the DECLARED 황색시간. A separate document from the
+#: manual sheet for the same reason the manual sheet is separate from the
+#: render: it has a different author and a different act behind it. The uploaded
+#: workbook is what somebody sent; this is what somebody later corrected, with
+#: their name and the server's clock on every entry.
+#:
+#: THE VALUES DO NOT ALL LIVE HERE, and that is deliberate. A timing number's
+#: home is the uploader's own record (``MANUAL_SHEET_FILENAME``'s ``timing``),
+#: because amending it is that person amending their own statement — one number,
+#: one place, no overlay to resolve at read time. What lives here is (1) the
+#: declared amber, which no sheet of any medium can supply (the 대전 sheets print
+#: 황색+전적색 as one number and never the amber alone), and (2) the append-only
+#: history of BOTH, so nothing is ever overwritten-and-forgotten.
+AMENDMENT_FILENAME = "amendments.json"
+AMENDMENT_DOC_KIND = "prism.phase_diagram_amendments.v1"
 
 #: The renderer. PDFium through ``pypdfium2`` — permissive (Apache-2.0 /
 #: BSD-3-Clause), pip-installable with no external binary, and imported LAZILY
@@ -1571,8 +1594,231 @@ def _name_overlap(target: str, candidate: str) -> tuple[float, str]:
 
 
 # ---------------------------------------------------------------------------
+# unit #58 — amending a timing value is the uploader amending their own record
+# ---------------------------------------------------------------------------
+#
+# THE USER'S DECISION (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도
+# 카드 단순화 — 도식+시간표, 짧은 확인 (#58)"): the card renders the review's
+# stored 신호 시간 as a table, and "황색시간 및 시간 같은거가 수정가능하게".
+#
+# The doctrine reconciliation recorded there, restated where it is enforced:
+# editing a timing value on screen is **the uploader amending their own
+# statement** — the same authorship rule #55 gave the upload itself — so the
+# server stamps who and when, exactly as it stamps an attestation's attester.
+# Nothing here is a machine's reading, and nothing here weakens a refusal: an
+# amendment writes a number a person typed, names them, and keeps every previous
+# value in :attr:`TimingAmendments.history` rather than overwriting and
+# forgetting.
+#
+# WHAT IS REFUSED, BY NAME:
+#   * amending a ``pdf_band`` review's timing — those numbers were read out of a
+#     CLIENT's sheet text layer, and rewriting them on screen would edit the
+#     client's document rather than the person's own record;
+#   * amending a (수준, 계획) or a 현시 the review does not carry — an amendment
+#     never CREATES a plan or a phase, because a plan nobody typed is a plan
+#     nobody can be held to;
+#   * a non-positive 황색시간, and a non-numeric value in a numeric field.
+
+#: Which scope each amendable field belongs to. A closed vocabulary: a field
+#: outside these three sets cannot be amended at all, and the route's own
+#: ``Literal`` is built from them so the two cannot drift.
+AMENDABLE_REVIEW_FIELDS: tuple[str, ...] = ("declared_amber_s",)
+AMENDABLE_PLAN_FIELDS: tuple[str, ...] = ("cycle_s", "offset_s", "time_of_day")
+AMENDABLE_PHASE_FIELDS: tuple[str, ...] = (
+    "green_s",
+    "clearance_s",
+    "min_green_s",
+    "max_green_s",
+)
+#: The fields that may never be cleared: a 현시 with no green and no 소거 is not
+#: a phase, and ``signals_declared`` would refuse it one layer down anyway.
+_REQUIRED_PHASE_FIELDS: frozenset[str] = frozenset({"green_s", "clearance_s"})
+#: The one amendable field that is TEXT. Everything else is a number of seconds.
+_TEXT_FIELDS: frozenset[str] = frozenset({"time_of_day"})
+
+AmendableField = Literal[
+    "declared_amber_s",
+    "cycle_s",
+    "offset_s",
+    "time_of_day",
+    "green_s",
+    "clearance_s",
+    "min_green_s",
+    "max_green_s",
+]
+
+
+class TimingAmendment(BaseModel):
+    """One value a named person changed, kept forever.
+
+    ``was``/``now`` are STRINGS for the same reason ``MappingChange``'s are: the
+    ledger is read by a human months later, and ``"없음"`` beside ``"3.0"`` says
+    what a ``null`` beside a float does not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    at: str = Field(min_length=1, description="The SERVER's clock, never the client's.")
+    by: str = Field(min_length=1, description="The signed-in username.")
+    field: AmendableField
+    level_no: int | None = None
+    plan_id: int | None = None
+    phase_id: str | None = None
+    was: str
+    now: str
+
+
+class TimingAmendments(BaseModel):
+    """One review's amendment ledger, and the declared 황색시간 it is the home of.
+
+    ``declared_amber_s`` lives here rather than on the uploaded record because it
+    is not something any sheet supplies — see :data:`AMENDMENT_FILENAME`. When
+    nobody has declared one, this document either does not exist or carries
+    ``None``, and :meth:`PhaseDiagramStore.sheet_summary` falls back to whatever
+    the WORKBOOK said, still labelled as the workbook's number.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["prism.phase_diagram_amendments.v1"] = AMENDMENT_DOC_KIND
+    declared_amber_s: float | None = Field(default=None, gt=0)
+    declared_by: str | None = None
+    declared_at: str | None = None
+    history: list[TimingAmendment] = Field(default_factory=list)
+    #: Set when a PREVIOUS ledger for this review did not parse and was moved
+    #: aside. It is carried on the FRESH ledger, and it is STICKY: subsequent
+    #: amendments append to a history that is still missing everything the
+    #: quarantined file held, so the disclosure outlives the next edit. Silent
+    #: healing — a reviewer shown a clean, short history with no hint that an
+    #: older one was lost — is the failure this field exists to prevent, and it
+    #: is the same discipline ``demand_target_map`` and
+    #: ``calibration_attestation`` already keep for their own registries.
+    quarantined: bool = False
+    quarantine_path: str | None = None
+    quarantined_at: str | None = None
+
+
+def amber_declaration_sentence(*, by: str, at: str, was: str) -> str:
+    """The provenance of a hand-declared 황색시간, composed HERE.
+
+    The browser never writes this sentence. A note the client composed would be
+    a claim about who declared what, authored by the party that cannot be
+    trusted to make it — the same reason ``attested_by`` is taken from the
+    session and not from the body.
+    """
+    return f"{by}님이 {at}에 화면에서 선언한 황색시간입니다 (이전 값: {was})."
+
+
+def amendment_quarantine_payload(ledger: TimingAmendments) -> dict[str, Any] | None:
+    """The quarantine disclosure for a browser, or ``None`` when healthy.
+
+    Trilingual, and composed HERE rather than on the screen, for the reason
+    ``demand_target_map.registry_health_status`` gives: this sentence states
+    what a machine did to a file, and the party that did it is the one that
+    gets to describe it. The screen prints its own short heading beside this
+    text; it never rewrites it.
+    """
+    if not ledger.quarantined:
+        return None
+    where = ledger.quarantine_path or "(경로 없음)"
+    return {
+        "quarantined": True,
+        "quarantine_path": ledger.quarantine_path,
+        "quarantined_at": ledger.quarantined_at,
+        "message": {
+            "ko": (
+                "이 검토의 수정 기록 파일이 손상되어 따로 보관했고, 기록은 빈 상태에서 다시 "
+                f"시작되었습니다. 이전 수정 내역은 이 화면에 없습니다 — 원본 바이트는 {where} "
+                "에 그대로 있습니다."
+            ),
+            "en": (
+                "This review's amendment ledger was corrupt: it has been quarantined and a fresh "
+                "one started. The earlier amendment history is NOT on this screen — the original "
+                f"bytes are preserved at {where}."
+            ),
+            "ja": (
+                "この検討の修正記録ファイルが破損していたため隔離し、記録は空から再開しました。"
+                f"以前の修正履歴はこの画面にありません — 元のバイトは {where} にそのまま保存され"
+                "ています。"
+            ),
+        },
+    }
+
+
+def _amendment_text(value: Any) -> str:
+    """One amended value as the ledger prints it. ``None`` is 없음, never blank."""
+    return "없음" if value is None else str(value)
+
+
+def cross_check_compared(
+    result: "CrossCheckResult | None", *, medium: ReviewMedium
+) -> bool:
+    """Did the machine actually compare anything for this review?
+
+    THE USER'S DECISION (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정:
+    현시도 카드 단순화 … (#58)"): a section whose entire content is *"대조할 시트
+    텍스트도 도면 이미지도 없습니다"* is noise — "이건 필요없지 않아? 지워".
+
+    The reconciliation recorded there, enforced here: the answer is FALSE only
+    where the machine genuinely compared nothing. ``excel_upload`` and
+    ``blank_entry`` reviews have neither a sheet text layer nor a rendered band,
+    so there was nothing on the other side of any comparison. A ``pdf_band``
+    review keeps its cross-check unchanged, flags and all — *deleting a
+    comparison that happened would be hiding evidence; deleting the sentence
+    that no comparison happened is removing noise.*
+
+    The SERVER answers this, and the screen renders the answer. A browser
+    deciding for itself which sections to hide is how a UI starts editing what
+    the machine said.
+    """
+    if result is None:
+        return False
+    return medium == "pdf_band"
+
+
+# ---------------------------------------------------------------------------
 # The store — one directory per sheet, on the workspace's own tree
 # ---------------------------------------------------------------------------
+#
+# CONCURRENCY (unit #58, from the refuter's live reproduction). Until this
+# unit, ``PhaseDiagramStore`` was the ONLY read-modify-write store in this
+# codebase with no lock at all — every sibling (``demand_target_map``,
+# ``calibration_attestation``, ``observations``, ``datasets``,
+# ``genesis_jobs``, ``simulation_runs``, ``workspaces``) holds unit U6's module
+# ``RLock`` across read → mutate → write.
+#
+# WHAT WAS MEASURED, and it is worse than a lost number: two threads amending
+# DIFFERENT fields of the same review interleaved their read-modify-write of
+# ``manual-sheet.json``, and one field's value silently reverted — while BOTH
+# amendments were recorded in the ledger with a ``was → now`` that looked
+# honest. An audit trail that asserts a change which never landed is the exact
+# failure this whole module exists to prevent, so the lock is not a performance
+# detail here; it is what makes the ledger true.
+#
+# SCOPE, stated honestly. The lock is held across EVERY WRITE PATH of the
+# store, not only ``amend_timing``:
+#
+#   * ``amend_timing`` and its helpers — the measured race, two files deep
+#     (``manual-sheet.json`` plus the ledger);
+#   * ``put_manual_review`` — a re-upload REPLACES the very file an amendment
+#     is mid-cycle on, so the two race against each other and not merely each
+#     against itself;
+#   * ``put_render`` / ``put_proposal`` / ``put_attestation`` — whole-file
+#     writes today, but they share a review directory with the above, and
+#     ``put_attestation`` reads the render, checks it and then writes, which is
+#     the same read-check-write shape.
+#
+# The lock is MODULE level, not per-instance, because ``_phase_diagram_store()``
+# builds a fresh ``PhaseDiagramStore`` on every request — a lock on the instance
+# would be a lock two callers never share. ``RLock`` because these methods nest
+# (``amend_timing`` → ``_append_amendment`` → ``_write_amendments``).
+#
+# It is a lock, not a distributed one: it serialises threads inside ONE process,
+# which is what this deployment is. ``_write_json``'s temp-file + fsync +
+# ``os.replace`` below is the other half — it stops a concurrent READER (which
+# takes no lock, deliberately, so a browser refresh is never blocked by a write)
+# seeing a half-written file.
+_STORE_LOCK = threading.RLock()
 
 
 class PhaseDiagramStore:
@@ -1627,11 +1873,14 @@ class PhaseDiagramStore:
         attestation stays on disk and is reported as *재확인 필요*.
         """
         review_id = review_id_for(render.source_file)
-        directory = self.review_dir(review_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / IMAGE_FILENAME).write_bytes(png)
-        _write_json(directory / RENDER_FILENAME, render.model_dump(mode="json"))
-        (directory / SHEET_TEXT_FILENAME).write_text(sheet_text, encoding="utf-8")
+        with _STORE_LOCK:
+            directory = self.review_dir(review_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / IMAGE_FILENAME).write_bytes(png)
+            _write_json(directory / RENDER_FILENAME, render.model_dump(mode="json"))
+            (directory / SHEET_TEXT_FILENAME).write_text(
+                sheet_text, encoding="utf-8", newline=""
+            )
         return review_id
 
     def put_manual_review(
@@ -1657,19 +1906,23 @@ class PhaseDiagramStore:
                 "phase_diagram_medium_invalid",
                 ["A pdf_band review is stored with its image, through put_render()."],
             )
-        directory = self.review_dir(review_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        _write_json(directory / RENDER_FILENAME, render.model_dump(mode="json"))
-        _write_json(directory / MANUAL_SHEET_FILENAME, {"kind": MANUAL_SHEET_DOC_KIND, **sheet})
+        with _STORE_LOCK:
+            directory = self.review_dir(review_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            _write_json(directory / RENDER_FILENAME, render.model_dump(mode="json"))
+            _write_json(
+                directory / MANUAL_SHEET_FILENAME, {"kind": MANUAL_SHEET_DOC_KIND, **sheet}
+            )
         return review_id
 
     def put_proposal(
         self, review_id: str, proposal: PhaseProposal, cross: CrossCheckResult
     ) -> None:
-        directory = self.review_dir(review_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        _write_json(directory / PROPOSAL_FILENAME, proposal.model_dump(mode="json"))
-        _write_json(directory / CROSS_CHECK_FILENAME, cross.model_dump(mode="json"))
+        with _STORE_LOCK:
+            directory = self.review_dir(review_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            _write_json(directory / PROPOSAL_FILENAME, proposal.model_dump(mode="json"))
+            _write_json(directory / CROSS_CHECK_FILENAME, cross.model_dump(mode="json"))
 
     def put_attestation(self, review_id: str, attestation: MappingAttestation) -> None:
         """Record a confirmation, against the render that is on disk NOW.
@@ -1679,32 +1932,115 @@ class PhaseDiagramStore:
         race, and storing it would create exactly the stale-but-silent state the
         module refuses.
         """
-        render = self.render(review_id)
-        if attestation.image_sha256 != render.image_sha256:
-            attested = (
-                "이미지 없음" if attestation.image_sha256 is None else attestation.image_sha256[:12] + "…"
-            )
-            stored = "이미지 없음" if render.image_sha256 is None else render.image_sha256[:12] + "…"
-            raise PhaseDiagramRefused(
-                "phase_diagram_attestation_stale",
-                [
-                    "확인하려는 현시도 이미지가 현재 저장된 이미지와 다릅니다. 화면을 새로 "
-                    "고친 뒤 다시 확인하십시오 (재확인 필요).",
-                    f"attested against {attested}, stored image is {stored}",
-                ],
-            )
-        if attestation.source_sha256 != render.source_sha256:
-            raise PhaseDiagramRefused(
-                "phase_diagram_attestation_stale",
-                [
-                    "확인하려는 시트 파일이 현재 저장된 파일과 다릅니다 (재확인 필요).",
-                    f"attested against {attestation.source_sha256[:12]}…, "
-                    f"stored sheet is {render.source_sha256[:12]}…",
-                ],
-            )
-        directory = self.review_dir(review_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        _write_json(directory / ATTESTATION_FILENAME, attestation.model_dump(mode="json"))
+        with _STORE_LOCK:
+            render = self.render(review_id)
+            if attestation.image_sha256 != render.image_sha256:
+                attested = (
+                    "이미지 없음"
+                    if attestation.image_sha256 is None
+                    else attestation.image_sha256[:12] + "…"
+                )
+                stored = (
+                    "이미지 없음" if render.image_sha256 is None else render.image_sha256[:12] + "…"
+                )
+                raise PhaseDiagramRefused(
+                    "phase_diagram_attestation_stale",
+                    [
+                        "확인하려는 현시도 이미지가 현재 저장된 이미지와 다릅니다. 화면을 새로 "
+                        "고친 뒤 다시 확인하십시오 (재확인 필요).",
+                        f"attested against {attested}, stored image is {stored}",
+                    ],
+                )
+            if attestation.source_sha256 != render.source_sha256:
+                raise PhaseDiagramRefused(
+                    "phase_diagram_attestation_stale",
+                    [
+                        "확인하려는 시트 파일이 현재 저장된 파일과 다릅니다 (재확인 필요).",
+                        f"attested against {attestation.source_sha256[:12]}…, "
+                        f"stored sheet is {render.source_sha256[:12]}…",
+                    ],
+                )
+            summary = self.sheet_summary(review_id)
+            self._refuse_unknown_plan(review_id, attestation)
+            self._refuse_stale_amber(review_id, attestation, summary=summary)
+            directory = self.review_dir(review_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            _write_json(directory / ATTESTATION_FILENAME, attestation.model_dump(mode="json"))
+
+    def _refuse_unknown_plan(self, review_id: str, attestation: MappingAttestation) -> None:
+        """A confirmation may only name a (수준, 계획 ID) this review CARRIES.
+
+        WHAT ALREADY FIRED, measured before this was added: a pair with no
+        timing behind it was accepted here and refused later, at
+        ``confirmed_mapping`` → ``phase_diagram_no_sheet_text``, which names the
+        plans that do exist. That is the right refusal in the wrong PLACE — it
+        arrives at the staging button, long after the person who chose the plan
+        has left the screen, and until then the review reads 확인됨.
+
+        So the same question is asked at signing time, by name. A review that
+        carries NO timing at all is deliberately not checked: its 수준/계획 are
+        typed by hand precisely because nothing measured them, and the staging
+        refusal remains the honest place to say the timing is missing.
+
+        The hole this does NOT close, stated so nobody reads it as closed: a
+        client that submits a DIFFERENT plan that also exists. Nothing on this
+        server can tell that from the intended one — there is no second source
+        for what the screen was showing. That half is held by the contract pin
+        on the payload's own construction (tests/dashboard-contract.test.ts,
+        "unit #58: the confirmation's 수준/계획 is the one on screen").
+        """
+        plans = self.timing_plans(review_id)
+        if not plans:
+            return
+        pairs = {(int(plan["level_no"]), int(plan["plan_id"])) for plan in plans}
+        if (int(attestation.level_no), int(attestation.plan_id)) in pairs:
+            return
+        available = ", ".join(f"수준 {level} / 계획 {plan}" for level, plan in sorted(pairs))
+        raise PhaseDiagramRefused(
+            "phase_diagram_attestation_unknown_plan",
+            [
+                f"확인하려는 계획(수준 {attestation.level_no} / 계획 {attestation.plan_id})은 이 "
+                "교차로에 없습니다. 화면을 새로 고친 뒤, 이 교차로가 실제로 가진 계획으로 다시 "
+                "확인하십시오.",
+                f"이 교차로가 가진 계획: {available}.",
+                f"review {review_id}: attested L{attestation.level_no}-P{attestation.plan_id}, "
+                f"stored plans {sorted(pairs)}.",
+            ],
+        )
+
+    def _refuse_stale_amber(
+        self, review_id: str, attestation: MappingAttestation, *, summary: Mapping[str, Any]
+    ) -> None:
+        """The signed 황색시간 must be the one the store held at signing time.
+
+        Since unit #58 the card has no separate 선언 황색시간 box: the number
+        lives in the 신호 시간 table, is amended through a stamped PATCH, and is
+        read back off the stored review. So a confirmation whose amber differs
+        from the stored one was made against a number that is no longer there —
+        the same species as the image-sha staleness above (#53's idiom), and it
+        is refused the same way rather than silently signing the client's copy.
+
+        Only the NUMBER is compared. ``amber_declaration_note`` is free text on
+        the un-amended path (a workbook's own 근거) and server-composed on the
+        amended one, so comparing it would refuse honest callers over a sentence.
+        """
+        stored = summary.get("declared_amber_s")
+        attested = attestation.declared_amber_s
+        if (stored is None) == (attested is None):
+            if stored is None:
+                return
+            if math.isclose(float(stored), float(attested), rel_tol=0.0, abs_tol=1e-9):
+                return
+        raise PhaseDiagramRefused(
+            "phase_diagram_attestation_stale",
+            [
+                "확인하려는 황색시간이 현재 저장된 값과 다릅니다. 황색시간은 신호 시간 표에서 "
+                "선언하는 값이므로, 화면을 새로 고친 뒤 표의 값으로 다시 확인하십시오 "
+                "(재확인 필요).",
+                f"attested {'없음' if attested is None else attested}, "
+                f"stored {'없음' if stored is None else stored}",
+            ],
+        )
 
     # -- reads ---------------------------------------------------------
 
@@ -1768,6 +2104,129 @@ class PhaseDiagramStore:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def amendments(self, review_id: str) -> TimingAmendments:
+        """This review's amendment ledger. An absent file is an EMPTY ledger.
+
+        Never ``None``: "nobody has amended anything" and "there is no ledger"
+        are the same statement, and a caller that had to tell them apart would
+        eventually get it wrong.
+        """
+        path = self.review_dir(review_id) / AMENDMENT_FILENAME
+        if not path.is_file():
+            return TimingAmendments()
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise PhaseDiagramRefused(
+                "phase_diagram_amendments_unreadable",
+                [
+                    f"검토 {review_id}의 수정 기록 파일을 읽지 못했습니다. 파일은 그대로 두었고 "
+                    "아무것도 덮어쓰지 않았습니다.",
+                    f"{path}: {type(exc).__name__}: {exc}",
+                ],
+            ) from exc
+        try:
+            return TimingAmendments.model_validate(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError) as exc:
+            return self._quarantine_amendments(path, raw, exc)
+
+    def _quarantine_amendments(
+        self, path: Path, raw: bytes, exc: Exception
+    ) -> TimingAmendments:
+        """A ledger that does not parse is MOVED ASIDE, bytes intact, and a
+        fresh one starts — the sibling stores' rule (``demand_target_map``,
+        ``calibration_attestation``), applied to the file unit #58 added.
+
+        Never a crash: before this, a hand-edited or truncated
+        ``amendments.json`` reached the browser as an HTTP 500 with a raw
+        ``JSONDecodeError``, which tells a reader nothing and leaves the whole
+        review unreadable. Never a silent overwrite either — the corrupt bytes
+        are kept next to the review under their own name, because they are the
+        only record of what was in the ledger, and an amendment history that can
+        be quietly replaced is not a ledger.
+
+        Degrading to an EMPTY ledger is the safe direction HERE specifically:
+        with no amendments, the card falls back to what the WORKBOOK said and
+        shows no declaration author. The opposite failure — inventing a
+        declaration nobody made — is the one that cannot be allowed, and this
+        path structurally cannot produce one.
+        """
+        stamp = _now_iso().replace(":", "").replace("-", "")
+        quarantine = path.with_name(f"{path.name}.corrupt-{stamp}-{uuid4().hex[:8]}")
+        try:
+            with _STORE_LOCK:
+                path.replace(quarantine)
+        except OSError as move_error:
+            raise PhaseDiagramRefused(
+                "phase_diagram_amendments_unreadable",
+                [
+                    "수정 기록 파일이 손상되었으나 따로 보관할 수 없어 아무것도 하지 않았습니다. "
+                    "파일은 그대로 있습니다.",
+                    f"{path}: {type(exc).__name__}: {exc}",
+                    f"quarantine failed: {type(move_error).__name__}: {move_error}",
+                ],
+            ) from move_error
+        logger.error(
+            "phase diagram: the amendment ledger at %s did not parse (%s: %s). Its bytes were "
+            "moved to %s and a fresh ledger starts. Nothing was overwritten.",
+            path,
+            type(exc).__name__,
+            exc,
+            quarantine,
+        )
+        # The bytes are preserved beside the review, not merely logged.
+        quarantine.write_bytes(raw)
+        # ...and the FRESH ledger says, on disk and on the wire, that an older
+        # one was lost. Written immediately rather than only returned, so the
+        # disclosure survives this process and every later read of the review.
+        fresh = TimingAmendments(
+            quarantined=True,
+            quarantine_path=str(quarantine),
+            quarantined_at=_now_iso(),
+        )
+        review_id = path.parent.name
+        try:
+            with _STORE_LOCK:
+                _write_json(path, fresh.model_dump(mode="json"))
+        except OSError:  # pragma: no cover - the disclosure still travels in-memory
+            logger.error(
+                "phase diagram: could not record the quarantine disclosure for review %s; "
+                "the corrupt bytes are still at %s.",
+                review_id,
+                quarantine,
+            )
+        return fresh
+
+    def timing_plans(self, review_id: str) -> list[dict[str, Any]]:
+        """The 신호 시간 this review HOLDS, per (수준, 계획 ID), for the screen.
+
+        ONE source per medium, and each one is the same source that already
+        feeds the export and the signals build — the card cannot show a number
+        the document would not carry:
+
+        * ``pdf_band`` — derived from the 대전 sheet's own text layer by
+          ``phase_template.daejeon_timing_payload`` (the import is deferred
+          because ``phase_template`` imports THIS module at load time);
+        * ``excel_upload`` / ``blank_entry`` — the rows somebody typed into the
+          신호시간 sheet, exactly as :meth:`declared_plan` reads them.
+
+        A refusal on the 대전 path is returned as an empty list rather than
+        raised: this is a READ for a screen, and one unparseable timing table
+        must not take the whole review's card down with it. The refusal is not
+        swallowed silently — ``confirmed_mapping`` still raises it by name on
+        the road that matters, which is the one that builds a plan.
+        """
+        render = self.render(review_id)
+        if render.medium == "pdf_band":
+            from . import phase_template  # deferred: phase_template imports this module
+
+            try:
+                plans, _notes = phase_template.daejeon_timing_payload(self.sheet(review_id))
+            except (PhaseDiagramRefused, ValueError):
+                return []
+            return list(plans)
+        return list((self.manual_sheet(review_id) or {}).get("timing") or [])
+
     def declared_plan(
         self, review_id: str, level_no: int, plan_id: int
     ) -> dict[str, Any] | None:
@@ -1804,9 +2263,22 @@ class PhaseDiagramStore:
         """
         render = self.render(review_id)
         if render.medium == "pdf_band":
-            return _sheet_summary(self.sheet(review_id))
+            return {
+                **_sheet_summary(self.sheet(review_id)),
+                # unit #58 — the same two keys on every medium. A 대전 sheet
+                # supplies no amber of its own (it prints 황색+전적색 as one
+                # number), so the ONLY amber a pdf review can carry is one a
+                # person declared on screen — which is exactly what this reads.
+                #
+                # ``timing`` is deliberately NOT added here: it is joined on in
+                # :meth:`review_payload`, because a 대전 review's timing costs a
+                # second parse of the sheet text and :meth:`index_payload` calls
+                # this method once per review just to read 교차로명.
+                **self._amber_summary(review_id, uploaded={}),
+            }
         stored = self.manual_sheet(review_id) or {}
         return {
+            **self._amber_summary(review_id, uploaded=stored),
             "source_file": render.source_file,
             "intersection_name": stored.get("intersection_name"),
             "intersection_no": stored.get("intersection_no"),
@@ -1826,13 +2298,288 @@ class PhaseDiagramStore:
                 for plan in (stored.get("timing") or [])
             ]
             or list(stored.get("plan_choices") or []),
-            # What the UPLOAD said the amber is, so the confirm form can prefill
-            # it with its 근거 attached. Prefill, never a default: the field is
-            # still the reviewer's declaration and the sentence under it still
-            # says so.
-            "declared_amber_s": stored.get("declared_amber_s"),
-            "amber_declaration_note": stored.get("amber_declaration_note"),
         }
+
+    def _amber_summary(
+        self, review_id: str, *, uploaded: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The 황색시간 this review currently declares, and whose word it is.
+
+        TWO possible authors, and the screen must never confuse them. A person
+        who typed the number into the card's 신호 시간 table (unit #58) OUTRANKS
+        the value that arrived in the workbook — they amended their own record,
+        after the fact, with their name on it. When nobody has amended one, the
+        workbook's number stands, still carrying the workbook's own 근거.
+
+        ``amber_declaration_note`` is composed by
+        :func:`amber_declaration_sentence` on the amended path rather than
+        carried from the client, because it is a statement about WHO declared
+        WHAT and WHEN — and the browser is not the party that gets to make it.
+        """
+        ledger = self.amendments(review_id)
+        if ledger.declared_amber_s is not None and ledger.declared_by and ledger.declared_at:
+            previous = next(
+                (
+                    entry.was
+                    for entry in reversed(ledger.history)
+                    if entry.field == "declared_amber_s"
+                ),
+                _amendment_text(uploaded.get("declared_amber_s")),
+            )
+            return {
+                "declared_amber_s": ledger.declared_amber_s,
+                "amber_declaration_note": amber_declaration_sentence(
+                    by=ledger.declared_by, at=ledger.declared_at, was=previous
+                ),
+                "amber_declared_by": ledger.declared_by,
+                "amber_declared_at": ledger.declared_at,
+            }
+        return {
+            # What the UPLOAD said the amber is. A prefill, never a default: the
+            # number is still a declaration, and the card's own sentence says so.
+            "declared_amber_s": uploaded.get("declared_amber_s"),
+            "amber_declaration_note": uploaded.get("amber_declaration_note"),
+            "amber_declared_by": None,
+            "amber_declared_at": None,
+        }
+
+    def amend_timing(
+        self,
+        review_id: str,
+        *,
+        field: str,
+        value: Any,
+        edited_by: str,
+        level_no: int | None = None,
+        plan_id: int | None = None,
+        phase_id: str | None = None,
+    ) -> None:
+        """Record ONE amended value, stamped, with the previous one kept.
+
+        ``edited_by`` comes from the caller's SESSION and the timestamp from
+        this process's clock — there is no parameter for either on the request
+        body, the same shape :class:`MappingAttestation` uses and for the same
+        reason. Every refusal below names what is wrong and changes nothing.
+        """
+        editor = (edited_by or "").strip()
+        if not editor:
+            raise PhaseDiagramRefused(
+                "phase_diagram_amendment_unsigned",
+                [
+                    "수정한 사람의 이름이 없습니다. 이 표의 값은 사람의 진술이므로, 이름 없는 "
+                    "수정은 기록하지 않습니다."
+                ],
+            )
+        at = _now_iso()
+        # THE WHOLE READ → MUTATE → WRITE UNDER ONE HELD LOCK. Measured by the
+        # refuter before this line existed: two threads amending DIFFERENT
+        # fields of the same review each read `manual-sheet.json`, each mutated
+        # their own copy, and the second write erased the first field's new
+        # value — while BOTH ledger entries were recorded with a `was → now`
+        # that read as if they had landed. The ledger is the product here, so a
+        # ledger entry for a write that was rolled back is worse than the lost
+        # number itself.
+        with _STORE_LOCK:
+            self._amend_timing_locked(
+                review_id,
+                field=field,
+                value=value,
+                editor=editor,
+                at=at,
+                level_no=level_no,
+                plan_id=plan_id,
+                phase_id=phase_id,
+            )
+
+    def _amend_timing_locked(
+        self,
+        review_id: str,
+        *,
+        field: str,
+        value: Any,
+        editor: str,
+        at: str,
+        level_no: int | None,
+        plan_id: int | None,
+        phase_id: str | None,
+    ) -> None:
+        """:meth:`amend_timing`'s body, always called with :data:`_STORE_LOCK` held."""
+        if field in AMENDABLE_REVIEW_FIELDS:
+            self._amend_declared_amber(review_id, value=value, by=editor, at=at)
+            return
+        render = self.render(review_id)
+        if render.medium == "pdf_band":
+            raise PhaseDiagramRefused(
+                "phase_diagram_timing_not_amendable",
+                [
+                    f"{render.source_file}: 이 검토의 신호 시간은 대전 시트의 텍스트에서 읽은 "
+                    "값입니다. 화면에서 고치면 의뢰인의 문서를 고쳐 쓰는 것이 되므로 받지 "
+                    "않습니다. 엑셀로 내보내 고친 뒤 업로드하십시오.",
+                    f"review {review_id}: medium=pdf_band, field={field}.",
+                ],
+            )
+        stored = self.manual_sheet(review_id)
+        if stored is None:
+            raise PhaseDiagramRefused(
+                "phase_diagram_timing_unknown_plan",
+                [f"검토 {review_id}에는 수정할 신호 시간 기록이 없습니다."],
+            )
+        plan = self._locate_plan(stored, review_id, level_no=level_no, plan_id=plan_id)
+        if field in AMENDABLE_PLAN_FIELDS:
+            was = _amendment_text(plan.get(field))
+            plan[field] = self._amended_value(field, value)
+            now = _amendment_text(plan[field])
+        elif field in AMENDABLE_PHASE_FIELDS:
+            row = self._locate_phase(plan, review_id, phase_id=phase_id)
+            was = _amendment_text(row.get(field))
+            if value is None and field in _REQUIRED_PHASE_FIELDS:
+                raise PhaseDiagramRefused(
+                    "phase_diagram_timing_value_invalid",
+                    [
+                        f"{phase_id}의 {field}은(는) 비울 수 없습니다. 녹색과 소거시간이 없는 "
+                        "현시는 현시가 아닙니다."
+                    ],
+                )
+            row[field] = self._amended_value(field, value)
+            now = _amendment_text(row[field])
+        else:  # pragma: no cover - the route's Literal rules this out
+            raise PhaseDiagramRefused(
+                "phase_diagram_timing_field_unknown",
+                [f"{field!r}은(는) 수정할 수 있는 항목이 아닙니다."],
+            )
+        directory = self.review_dir(review_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        _write_json(directory / MANUAL_SHEET_FILENAME, stored)
+        self._append_amendment(
+            review_id,
+            TimingAmendment(
+                at=at,
+                by=editor,
+                field=field,  # type: ignore[arg-type]
+                level_no=None if level_no is None else int(level_no),
+                plan_id=None if plan_id is None else int(plan_id),
+                phase_id=phase_id,
+                was=was,
+                now=now,
+            ),
+        )
+
+    def _amend_declared_amber(self, review_id: str, *, value: Any, by: str, at: str) -> None:
+        """The declared 황색시간, on EVERY medium — see :data:`AMENDMENT_FILENAME`."""
+        with _STORE_LOCK:
+            self._declare_amber_locked(review_id, value=value, by=by, at=at)
+
+    def _declare_amber_locked(self, review_id: str, *, value: Any, by: str, at: str) -> None:
+        """:meth:`_amend_declared_amber`'s body, always called with
+        :data:`_STORE_LOCK` held by its caller."""
+        self.render(review_id)  # the review must exist; refuses by name if not
+        amber = self._amended_value("declared_amber_s", value)
+        if amber is None or float(amber) <= 0:
+            raise PhaseDiagramRefused(
+                "phase_diagram_timing_value_invalid",
+                [
+                    "황색시간은 0보다 큰 초 단위 값이어야 합니다. 이 앱은 기본값을 넣지 않으므로, "
+                    "값을 비우면 선언이 없는 상태가 됩니다 — 그 상태로는 신호 입력이 만들어지지 "
+                    "않습니다."
+                ],
+            )
+        ledger = self.amendments(review_id)
+        stored = self.manual_sheet(review_id) or {}
+        was = _amendment_text(
+            ledger.declared_amber_s
+            if ledger.declared_amber_s is not None
+            else stored.get("declared_amber_s")
+        )
+        ledger.declared_amber_s = float(amber)
+        ledger.declared_by = by
+        ledger.declared_at = at
+        ledger.history.append(
+            TimingAmendment(
+                at=at,
+                by=by,
+                field="declared_amber_s",
+                was=was,
+                now=_amendment_text(float(amber)),
+            )
+        )
+        self._write_amendments(review_id, ledger)
+
+    def _amended_value(self, field: str, value: Any) -> Any:
+        """One typed value, in the type its field is. A refusal, never a guess."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if field in _TEXT_FIELDS:
+            return str(value).strip()
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            raise PhaseDiagramRefused(
+                "phase_diagram_timing_value_invalid",
+                [f"{field}에 숫자가 아닌 값 {value!r}이(가) 들어왔습니다. 초 단위 숫자를 넣으십시오."],
+            ) from None
+
+    def _locate_plan(
+        self,
+        stored: dict[str, Any],
+        review_id: str,
+        *,
+        level_no: int | None,
+        plan_id: int | None,
+    ) -> dict[str, Any]:
+        """The (수준, 계획 ID) row this amendment names. NEVER created."""
+        available = [
+            f"수준 {plan.get('level_no')} / 계획 {plan.get('plan_id')}"
+            for plan in (stored.get("timing") or [])
+        ]
+        for plan in stored.get("timing") or []:
+            if (
+                level_no is not None
+                and plan_id is not None
+                and int(plan.get("level_no", -1)) == int(level_no)
+                and int(plan.get("plan_id", -1)) == int(plan_id)
+            ):
+                return plan
+        raise PhaseDiagramRefused(
+            "phase_diagram_timing_unknown_plan",
+            [
+                f"검토 {review_id}에는 수준 {level_no} / 계획 {plan_id}의 신호 시간이 없습니다. "
+                "수정은 이미 기록된 값을 고칠 뿐, 새 계획을 만들지 않습니다.",
+                (
+                    f"현재 신호시간이 있는 계획: {', '.join(available)}."
+                    if available
+                    else "현재 이 교차로에는 신호시간이 한 줄도 없습니다."
+                ),
+            ],
+        )
+
+    def _locate_phase(
+        self, plan: dict[str, Any], review_id: str, *, phase_id: str | None
+    ) -> dict[str, Any]:
+        """The 현시 row this amendment names. NEVER created."""
+        for row in plan.get("phases") or []:
+            if str(row.get("phase_id")) == str(phase_id):
+                return row
+        listed = ", ".join(str(row.get("phase_id")) for row in plan.get("phases") or [])
+        raise PhaseDiagramRefused(
+            "phase_diagram_timing_unknown_phase",
+            [
+                f"이 계획에는 {phase_id} 현시가 없습니다. 수정은 이미 기록된 현시의 값을 고칠 "
+                "뿐, 새 현시를 만들지 않습니다.",
+                f"review {review_id}: 이 계획의 현시 — {listed or '없음'}.",
+            ],
+        )
+
+    def _append_amendment(self, review_id: str, event: TimingAmendment) -> None:
+        with _STORE_LOCK:
+            ledger = self.amendments(review_id)
+            ledger.history.append(event)
+            self._write_amendments(review_id, ledger)
+
+    def _write_amendments(self, review_id: str, ledger: TimingAmendments) -> None:
+        with _STORE_LOCK:
+            directory = self.review_dir(review_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            _write_json(directory / AMENDMENT_FILENAME, ledger.model_dump(mode="json"))
 
     def stale_reasons(self, review_id: str) -> list[str]:
         attestation = self.attestation(review_id)
@@ -1930,11 +2677,34 @@ class PhaseDiagramStore:
             "render": render.model_dump(mode="json"),
             "proposal": None if proposal is None else proposal.model_dump(mode="json"),
             "proposal_sha256": self.proposal_sha256(review_id),
-            "cross_check": None if cross is None else cross.model_dump(mode="json"),
+            # unit #58 — ``compared`` is the SERVER saying whether the machine
+            # actually held anything up against anything. See
+            # :func:`cross_check_compared`: the screen hides the section only
+            # where the answer is no, and a vision review's flags are untouched.
+            "cross_check": (
+                None
+                if cross is None
+                else {
+                    **cross.model_dump(mode="json"),
+                    "compared": cross_check_compared(cross, medium=render.medium),
+                }
+            ),
             "attestation": None if attestation is None else attestation.model_dump(mode="json"),
             "stale_reasons": stale,
             "confirmed": attestation is not None and not stale,
-            "sheet": summary,
+            # unit #58 — the card renders ``sheet.timing`` as its 신호 시간
+            # table. Joined on HERE rather than inside ``sheet_summary`` so the
+            # index (which calls that method once per review, for the name
+            # alone) does not pay for a second parse of every 대전 sheet.
+            "sheet": {
+                **summary,
+                "timing": self.timing_plans(review_id),
+                # unit #58 round 3 — a lost amendment history is DISCLOSED, never
+                # healed silently. `None` when the ledger is healthy.
+                "amendments_quarantine": amendment_quarantine_payload(
+                    self.amendments(review_id)
+                ),
+            },
         }
 
     def index_payload(self) -> list[dict[str, Any]]:
@@ -2014,15 +2784,39 @@ def _sheet_summary(sheet: DaejeonSheet) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="",
-    )
+    """The store's ONLY writer: same-directory temp file → fsync → ``os.replace``.
+
+    Unit #58 made this atomic, and the reason is the other half of
+    :data:`_STORE_LOCK`'s: readers take no lock (so a browser refresh is never
+    blocked behind a write), which means a plain ``write_text`` leaves a window
+    where a reader sees a TRUNCATED document. The bytes and the format are
+    unchanged — same JSON, same sort, same trailing newline, same LF — only the
+    moment at which the file becomes the new one.
+
+    Exactly ``demand_target_map._write_payload``'s shape, and for its reason.
+    """
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 __all__ = [
+    "AMENDABLE_PHASE_FIELDS",
+    "AMENDABLE_PLAN_FIELDS",
+    "AMENDABLE_REVIEW_FIELDS",
+    "AMENDMENT_DOC_KIND",
+    "AMENDMENT_FILENAME",
     "ATTESTATION_DOC_KIND",
+    "AmendableField",
     "CHECK_NO_TEXT_LAYER",
     "CROSS_CHECK_DOC_KIND",
     "MANUAL_SHEET_DOC_KIND",
@@ -2046,10 +2840,15 @@ __all__ = [
     "ProposedApproach",
     "ProposedMovement",
     "ProposedPhase",
+    "TimingAmendment",
+    "TimingAmendments",
+    "amber_declaration_sentence",
+    "amendment_quarantine_payload",
     "approach_bearing",
     "build_signals_document",
     "composite_source_key",
     "cross_check",
+    "cross_check_compared",
     "cross_check_without_text_layer",
     "manual_render",
     "node_candidates",

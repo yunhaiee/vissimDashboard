@@ -28,7 +28,11 @@ No client data: every workbook here is built in the test.
 """
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -726,6 +730,26 @@ def test_a_re_upload_replaces_an_unconfirmed_review_and_refuses_a_confirmed_one(
     assert payload["confirmed"] is True
 
 
+def _declare_amber(client, headers, review_id: str, amber: float = 3.0):
+    """The screen's own two-step (unit #58): declare the 황색시간 in the 신호
+    시간 table, THEN confirm.
+
+    ``put_attestation`` refuses a confirmation carrying an amber the store does
+    not hold (``phase_diagram_attestation_stale``), because since #58 the amber
+    IS the table's value and there is no second box to type it into. A review
+    whose WORKBOOK already declared one needs no call — the stored value is
+    already the workbook's — so this is only for the media that carry none of
+    their own (대전 pdf, and a blank review).
+    """
+    response = client.patch(
+        f"/api/genesis/phase-diagrams/{review_id}/timing",
+        headers=headers,
+        json={"field": "declared_amber_s", "value": amber},
+    )
+    assert response.status_code == 200, response.text
+    return response
+
+
 def _confirmation(store: pd.PhaseDiagramStore, review_id: str, **overrides: Any) -> dict[str, Any]:
     render = store.render(review_id)
     body: dict[str, Any] = {
@@ -1335,18 +1359,56 @@ def test_the_confirm_form_offers_exactly_the_plans_that_have_timing(client, head
     assert payload["sheet"]["plan_choices"] == [{"level_no": 1, "plan_id": 1}]
 
 
-def test_confirming_a_plan_that_has_no_timing_refuses_by_naming_the_cells(
+def test_confirming_a_plan_this_review_does_not_carry_refuses_at_signing_time(
     client, headers, store
 ):
+    """UNIT #58 MOVED THIS REFUSAL EARLIER, and the move is the point.
+
+    Before: a confirmation naming a (수준, 계획) with no timing behind it was
+    ACCEPTED, the review read 확인됨, and the refusal arrived at the staging
+    button — long after the person who picked the plan had left the screen.
+    Now ``put_attestation`` asks the same question at signing time and names
+    the plans this intersection actually has, so the answer reaches the person
+    who can act on it while they are still looking at it.
+    """
     created = upload(
         client, headers, workbook(TIMED_ROWS, timing=TIMING_ROWS), "시간.xlsx"
     ).json()["created"]
     review_id = created[0]["review_id"]
-    client.post(
+    response = client.post(
         f"/api/genesis/phase-diagrams/{review_id}/confirmation",
         headers=headers,
         json=_confirmation(store, review_id, level_no=9, plan_id=9),
     )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "phase_diagram_attestation_unknown_plan"
+    assert any("수준 9 / 계획 9" in reason for reason in detail["reasons"])
+    # ...and it names the plans that DO have timing, so the reader can pick one.
+    assert any("수준 1 / 계획 1" in reason for reason in detail["reasons"])
+    # NOTHING was recorded: a refused confirmation leaves the review unconfirmed
+    # rather than 확인됨 against a plan that does not exist.
+    assert store.attestation(review_id) is None
+    payload = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers).json()
+    assert payload["confirmed"] is False
+
+
+def test_a_review_with_no_timing_at_all_still_refuses_at_the_staging_button(
+    client, headers, store
+):
+    """The OTHER half, deliberately left where it was. A review that carries no
+    timing at all has nothing to check a (수준, 계획) against — its two numbers
+    are typed by hand precisely because nothing measured them — so signing
+    succeeds and the staging build is still the honest place to say the timing
+    is missing, by name."""
+    created = upload(client, headers, workbook(TIMED_ROWS), "무시간.xlsx").json()["created"]
+    review_id = created[0]["review_id"]
+    confirmed = client.post(
+        f"/api/genesis/phase-diagrams/{review_id}/confirmation",
+        headers=headers,
+        json=_confirmation(store, review_id, level_no=9, plan_id=9),
+    )
+    assert confirmed.status_code == 200, confirmed.text
     response = client.post(
         "/api/genesis/phase-diagrams/signals-input",
         headers=headers,
@@ -1356,8 +1418,7 @@ def test_confirming_a_plan_that_has_no_timing_refuses_by_naming_the_cells(
     detail = response.json()["detail"]
     assert detail["code"] == "phase_diagram_no_sheet_text"
     assert any("수준 9 / 계획 9" in reason for reason in detail["reasons"])
-    # ...and it names the plans that DO have timing, so the reader can pick one.
-    assert any("수준 1 / 계획 1" in reason for reason in detail["reasons"])
+    assert any("신호시간이 한 줄도 없습니다" in reason for reason in detail["reasons"])
 
 
 # -- the round trip, all the way to a signals document ----------------------
@@ -1439,6 +1500,7 @@ def test_the_daejeon_round_trip_rebuilds_the_same_plan(client, headers, store):
     """Export → correct in Excel → upload → confirm → signals document. The
     values that come out the far end are the ones the sheet path produces."""
     review_id, text = daejeon_review(store)
+    _declare_amber(client, headers, review_id)
     exported = client.get(
         f"/api/genesis/phase-diagrams/{review_id}/export.xlsx", headers=headers
     )
@@ -1604,6 +1666,7 @@ def test_a_blank_review_still_confirms_and_still_names_what_it_lacks(client, hea
         BLANK_ROUTE, headers=headers, json={"intersection_name": "새터네거리"}
     ).json()
     review_id = created["review_id"]
+    _declare_amber(client, headers, review_id)
     confirmed = client.post(
         f"/api/genesis/phase-diagrams/{review_id}/confirmation",
         headers=headers,
@@ -1633,6 +1696,7 @@ def test_a_review_that_LOSES_its_image_makes_its_confirmation_stale(client, head
     Without the check, a confirmation made against a drawing would be carried
     forward onto a review that has no drawing at all."""
     review_id, _text = daejeon_review(store)
+    _declare_amber(client, headers, review_id)
     confirmed = client.post(
         f"/api/genesis/phase-diagrams/{review_id}/confirmation",
         headers=headers,
@@ -1685,3 +1749,807 @@ def test_a_confirmed_mapping_may_not_carry_two_plan_sources():
             declared_plan={"phases": [{"phase_id": "Φ1", "green_s": 10.0, "clearance_s": 4.0}]},
         )
     assert caught.value.code == "phase_diagram_two_plan_sources"
+
+
+# ---------------------------------------------------------------------------
+# §6 Unit #58 — the card's 신호 시간 table, and amending your own record
+# ---------------------------------------------------------------------------
+#
+# THE USER'S DECISION (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도
+# 카드 단순화 — 도식+시간표, 짧은 확인 (#58)"): the Excel already carries the signal
+# timing, so the card renders it as a table — and the numbers are editable,
+# because "editing a timing value on screen is the uploader amending their own
+# statement". The tests below are the refusals and the stamps that claim rests
+# on:
+#
+#   * the editor is the SESSION, never the body (extra="forbid" on the stamp);
+#   * the previous value is KEPT — an amendment is a ledger entry, not an
+#     overwrite;
+#   * a 대전 review's timing is the CLIENT's document and is refused by name;
+#   * an amendment never CREATES a plan or a 현시 that was never typed;
+#   * the amended 황색시간 IS the declaration the attestation records;
+#   * an amended green reaches the signals document, because the card and the
+#     build read the same stored rows.
+
+TIMING_ROUTE = "/api/genesis/phase-diagrams/{}/timing"
+
+
+def timed_review(client, headers) -> str:
+    """One uploaded review with a complete (수준 1, 계획 1) timing set."""
+    created = upload(
+        client, headers, workbook(TIMED_ROWS, timing=TIMING_ROWS), "시간.xlsx"
+    ).json()["created"]
+    return created[0]["review_id"]
+
+
+def test_the_timing_route_refuses_an_anonymous_caller(client, headers):
+    review_id = timed_review(client, headers)
+    response = client.patch(
+        TIMING_ROUTE.format(review_id),
+        json={"field": "declared_amber_s", "value": 3.0},
+    )
+    assert response.status_code == 401
+
+
+def test_the_timing_editor_is_the_session_never_the_request_body(client, headers):
+    """The one thing an amendment must not permit is a caller naming somebody
+    else as the editor — so, like the confirmation, there is no field for it."""
+    review_id = timed_review(client, headers)
+
+    rejected = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={
+            "field": "green_s",
+            "level_no": 1,
+            "plan_id": 1,
+            "phase_id": "Φ1",
+            "value": 31.0,
+            "edited_by": "somebody-else",
+        },
+    )
+    assert rejected.status_code == 422, "extra='forbid' — the field does not exist"
+
+    response = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": 31.0},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    # The whole review comes back, with the STORED value in it.
+    plan = payload["sheet"]["timing"][0]
+    assert plan["phases"][0] == {
+        "phase_id": "Φ1",
+        "green_s": 31.0,
+        "clearance_s": 4.0,
+        "min_green_s": 25.0,
+        "max_green_s": 60.0,
+    }
+
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    ledger = store.amendments(review_id)
+    assert [event.by for event in ledger.history] == ["phase-uploader"]
+    assert ledger.history[0].at, "the server's clock, not the client's"
+    assert (ledger.history[0].was, ledger.history[0].now) == ("30.0", "31.0")
+
+
+def test_an_amendment_keeps_the_previous_value_instead_of_overwriting_it(client, headers):
+    review_id = timed_review(client, headers)
+    for value in (31.0, 32.0):
+        assert (
+            client.patch(
+                TIMING_ROUTE.format(review_id),
+                headers=headers,
+                json={
+                    "field": "green_s",
+                    "level_no": 1,
+                    "plan_id": 1,
+                    "phase_id": "Φ1",
+                    "value": value,
+                },
+            ).status_code
+            == 200
+        )
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    history = store.amendments(review_id).history
+    assert [(event.was, event.now) for event in history] == [("30.0", "31.0"), ("31.0", "32.0")]
+    assert all(event.field == "green_s" and event.phase_id == "Φ1" for event in history)
+
+
+def test_the_amended_amber_is_the_declaration_the_confirmation_records(
+    client, headers, store
+):
+    """#58: 'The edited 황색시간 IS the amber declaration.' The separate 선언
+    field is gone from the screen, so the number the table holds is the number
+    the attestation must carry — with a provenance sentence the SERVER wrote."""
+    review_id = timed_review(client, headers)
+    amended = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "declared_amber_s", "value": 3.5},
+    )
+    assert amended.status_code == 200, amended.text
+    sheet = amended.json()["sheet"]
+    assert sheet["declared_amber_s"] == 3.5
+    assert sheet["amber_declared_by"] == "phase-uploader" and sheet["amber_declared_at"]
+    assert "phase-uploader" in sheet["amber_declaration_note"]
+    assert "이전 값" in sheet["amber_declaration_note"], "the note names what it replaced"
+
+    # The screen sends exactly what it was shown; the attestation records it.
+    response = client.post(
+        f"/api/genesis/phase-diagrams/{review_id}/confirmation",
+        headers=headers,
+        json=_confirmation(
+            store,
+            review_id,
+            declared_amber_s=sheet["declared_amber_s"],
+            amber_declaration_note=sheet["amber_declaration_note"],
+        ),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["attestation"]["declared_amber_s"] == 3.5
+    assignment = store.confirmed_mapping(review_id).to_assignment()
+    assert assignment["plan"]["declared_amber_s"] == 3.5
+
+
+def test_an_amended_green_reaches_the_signals_document(client, headers, store):
+    """The card and the build read the SAME stored rows — otherwise the screen
+    would be editing a number nothing downstream ever sees."""
+    review_id = timed_review(client, headers)
+    client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": 33.0},
+    )
+    # The stated 주기 must move with it, or signals_declared refuses the sum.
+    client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "cycle_s", "level_no": 1, "plan_id": 1, "value": 71.0},
+    )
+    client.post(
+        f"/api/genesis/phase-diagrams/{review_id}/confirmation",
+        headers=headers,
+        json=_confirmation(store, review_id),
+    )
+    document = pd.build_signals_document([store.confirmed_mapping(review_id)])
+    parsed_doc = parse_side_input("signals", json.dumps(document).encode("utf-8"))
+    build = build_signal_assignments(parsed_doc)
+    assert build.ok, [issue.code for issue in build.refusals]
+    plan, _mapping = build.assignments[7]
+    assert [phase.green_s for phase in plan.program.phases] == [33.0, 30.0]
+    assert plan.program.cycle_time_s == 71.0
+
+
+def test_a_client_sheets_timing_is_read_only_and_refuses_by_name(client, headers, store):
+    """A 대전 review's numbers were read out of the CLIENT's own document.
+    Rewriting them on screen would be this app editing that document."""
+    review_id, _text = daejeon_review(store)
+    refused = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": 99.0},
+    )
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert detail["code"] == "phase_diagram_timing_not_amendable"
+    assert any("엑셀로 내보내" in reason for reason in detail["reasons"]), "names the way out"
+
+    # The 황색시간 is the exception on EVERY medium: no sheet of any kind prints
+    # the amber alone, so the person typing it always was the declaration.
+    declared = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "declared_amber_s", "value": 3.0},
+    )
+    assert declared.status_code == 200, declared.text
+    assert declared.json()["sheet"]["declared_amber_s"] == 3.0
+    # ...and the sheet's own timing still renders on the card, unedited.
+    assert declared.json()["sheet"]["timing"], "a 대전 review shows its timing too"
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        (
+            {"field": "green_s", "level_no": 9, "plan_id": 9, "phase_id": "Φ1", "value": 10.0},
+            "phase_diagram_timing_unknown_plan",
+        ),
+        (
+            {"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ9", "value": 10.0},
+            "phase_diagram_timing_unknown_phase",
+        ),
+        (
+            {"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": "삼십"},
+            "phase_diagram_timing_value_invalid",
+        ),
+        (
+            {"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": None},
+            "phase_diagram_timing_value_invalid",
+        ),
+        ({"field": "declared_amber_s", "value": 0}, "phase_diagram_timing_value_invalid"),
+        ({"field": "declared_amber_s", "value": None}, "phase_diagram_timing_value_invalid"),
+    ],
+)
+def test_an_amendment_never_creates_or_guesses_a_value(client, headers, body, code):
+    """An amendment corrects what is on file. It does not invent a plan, a 현시
+    or a number — every one of those is a named 409 that changes nothing."""
+    review_id = timed_review(client, headers)
+    before = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers).json()
+    response = client.patch(TIMING_ROUTE.format(review_id), headers=headers, json=body)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == code
+    after = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers).json()
+    assert after["sheet"]["timing"] == before["sheet"]["timing"], "a refusal changes nothing"
+
+
+def test_the_unknown_plan_refusal_names_the_plans_that_do_exist(client, headers):
+    review_id = timed_review(client, headers)
+    response = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "cycle_s", "level_no": 4, "plan_id": 4, "value": 60.0},
+    )
+    assert response.status_code == 409
+    reasons = response.json()["detail"]["reasons"]
+    assert any("수준 1 / 계획 1" in reason for reason in reasons)
+
+
+def test_the_card_says_whether_the_machine_compared_anything(client, headers, store):
+    """#58's other half: the 기계 대조 section renders only where a comparison
+    actually happened, and the SERVER is what answers that — both directions."""
+    uploaded = timed_review(client, headers)
+    excel = client.get(f"/api/genesis/phase-diagrams/{uploaded}", headers=headers).json()
+    assert excel["cross_check"]["compared"] is False
+    # The finding itself is NOT deleted from the record — only the screen stops
+    # rendering a section whose entire content is "nothing was compared".
+    assert [f["code"] for f in excel["cross_check"]["findings"]] == [pd.CHECK_NO_TEXT_LAYER]
+
+    review_id, _text = daejeon_review(store)
+    vision = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers).json()
+    assert vision["cross_check"]["compared"] is True
+    assert vision["cross_check"]["findings"], "a vision review's cross-check is untouched"
+
+
+def test_the_card_reads_the_stored_timing_verbatim(client, headers):
+    review_id = timed_review(client, headers)
+    payload = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers).json()
+    assert payload["sheet"]["timing"] == [
+        {
+            "level_no": 1,
+            "plan_id": 1,
+            "cycle_s": 68.0,
+            "offset_s": 5.0,
+            "time_of_day": "07:00~09:00",
+            "phases": [
+                {
+                    "phase_id": "Φ1",
+                    "green_s": 30.0,
+                    "clearance_s": 4.0,
+                    "min_green_s": 25.0,
+                    "max_green_s": 60.0,
+                },
+                {
+                    "phase_id": "Φ2",
+                    "green_s": 30.0,
+                    "clearance_s": 4.0,
+                    "min_green_s": None,
+                    "max_green_s": None,
+                },
+            ],
+        }
+    ]
+    # An EMPTY actuated band stays None on the wire too: the card renders a
+    # min/max column only where a phase carries one.
+    assert payload["sheet"]["timing"][0]["phases"][1]["min_green_s"] is None
+
+
+# ---------------------------------------------------------------------------
+# §7 Unit #58, second pass — the races and the two refusals the refuter found
+# ---------------------------------------------------------------------------
+#
+# Every test below was written against a REPRODUCTION, not against a worry.
+
+
+def test_two_amendments_to_one_review_cannot_lose_each_other(client, headers, monkeypatch):
+    """THE LOST WRITE, reproduced and closed.
+
+    Measured before ``_STORE_LOCK`` existed: two threads amending DIFFERENT
+    fields of the same review each read ``manual-sheet.json``, each mutated
+    their own copy, and the second write erased the first field's new value —
+    while BOTH ledger entries were recorded with a ``was → now`` that read as if
+    they had landed. An audit trail asserting a change that never happened is a
+    worse failure than the lost number.
+
+    The interleave is forced, not hoped for: the first writer is made to pause
+    at exactly the read-modify-write seam (after reading the sheet, before
+    writing it) and the second writer is released into that window. With the
+    lock held across the whole cycle the second writer simply waits; without it,
+    it reads the pre-state and one field reverts.
+    """
+    review_id = timed_review(client, headers)
+    # Built in the MAIN thread: the workspace is a ContextVar and does not
+    # travel to a new thread, so the store's root is resolved here, once.
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+
+    at_the_seam = threading.Event()
+    original_manual_sheet = pd.PhaseDiagramStore.manual_sheet
+
+    def pausing_manual_sheet(self, rid):
+        stored = original_manual_sheet(self, rid)
+        if not at_the_seam.is_set():
+            at_the_seam.set()
+            time.sleep(0.3)
+        return stored
+
+    monkeypatch.setattr(pd.PhaseDiagramStore, "manual_sheet", pausing_manual_sheet)
+
+    failures: list[BaseException] = []
+
+    def amend(field: str, phase_id: str, value: float) -> None:
+        try:
+            store.amend_timing(
+                review_id,
+                field=field,
+                value=value,
+                level_no=1,
+                plan_id=1,
+                phase_id=phase_id,
+                edited_by="racer",
+            )
+        except BaseException as exc:  # pragma: no cover - reported by the assert
+            failures.append(exc)
+
+    first = threading.Thread(target=amend, args=("green_s", "Φ1", 31.0))
+    second = threading.Thread(target=amend, args=("clearance_s", "Φ2", 9.0))
+    first.start()
+    assert at_the_seam.wait(5), "the first writer never reached the read-modify-write seam"
+    second.start()
+    first.join(20)
+    second.join(20)
+    assert not first.is_alive() and not second.is_alive(), "a writer never finished"
+    assert failures == [], failures
+
+    phases = {row["phase_id"]: row for row in store.timing_plans(review_id)[0]["phases"]}
+    assert phases["Φ1"]["green_s"] == 31.0, "the first amendment was overwritten"
+    assert phases["Φ2"]["clearance_s"] == 9.0, "the second amendment was overwritten"
+
+    # ...and the ledger describes exactly the two changes that LANDED.
+    history = store.amendments(review_id).history
+    assert sorted((event.field, event.now) for event in history) == [
+        ("clearance_s", "9.0"),
+        ("green_s", "31.0"),
+    ]
+
+
+def test_the_store_serialises_its_writes_the_way_every_sibling_store_does(client, headers):
+    """The lock is a MODULE lock, not a per-instance one, and that is
+    load-bearing: ``routers/genesis._phase_diagram_store()`` builds a fresh
+    ``PhaseDiagramStore`` on every request, so a lock on the instance would be a
+    lock two callers never share."""
+    assert isinstance(pd._STORE_LOCK, type(threading.RLock()))
+    first = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    second = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    assert first is not second, "the store is constructed per call, which is why the lock is not on it"
+
+
+def test_a_confirmation_may_not_sign_an_amber_the_store_no_longer_holds(
+    client, headers, store
+):
+    """#58 removed the separate 선언 황색시간 box: the number IS the 신호 시간
+    table's value. So a confirmation carrying a different one was made against a
+    number that is no longer there — the same species as the image-sha
+    staleness, refused the same way rather than silently signing the client's
+    copy."""
+    review_id = timed_review(client, headers)
+    _declare_amber(client, headers, review_id, amber=3.5)
+
+    stale = client.post(
+        f"/api/genesis/phase-diagrams/{review_id}/confirmation",
+        headers=headers,
+        json=_confirmation(store, review_id, declared_amber_s=2.0),
+    )
+    assert stale.status_code == 409, stale.text
+    detail = stale.json()["detail"]
+    assert detail["code"] == "phase_diagram_attestation_stale"
+    assert any("황색시간" in reason for reason in detail["reasons"])
+    assert any("2.0" in reason and "3.5" in reason for reason in detail["reasons"])
+    assert store.attestation(review_id) is None, "a refused confirmation records nothing"
+
+    # The number that IS on the table signs.
+    ok = client.post(
+        f"/api/genesis/phase-diagrams/{review_id}/confirmation",
+        headers=headers,
+        json=_confirmation(store, review_id, declared_amber_s=3.5),
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["attestation"]["declared_amber_s"] == 3.5
+
+
+def test_signing_no_amber_when_the_store_holds_none_is_not_stale(client, headers, store):
+    """Both directions. 'Nobody has declared one' is a real state — the signals
+    build is what refuses it, by name — so a confirmation that honestly carries
+    no amber must not be turned away here."""
+    created = client.post(
+        BLANK_ROUTE, headers=headers, json={"intersection_name": "무선언네거리"}
+    ).json()
+    review_id = created["review_id"]
+    response = client.post(
+        f"/api/genesis/phase-diagrams/{review_id}/confirmation",
+        headers=headers,
+        json=_confirmation(
+            store,
+            review_id,
+            approach_phases={"1": "Φ1"},
+            declared_amber_s=None,
+            amber_declaration_note=None,
+        ),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["attestation"]["declared_amber_s"] is None
+
+
+def test_a_corrupt_amendment_ledger_is_quarantined_rather_than_crashing(
+    client, headers, store
+):
+    """A hand-edited or truncated ``amendments.json`` used to reach the browser
+    as an HTTP 500 carrying a raw JSONDecodeError. It is moved aside with its
+    bytes intact instead, and the review stays readable."""
+    review_id = timed_review(client, headers)
+    _declare_amber(client, headers, review_id, amber=3.2)
+    ledger_path = store.review_dir(review_id) / pd.AMENDMENT_FILENAME
+    assert ledger_path.is_file()
+    corrupt = b'{"kind": "prism.phase_diagram_amendments.v1", "history": [ {"at"'
+    ledger_path.write_bytes(corrupt)
+
+    payload = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers)
+    assert payload.status_code == 200, payload.text
+    # The DECLARATION is gone with the ledger, and the card falls back to what
+    # the workbook said rather than inventing an author for a number.
+    assert payload.json()["sheet"]["amber_declared_by"] is None
+
+    quarantined = list(store.review_dir(review_id).glob(f"{pd.AMENDMENT_FILENAME}.corrupt-*"))
+    assert len(quarantined) == 1, quarantined
+    assert quarantined[0].read_bytes() == corrupt, "the original bytes are preserved verbatim"
+
+    # ...and the review is writable again: a fresh ledger starts.
+    again = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "declared_amber_s", "value": 3.3},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["sheet"]["declared_amber_s"] == 3.3
+
+
+def test_a_quarantined_ledger_is_DISCLOSED_and_not_silently_healed(client, headers, store):
+    """QUARANTINING STOPPED A CRASH; SAYING NOTHING AFTERWARDS WOULD REPLACE ONE
+    SILENT FAILURE WITH ANOTHER.
+
+    Measured (refuter round 3): after the corruption the review payload carried
+    no trace at all, so a reviewer read a short clean history as "nobody ever
+    amended this" — against this codebase's own sibling discipline
+    (``demand_target_map`` / ``calibration_attestation`` persist a quarantined
+    code, path and trilingual sentence, queryable). The disclosure is now on the
+    wire, in three languages, and it is STICKY.
+    """
+    review_id = timed_review(client, headers)
+    _declare_amber(client, headers, review_id, amber=3.2)
+    ledger_path = store.review_dir(review_id) / pd.AMENDMENT_FILENAME
+    ledger_path.write_bytes(b'{"kind": "prism.phase_diagram_amendments.v1", "history": [ {"at"')
+
+    payload = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers)
+    assert payload.status_code == 200, payload.text
+    disclosure = payload.json()["sheet"]["amendments_quarantine"]
+    assert disclosure is not None, "the review payload said nothing about the lost history"
+    assert disclosure["quarantined"] is True
+    assert disclosure["quarantine_path"] and "corrupt-" in disclosure["quarantine_path"]
+    assert disclosure["quarantined_at"]
+    # Trilingual, and each one names where the bytes went.
+    for language in ("ko", "en", "ja"):
+        assert disclosure["message"][language], language
+        assert disclosure["quarantine_path"] in disclosure["message"][language], language
+    assert "이전 수정 내역은 이 화면에 없습니다" in disclosure["message"]["ko"]
+
+    # PERSISTED, not merely computed for one response: the fresh ledger on disk
+    # carries the flag, so the disclosure survives this process.
+    assert store.amendments(review_id).quarantined is True
+    assert json.loads(ledger_path.read_bytes().decode("utf-8"))["quarantined"] is True
+
+    # STICKY: a later amendment appends to a history that is still missing what
+    # was lost, so the disclosure must outlive the next edit.
+    again = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "declared_amber_s", "value": 3.4},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["sheet"]["amendments_quarantine"]["quarantined"] is True
+
+    # A HEALTHY review says null rather than an empty object nobody can test.
+    # A DIFFERENT workbook name, because the review id is keyed on (file,
+    # 교차로명) — re-uploading "시간.xlsx" would land back in the very review
+    # this test just corrupted.
+    healthy = client.post(
+        f"{UPLOAD_ROUTE}?filename={quote('건강한시간.xlsx', safe='')}",
+        headers=headers,
+        content=workbook(TIMED_ROWS, timing=TIMING_ROWS),
+    ).json()["created"][0]["review_id"]
+    assert healthy != review_id
+    assert (
+        client.get(f"/api/genesis/phase-diagrams/{healthy}", headers=headers)
+        .json()["sheet"]["amendments_quarantine"]
+        is None
+    )
+
+
+def test_a_write_is_atomic_so_a_reader_never_sees_half_a_document(store, client, headers):
+    """The other half of the lock: readers take none, so the writer has to
+    become the new file in one step rather than truncate-then-fill."""
+    review_id = timed_review(client, headers)
+    path = store.review_dir(review_id) / pd.MANUAL_SHEET_FILENAME
+    before = path.read_bytes()
+    client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": 34.0},
+    )
+    after = path.read_bytes()
+    assert before != after
+    assert json.loads(after.decode("utf-8"))["timing"][0]["phases"][0]["green_s"] == 34.0
+    # No temp file survives a successful write.
+    assert list(store.review_dir(review_id).glob("*.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# §8 Unit #58, round 3 — the lock's guarantees, VERIFIED rather than asserted
+# ---------------------------------------------------------------------------
+#
+# MEASURED (refuter, round 3): the lock was real but its verification was not.
+# Removing ``with _STORE_LOCK:`` from ``put_proposal`` failed ZERO tests, and
+# reverting ``_write_json`` to a plain ``write_text`` failed zero too — the
+# single race test only ever exercised ONE path, so every other write path and
+# the atomicity claim were held up by nothing but the source comment.
+
+#: Every method of ``PhaseDiagramStore`` that must take :data:`pd._STORE_LOCK`
+#: ITSELF. Measured 2026-08-25 by walking the class's AST. A write path added
+#: without the lock fails the set equality below; so does a write path that
+#: quietly drops it.
+LOCK_ACQUIRING_WRITE_PATHS = {
+    "put_render",
+    "put_manual_review",
+    "put_proposal",
+    "put_attestation",
+    "amend_timing",
+    "_amend_declared_amber",
+    "_append_amendment",
+    "_write_amendments",
+    "_quarantine_amendments",
+}
+
+#: The two bodies that write while the lock is ALREADY held by their caller.
+#: Named, because "it is locked by whoever calls me" is a claim that has to be
+#: written down somewhere a reader can check — their docstrings say so too.
+LOCK_HELD_BY_CALLER = {"_amend_timing_locked", "_declare_amber_locked"}
+
+
+def _store_class_ast() -> ast.ClassDef:
+    source = pathlib.Path(pd.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    return next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PhaseDiagramStore"
+    )
+
+
+def _acquires_store_lock(function: ast.FunctionDef) -> bool:
+    for node in ast.walk(function):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                expression = item.context_expr
+                if isinstance(expression, ast.Name) and expression.id == "_STORE_LOCK":
+                    return True
+    return False
+
+
+def _writes_to_disk(function: ast.FunctionDef) -> bool:
+    """Does this body actually put bytes on disk (or move them)?"""
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr if isinstance(func, ast.Attribute) else None
+            )
+            if name in {"_write_json", "write_bytes", "write_text", "replace", "unlink"}:
+                return True
+    return False
+
+
+def test_every_write_path_in_the_store_acquires_the_module_lock():
+    """STRUCTURAL, over the whole class, because one race test proves one path.
+
+    Two directions, and both matter. A write path that DROPS the lock fails the
+    set equality; a NEW write path that never takes it fails the second
+    assertion and has to be added here deliberately — which is the review this
+    unit's own lost-write bug never got.
+    """
+    store = _store_class_ast()
+    methods = [node for node in store.body if isinstance(node, ast.FunctionDef)]
+    assert methods, "PhaseDiagramStore has no methods — did the class move?"
+
+    acquiring = {method.name for method in methods if _acquires_store_lock(method)}
+    assert acquiring == LOCK_ACQUIRING_WRITE_PATHS, (
+        "the set of methods that take _STORE_LOCK changed: "
+        f"missing={sorted(LOCK_ACQUIRING_WRITE_PATHS - acquiring)}, "
+        f"unexpected={sorted(acquiring - LOCK_ACQUIRING_WRITE_PATHS)}"
+    )
+
+    writers = {method.name for method in methods if _writes_to_disk(method)}
+    unguarded = writers - acquiring - LOCK_HELD_BY_CALLER
+    assert not unguarded, (
+        f"these methods write to disk without taking _STORE_LOCK: {sorted(unguarded)}. "
+        "Either take it, or name the caller that holds it in LOCK_HELD_BY_CALLER."
+    )
+    for name in LOCK_HELD_BY_CALLER:
+        body = next(method for method in methods if method.name == name)
+        assert "_STORE_LOCK" in (ast.get_docstring(body) or ""), (
+            f"{name} writes under a caller's lock and its docstring must say so"
+        )
+
+
+def test_a_re_upload_and_an_amendment_cannot_erase_each_other(client, headers, monkeypatch):
+    """THE CROSS-PATH RACE, which is the one a per-method lock would miss.
+
+    ``put_manual_review`` (a corrected re-upload) REPLACES the very file
+    ``amend_timing`` is mid-cycle on. The two race against each other, not each
+    against itself — so the lock has to be one lock over the whole store, and
+    this is the test that says so.
+    """
+    review_id = timed_review(client, headers)
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    render = store.render(review_id)
+
+    at_the_seam = threading.Event()
+    released = threading.Event()
+    original_manual_sheet = pd.PhaseDiagramStore.manual_sheet
+
+    def pausing_manual_sheet(self, rid):
+        stored = original_manual_sheet(self, rid)
+        if not at_the_seam.is_set():
+            at_the_seam.set()
+            released.wait(3)
+        return stored
+
+    monkeypatch.setattr(pd.PhaseDiagramStore, "manual_sheet", pausing_manual_sheet)
+
+    failures: list[BaseException] = []
+
+    def amend() -> None:
+        try:
+            store.amend_timing(
+                review_id,
+                field="green_s",
+                value=44.0,
+                level_no=1,
+                plan_id=1,
+                phase_id="Φ1",
+                edited_by="racer",
+            )
+        except BaseException as exc:  # pragma: no cover - reported by the assert
+            failures.append(exc)
+
+    def reupload() -> None:
+        try:
+            store.put_manual_review(
+                review_id,
+                render,
+                sheet={
+                    "intersection_name": "둔산네거리",
+                    "intersection_no": "1234",
+                    "phase_ids": ["Φ1", "Φ2"],
+                    "plan_choices": [],
+                    "timing": [
+                        {
+                            "level_no": 1,
+                            "plan_id": 1,
+                            "cycle_s": 68.0,
+                            "offset_s": 5.0,
+                            "time_of_day": "07:00~09:00",
+                            "phases": [
+                                {"phase_id": "Φ1", "green_s": 30.0, "clearance_s": 4.0},
+                                {"phase_id": "Φ2", "green_s": 30.0, "clearance_s": 4.0},
+                            ],
+                        }
+                    ],
+                    "declared_amber_s": 3.0,
+                },
+            )
+        except BaseException as exc:  # pragma: no cover - reported by the assert
+            failures.append(exc)
+
+    amender = threading.Thread(target=amend)
+    uploader = threading.Thread(target=reupload)
+    amender.start()
+    assert at_the_seam.wait(5), "the amendment never reached the read-modify-write seam"
+    uploader.start()
+    # The re-upload must NOT be able to slip in and out while the amendment is
+    # paused: with one store-wide lock it blocks here, and only the release lets
+    # the amendment finish first.
+    uploader.join(0.6)
+    assert uploader.is_alive(), (
+        "the re-upload completed while an amendment held the store — one of them "
+        "is about to overwrite the other's file"
+    )
+    released.set()
+    amender.join(20)
+    uploader.join(20)
+    assert not amender.is_alive() and not uploader.is_alive()
+    assert failures == [], failures
+
+    # Whichever ran second is the state on disk; what must never happen is a
+    # TORN state — a sheet holding neither writer's coherent document.
+    phases = {row["phase_id"]: row for row in store.timing_plans(review_id)[0]["phases"]}
+    assert set(phases) == {"Φ1", "Φ2"}
+    assert phases["Φ1"]["green_s"] in (30.0, 44.0)
+    assert phases["Φ2"]["green_s"] == 30.0
+    assert store.amendments(review_id).history, "the amendment was recorded"
+
+
+def test_a_failed_write_leaves_the_previous_document_intact_and_no_litter(
+    client, headers, store, monkeypatch
+):
+    """ATOMICITY, OBSERVED rather than read off the source.
+
+    ``_write_json`` builds the new document in a temp file and swaps it in with
+    ``os.replace``. Injecting a failure at the swap proves the two things that
+    shape buys: the reader-visible file still holds the PREVIOUS bytes (a plain
+    ``write_text`` would have truncated it), and the temp file does not survive
+    as litter.
+    """
+    review_id = timed_review(client, headers)
+    path = store.review_dir(review_id) / pd.MANUAL_SHEET_FILENAME
+    before = path.read_bytes()
+
+    def exploding_replace(source, target):
+        raise OSError("injected: the swap failed")
+
+    # Captured and restored BY HAND rather than through `monkeypatch.undo()`:
+    # undo() would also unwind the `workspace_root` fixture's own patches (same
+    # function-scoped monkeypatch), and the follow-up read would then look for
+    # this review in the real workspaces root.
+    original_replace = pd.os.replace
+    monkeypatch.setattr(pd.os, "replace", exploding_replace)
+    response = client.patch(
+        TIMING_ROUTE.format(review_id),
+        headers=headers,
+        json={"field": "green_s", "level_no": 1, "plan_id": 1, "phase_id": "Φ1", "value": 99.0},
+    )
+    assert response.status_code == 409, response.text
+
+    assert path.read_bytes() == before, "a failed write truncated the document it replaced"
+    assert list(store.review_dir(review_id).glob("*.tmp")) == [], "the temp file was left behind"
+
+    # And the review still reads, with its old numbers.
+    monkeypatch.setattr(pd.os, "replace", original_replace)
+    response = client.get(f"/api/genesis/phase-diagrams/{review_id}", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["sheet"]["timing"][0]["phases"][0]["green_s"] == 30.0
+
+
+def test_the_writer_is_temp_file_then_fsync_then_replace():
+    """The structural half of the pin above: the three steps, in this order, in
+    the store's ONE writer. An implementation that fsyncs nothing, or writes in
+    place, cannot give the guarantee the test above observes."""
+    source = pathlib.Path(pd.__file__).read_text(encoding="utf-8")
+    writer = source[source.index("def _write_json(") :]
+    writer = writer[: writer.index("\n__all__")]
+    temp_at = writer.index("tmp_path = path.with_name(")
+    fsync_at = writer.index("os.fsync(handle.fileno())")
+    replace_at = writer.index("os.replace(tmp_path, path)")
+    assert temp_at < fsync_at < replace_at, "temp file -> fsync -> replace, in that order"
+    assert "tmp_path.unlink(missing_ok=True)" in writer, "a failed write cleans up its own temp file"
+    assert ".write_text(" not in writer, "the writer must not write the document in place"

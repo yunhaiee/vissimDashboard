@@ -38,6 +38,7 @@ import type {
   GenesisDraftConnector,
   GenesisDraftLink,
   GenesisDraftNetwork,
+  GenesisDraftNode,
   GenesisFindingHighlight,
 } from "@/lib/genesisArtifacts";
 import {
@@ -65,6 +66,16 @@ const WHEEL_ZOOM_STEP = 1.18;
  * the selection alone). In the SVG's own 640x440 space, not raw client
  * pixels, so it means the same thing at any zoom level. */
 const BACKGROUND_CLICK_TOLERANCE = 4;
+
+/** UNIT #58 -- the node-pick layer's default: NO nodes, so every call site that
+ * predates it (`GenesisTileMap`'s fallback) renders exactly what it always did.
+ * A module-level constant rather than an inline `[]`, so the default identity is
+ * stable and the memoized layer below is not re-rendered by a fresh array on
+ * every parent tick. */
+const NO_NODES: readonly GenesisDraftNode[] = Object.freeze([]);
+/** The node dot's radius, in VIEW units at fit scale. Big enough to be a real
+ * click target on a 640x440 canvas, small enough not to swallow its junction. */
+const NODE_R = 5.5;
 
 type Bbox = { xMin: number; yMin: number; xMax: number; yMax: number };
 
@@ -137,6 +148,9 @@ export default function DraftLocalMap({
   onSelectLink,
   onSelectConnector,
   onClearSelection,
+  nodes = NO_NODES,
+  selectedNodeId = null,
+  onSelectNode,
   t,
 }: {
   network: GenesisDraftNetwork;
@@ -149,6 +163,20 @@ export default function DraftLocalMap({
   showWarn: boolean;
   onSelectLink: (linkId: number) => void;
   onSelectConnector: (connectorId: number) => void;
+  /** UNIT #58 -- the DRAFT'S OWN nodes, drawn as pickable dots. Supplied only
+   * by the 현시도 binding map; every other call site leaves it empty and gets
+   * the layer it always had. These are the census's own `network.nodes`
+   * entries, narrowed to the ones the caller offers as candidates -- this
+   * component invents none and ranks none. */
+  nodes?: readonly GenesisDraftNode[];
+  /** WHICH node is bound, owned by the caller. This component keeps no
+   * selection state of its own -- the same discipline the link/connector
+   * selection above already follows, so one selection can have two views
+   * (this map and the candidate list beside it) without either forking it. */
+  selectedNodeId?: number | null;
+  /** A click is SELECTION, never confirmation: the 확인 button in the binding
+   * section stays the only act that records an attestation. */
+  onSelectNode?: (nodeId: number) => void;
   /** Clicking empty canvas (not a link/connector) clears the selection --
    * the SAME semantics `GenesisTileMap.tsx`'s leaflet renderer gives its own
    * basemap click. Distinguished from a pan by movement distance in
@@ -346,6 +374,15 @@ export default function DraftLocalMap({
               onSelectLink={onSelectLink}
               onSelectConnector={onSelectConnector}
             />
+            {/* UNIT #58 -- the node pick layer, LAST so a dot is never buried
+              * under a ribbon it sits on. Empty for every caller that supplies
+              * no nodes, which is every caller but the 현시도 binding map. */}
+            <NodePickLayer
+              nodes={nodes}
+              selectedNodeId={selectedNodeId}
+              projection={projection}
+              onSelectNode={onSelectNode}
+            />
           </g>
         </svg>
       </div>
@@ -359,6 +396,71 @@ export default function DraftLocalMap({
     </div>
   );
 }
+
+/** UNIT #58 -- the draft's own nodes, as pickable dots.
+ *
+ * WHAT IT DRAWS AND WHAT IT REFUSES TO. Every dot is one entry of the census's
+ * `network.nodes` -- the SERVER's own geometry, at the server's own
+ * coordinates, projected by the SAME `projection` the roads were. This layer
+ * ranks nothing, invents no node, and places none: a junction the draft does
+ * not carry has no dot, and the candidate list beside the map says so in words.
+ *
+ * A click SELECTS. It does not confirm: the attestation is written by the one
+ * 확인 button in the 네트워크 결박 section, and the caller owns the selection
+ * state that both this map and that section's list read (docs/phase2/
+ * DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도 카드 단순화 … (#58)").
+ *
+ * Memoized against `view` like its siblings: the parent's `<g transform>`
+ * carries pan/zoom, so a drag tick does not re-render these dots. */
+const NodePickLayer = memo(function NodePickLayer({
+  nodes,
+  selectedNodeId,
+  projection,
+  onSelectNode,
+}: {
+  nodes: readonly GenesisDraftNode[];
+  selectedNodeId: number | null;
+  projection: { projX: (x: number) => number; projY: (y: number) => number; scale: number };
+  onSelectNode?: (nodeId: number) => void;
+}) {
+  if (nodes.length === 0) return null;
+  return (
+    <>
+      {nodes.map((node) => {
+        const selected = node.id === selectedNodeId;
+        const cx = projection.projX(node.x);
+        const cy = projection.projY(node.y);
+        return (
+          <g key={`node-${node.id}`}>
+            <title>{`${node.id} — ${node.name}`}</title>
+            <circle
+              cx={cx}
+              cy={cy}
+              r={NODE_R}
+              fill={selected ? SELECTED_COLOR : "#ffffff"}
+              stroke={selected ? SELECTED_COLOR : "#475569"}
+              strokeWidth={selected ? 3 : 2}
+              vectorEffect="non-scaling-stroke"
+              className={onSelectNode ? "cursor-pointer" : undefined}
+              onClick={onSelectNode ? () => onSelectNode(node.id) : undefined}
+            />
+            <text
+              x={cx}
+              y={cy - NODE_R - 3}
+              textAnchor="middle"
+              fontSize={9}
+              fontWeight={600}
+              fill="#475569"
+              pointerEvents="none"
+            >
+              {node.id}
+            </text>
+          </g>
+        );
+      })}
+    </>
+  );
+});
 
 /** Every NORMAL-tier link/connector ribbon (unit #29: NOT its lane dividers
  * any more -- see `LaneDividersLayer` below), memoized against everything

@@ -4239,10 +4239,41 @@ contractTest("the 현시도 review screen keeps confirmation the only road to si
 });
 
 contractTest(
-  "the reading column is display-only, by structure -- #55 removed that click, not relocated it",
+  "the reading column carries no CONFIRMATION affordance -- #55 removed that click, and #58's timing entry is not a relocation of it",
   (pin) => {
     const page = read("app/genesis/phases/page.tsx");
+    const timing = read("components/genesis/PhaseTimingTable.tsx");
 
+    // THE REGION BOUNDARY, RE-SCOPED 2026-08-25 (unit #58). Both authorities,
+    // because this pin sits exactly where they meet:
+    //
+    //   * docs/phase2/DECISIONS.md, "2026-08-24 — 계약 핀의 위협 모델 경계
+    //     (#55b 3패스에서 명시)" -- "위치 우회 → 슬라이스가 아니라 영역 전체.
+    //     판독 패널은 설계상 표시 전용이므로 '상호작용 어포던스 0개'가 구조
+    //     불변식이다."
+    //   * docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도 카드
+    //     단순화 — 도식+시간표, 짧은 확인 (#58)" -- the card now renders the
+    //     stored 신호 시간 as an EDITABLE table, because "editing a timing
+    //     value on screen is the uploader amending their own statement".
+    //
+    // WHAT #55b's invariant WAS ACTUALLY GUARDING, stated plainly so the
+    // re-scope is not a quiet weakening: a CONFIRMATION-SHAPED CONTROL in the
+    // reading column -- the per-intersection "이 판독을 확인합니다" click #55
+    // deleted. Data entry is the opposite act. A person typing their own
+    // 황색시간 into their own record is not confirming a machine's reading;
+    // there is no machine reading in an uploaded workbook at all.
+    //
+    // SO THE INVARIANT KEEPS ITS TEETH AND NARROWS ITS CLAIM. page.tsx's own
+    // reading column stays STRUCTURALLY input-free (the two pins below are
+    // unchanged, and the measured tag set is byte-for-byte what #55b
+    // measured); the ONE data-entry component it hosts is named by a
+    // set-equality pin over the region's COMPONENT vocabulary -- so
+    // componentisation cannot become the hole that "zero lowercase tags"
+    // would otherwise leave -- and that component's own file is pinned
+    // separately, below, to carry data-entry affordances and NOTHING that
+    // confirms. The confirmation-WORDING ban stays file-wide and now covers
+    // the new file too.
+    //
     // GAP MEASURED 2026-08-24 round 2 (refuter): a wording ban scoped to a
     // slice starting at an INTERIOR comment survives a `<button>` placed just
     // above that comment's own start marker (still inside the same JSX
@@ -4304,6 +4335,43 @@ contractTest(
       "expected the reading column's entire host-element vocabulary to equal this measured set exactly -- a NEW tag entering (input/select/textarea/label/button/details/canvas/...) fails here even under an event-handler name no attribute pin has named",
     );
 
+    // UNIT #58 -- THE COMPONENT VOCABULARY, which is the hole the two pins
+    // above would otherwise leave. Both of them read only LOWERCASE host
+    // elements and literal attribute names, so a capitalised component -- with
+    // any props it likes, under any prop NAME (`onAmend`, `onPick`, `onPress`)
+    // -- passes them without being looked at. That is precisely how #58's
+    // editable timing table entered this region, and pretending it did not
+    // would make the invariant a naming convention instead of a structure.
+    // MEASURED 2026-08-25: exactly three components render in this region --
+    // Panel (chrome), PhaseDiagramSketch (#55b's Φ strip, display-only by its
+    // own pinned rules), and PhaseTimingTable (#58's data entry, pinned below
+    // in its own file). A FOURTH entering fails here, whatever it is called.
+    const readingColumnComponents = new Set<string>();
+    for (const m of readingColumn.matchAll(/<([A-Z][a-zA-Z0-9]*)/g)) readingColumnComponents.add(m[1]);
+    pin.match(
+      `components=${[...readingColumnComponents].sort().join(",")}`,
+      /^components=Panel,PhaseDiagramSketch,PhaseTimingTable$/,
+      "expected the reading column's component vocabulary to equal this measured set exactly -- a new component entering the display-only region is invisible to the host-tag and attribute pins above, so it is named here or it is not there",
+    );
+
+    // UNIT #58 -- AND THE ADMITTED COMPONENT MUST STAY DATA ENTRY. Its file
+    // may carry <input>, onChange and onBlur (a person typing their own
+    // number); it may carry NOTHING that confirms -- no <button>, no
+    // role="button", no onClick/onKeyDown/onSubmit, no <a>, no tabIndex. The
+    // single 확인 control on this screen belongs to the BINDING section, and
+    // #58 changed that button's LABEL, not which section owns it.
+    pin.match(timing, /<input\b/, "expected the timing table to be real data entry -- an <input> a person types into");
+    pin.doesNotMatch(
+      withoutComments(timing),
+      /<button\b|role=["']button|onClick=|onKeyDown=|onSubmit=|tabIndex=|<a\b/i,
+      "expected the timing table to carry no confirmation-shaped affordance -- data entry is <input>/onChange/onBlur, and a button in this file would be the reading-column confirm click #55 removed, wearing a new name",
+    );
+    pin.doesNotMatch(
+      withoutComments(timing),
+      /확인|confirm|確認/i,
+      "expected no confirmation wording inside the timing table either -- the word 확인 on this screen belongs to the BINDING alone",
+    );
+
     // SECOND LAYER, kept: the wording sweep, widened to the WHOLE FILE
     // (MEASURED 2026-08-24: zero occurrences of this pattern exist anywhere
     // in page.tsx today, including inside the binding/attestation sections,
@@ -4319,14 +4387,32 @@ contractTest(
     );
 
     // Scope check, not a weakening: the BINDING section's own legitimate
-    // confirm button -- an unrelated control this unit never touched -- must
-    // still exist and still be reachable. A pin broad enough to catch a
-    // reintroduced reading-confirm button but blind to this would be scoped
-    // wrong in the other direction.
+    // confirm button must still exist and still be reachable. A pin broad
+    // enough to catch a reintroduced reading-confirm button but blind to this
+    // would be scoped wrong in the other direction.
+    //
+    // REWRITTEN 2026-08-25 for unit #58. AUTHORITY: docs/phase2/DECISIONS.md,
+    // "2026-08-24 — 사용자 결정: 현시도 카드 단순화 — 도식+시간표, 짧은 확인
+    // (#58)" -- the user, testing the live #55 page: "'이 결박을 확인합니다'
+    // 같은 긴 버튼 말고 '확인' 버튼 하나만". That decision's own execution rule
+    // is what this pin now asserts: "The binding's one short '확인' button
+    // changes the LABEL and surface, not the act" -- so the label moved from
+    // `이 결박을 확인합니다` to `확인`, and the ACT is pinned beside it (same
+    // `submit`, same `canSubmit`) rather than left to the label to imply.
     pin.match(
       page,
-      /이 결박을 확인합니다/,
-      "expected the 네트워크 결박 section's own confirm button to survive, unaffected by the reading-column sweep",
+      /\{t\("확인", "Confirm", "確認"\)\}/,
+      "expected the 네트워크 결박 section's confirm control to carry #58's SHORT ko/en/ja label, unaffected by the reading-column sweep",
+    );
+    pin.doesNotMatch(
+      withoutComments(page),
+      /이 결박을 확인합니다|I confirm this binding|この結縛を確認します/,
+      "expected the pre-#58 long button label to stay retired in all three languages -- not restored beside, or instead of, the short one",
+    );
+    pin.match(
+      page,
+      /onClick=\{submit\}\s*\n\s*disabled=\{!canSubmit\}/,
+      "expected the short button to be the SAME act: `submit` behind it and `canSubmit` gating it -- #58 changed the label and the surface, never what is recorded",
     );
   },
 );
@@ -4651,6 +4737,736 @@ contractTest(
 );
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Unit #58 -- the 현시도 card becomes 도식 + 시간표 + one short 확인.
+//
+// AUTHORITY for every pin below: docs/phase2/DECISIONS.md, "2026-08-24 — 사용자
+// 결정: 현시도 카드 단순화 — 도식+시간표, 짧은 확인 (#58)". The user, testing the
+// live #55 page with a real upload: the machine cross-check that says it
+// compared NOTHING is noise ("이건 필요없지 않아? 지워"); the Excel already
+// carries 신호 시간 ("이런것도 같이 표로 렌더해줘"); the times must be editable
+// ("황색시간 및 시간 같은거가 수정가능하게"); the complex fields go ("수준 계획
+// 선언 황색시간 근거 확인 메모 이런 복잡한거 빼고"); and one short confirm
+// ("'이 결박을 확인합니다' 같은 긴 버튼 말고 '확인' 버튼 하나만").
+// ---------------------------------------------------------------------------
+
+contractTest(
+  "unit #58: the 기계 대조 section renders only where the machine compared something, and the SERVER is what says so",
+  (pin) => {
+    const page = read("app/genesis/phases/page.tsx");
+    const api = read("lib/api.ts");
+
+    // DIRECTION ONE -- ABSENT where nothing was compared. The gate is the
+    // server's own `compared` flag, and the section is not rendered at all
+    // (not collapsed, not emptied): for an 엑셀 업로드 / 직접 입력 review the
+    // whole panel could say nothing but "대조할 시트 텍스트도 도면 이미지도
+    // 없습니다", which is the sentence the user struck out.
+    pin.match(
+      page,
+      /\{review\.cross_check\?\.compared && \(/,
+      "expected the cross-check PANEL itself to be gated on the server's `compared` answer -- absent, not collapsed, for a review the machine never compared",
+    );
+
+    // DIRECTION TWO -- PRESENT WITH ITS CONTENT for a vision review. Deleting a
+    // comparison that HAPPENED would be hiding evidence, so the panel's body
+    // is untouched: the three-tier word, the verbatim message, and the
+    // disclaimer all still render inside it.
+    pin.match(page, /findingWord\(finding\.severity, t\)/, "expected each finding to keep its own tier word inside the surviving panel");
+    pin.match(page, /\{finding\.message\}/, "expected the server's finding message to keep rendering verbatim");
+    pin.match(
+      page,
+      /배정의 정오는 여기서 판단하지 않습니다/,
+      "expected the surviving cross-check panel to keep its own disclaimer -- a vision review's section is unchanged by #58",
+    );
+
+    // THE ANSWER IS THE SERVER'S. A browser that decided for itself which
+    // sections to hide would be editing what the machine said -- and the first
+    // medium added to the vocabulary would be hidden or shown by a client-side
+    // guess nobody measured.
+    pin.match(
+      api,
+      /export type PhaseDiagramCrossCheck = \{\s*\n\s*checked_at: string;\s*\n\s*findings: PhaseDiagramFinding\[\];\s*\n\s*compared: boolean;\s*\n\};/,
+      "expected `compared` to be a field the SERVER sends on the cross-check payload, not a value the page derives",
+    );
+    // SCOPED to the cross-check panel's own source, because `medium ===
+    // "excel_upload"` legitimately appears elsewhere in this file
+    // (`noImageSentence`, naming the absent SCAN -- an unrelated claim). Inside
+    // the panel that #58 gated, no medium test and no re-spelling of the
+    // finding it hides may appear: the answer arrives as `cross_check.compared`
+    // and nowhere else.
+    const crossCheckPanel = withoutComments(
+      sliceBetween(
+        page,
+        "{review.cross_check?.compared && (",
+        "{/* #55 — THE SECONDARY ACT.",
+      ),
+    );
+    pin.match(crossCheckPanel, /\S/, "expected to find the cross-check panel's own source slice (markers moved?)");
+    pin.doesNotMatch(
+      crossCheckPanel,
+      /medium ===|MEDIA_WITHOUT_IMAGE|대조할 시트 텍스트도|phase_diagram_no_text_layer/,
+      "expected the cross-check panel never to re-derive 'did the machine compare anything' from the medium, nor to re-spell the finding it hides",
+    );
+    pin.doesNotMatch(
+      withoutComments(page),
+      /const compared\s*=|compared:\s*(?:true|false)|compared\s*=\s*review\./,
+      "expected the page never to compute, default or override `compared` -- it is the server's answer, read and nothing else",
+    );
+  },
+);
+
+contractTest("unit #58: the timing table renders the SERVER's stored times, and can fabricate none", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const timing = read("components/genesis/PhaseTimingTable.tsx");
+
+  // Fed from the review the server sent, field for field -- the same rule
+  // #55b's Φ strip is pinned to, applied to the numbers beside it.
+  pin.match(page, /timing=\{review\.sheet\.timing\}/, "expected the table to be drawn from the review's OWN stored timing");
+  pin.match(page, /declaredAmberS=\{review\.sheet\.declared_amber_s\}/, "expected the amber cell to show the stored declaration");
+  pin.match(page, /amberNote=\{review\.sheet\.amber_declaration_note\}/, "expected the amber's 근거 to come from the server too");
+
+  // THE ONE PATH from a stored value to a cell, pinned as a whole block: null
+  // becomes an EMPTY box and everything else becomes its own string. A
+  // fabricated time -- a default, a fill, a computed sum -- has to pass through
+  // here, and any edit to this function breaks this match.
+  const TIMING_TEXT_LINES = [
+    "function timingText(value: number | string | null | undefined): string {",
+    '  return value == null ? "" : String(value);',
+    "}",
+  ];
+  pin.match(
+    timing,
+    new RegExp(TIMING_TEXT_LINES.map((line) => literalPattern(line).source).join("\\r?\\n")),
+    "expected timingText to be EXACTLY this -- an absent value renders as an empty box, never as a plausible number this app invented",
+  );
+  // The input's fallback is the SERVER's value, never a literal. Pinned on the
+  // exact expression: `drafts[id] ?? timingText(value)` -- a draft while
+  // somebody types, the stored value otherwise, and no third source.
+  pin.match(
+    timing,
+    /value=\{drafts\[id\] \?\? timingText\(value\)\}/,
+    "expected the editable cell to fall back to the SERVER's own value -- not to a placeholder, a default, or a remembered draft",
+  );
+  // MUTATION THIS EXISTS FOR (measured 2026-08-25): the table computing a time
+  // of its own -- a cycle summed from the greens, a clearance derived from the
+  // amber. No arithmetic may touch a timing field anywhere in this file.
+  pin.doesNotMatch(
+    withoutComments(timing),
+    /(green_s|clearance_s|cycle_s|offset_s|min_green_s|max_green_s|declared_amber_s)\s*[-+*/]\s|[-+*/]\s*(green_s|clearance_s|cycle_s|offset_s|min_green_s|max_green_s|declared_amber_s)\b|\.reduce\(/,
+    "expected NO arithmetic on any timing value in this file -- the card shows what the server stored, and a number this table computed would be a claim it made",
+  );
+
+  // A COLUMN ONLY WHERE THE DATA IS (#58: "columns only for data that exists").
+  // Both optional columns are gated on the plan actually carrying the value,
+  // and 주기/옵셋/시간대 render only where they are non-null.
+  pin.match(timing, /const hasMinGreen = plan\.phases\.some\(\(phase\) => phase\.min_green_s != null\);/, "expected the 최소녹색 column to exist only where a phase carries one");
+  pin.match(timing, /const hasMaxGreen = plan\.phases\.some\(\(phase\) => phase\.max_green_s != null\);/, "expected the 최대녹색 column to exist only where a phase carries one");
+  pin.match(timing, /\{plan\.cycle_s != null && \(/, "expected 주기 to render only where the plan states one");
+  pin.match(timing, /\{plan\.offset_s != null && \(/, "expected 옵셋 to render only where the plan states one");
+  pin.match(timing, /\{plan\.time_of_day != null && \(/, "expected 시간대 to render only where the plan states one");
+
+  // An empty timing set is a NAMED absence with its consequence attached, not
+  // a blank strip: the mapping is still confirmable, and the signals build is
+  // what will refuse.
+  pin.match(
+    timing,
+    /신호 시간이 기록되어 있지 않습니다 — 이 교차로로는 signals 입력을 만들 수 없습니다\./,
+    "expected an empty timing set to be named in ko, with what it costs",
+  );
+});
+
+contractTest("unit #58: an amended time is stamped by the SERVER, and the browser has no field for the stamp", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+  const timing = read("components/genesis/PhaseTimingTable.tsx");
+
+  // Same discipline as `PhaseDiagramConfirmation`, whose attester the server
+  // takes from the session: an amendment says WHO changed a number and WHEN,
+  // so the browser is given no field to write either into. (The server side is
+  // measured in backend/tests/test_genesis_phase_diagram.py --
+  // `test_the_timing_editor_is_the_session_never_the_request_body` sends
+  // `edited_by` and asserts a 422 from extra="forbid".)
+  const amendCall = sliceBetween(
+    api,
+    "export async function amendPhaseDiagramTiming(",
+    "// ---------------------------------------------------------------------------",
+  );
+  pin.match(amendCall, /\S/, "expected to find the amend call in the api module (boundary moved?)");
+  pin.doesNotMatch(
+    amendCall,
+    /edited_by|edited_at|amended_by|amended_at/,
+    "expected the amendment payload to carry no editor name and no timestamp -- both are the server's, taken from the session and its own clock",
+  );
+  pin.match(amendCall, /method: "PATCH"/, "expected the amendment to be a PATCH on the review's own timing, not a re-upload");
+
+  // The page stores what came BACK, unmodified -- it never patches its own
+  // copy and hopes the server agreed.
+  pin.match(
+    page,
+    /const updated = await amendPhaseDiagramTiming\(review\.review_id, amendment\);\s*\n\s*setReview\(updated\);/,
+    "expected the amended review to be re-read from the server's answer, on the very next line -- no local patch, no optimistic merge",
+  );
+  // And the draft is DROPPED once the request settles, so a value nobody
+  // stored can never keep sitting in a cell that looks stored.
+  pin.match(
+    timing,
+    /\} finally \{\s*\n\s*setDrafts\(\(current\) => \{/,
+    "expected the typed draft to be cleared in a finally -- on a refusal too, where the number must snap back to what is stored",
+  );
+});
+
+contractTest("unit #58: the table's 황색시간 IS the declaration, and no second 선언 field may return", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const timing = read("components/genesis/PhaseTimingTable.tsx");
+
+  // #58's doctrine reconciliation, verbatim: "The edited 황색시간 IS the amber
+  // declaration (the Daejeon sheets print 황색+전적색 combined and can never
+  // supply amber alone — the person typing the number was always the
+  // declaration; the separate 선언 field was ceremony once the table itself is
+  // editable)."
+  pin.match(
+    timing,
+    /field: "declared_amber_s"/,
+    "expected the table's amber cell to amend the declaration itself, through the same stamped path as every other value",
+  );
+  pin.match(
+    timing,
+    /이 값이 아래 네트워크 결박에 기록되는 선언 황색시간입니다/,
+    "expected the table to SAY that its amber is the number the binding records -- the provenance sentence #58 asks for",
+  );
+
+  // ROUND 3 — THE LOST-HISTORY DISCLOSURE, AND ITS REACHABILITY. MEASURED
+  // (refuter): `{false && quarantine && (` silenced the disclosure and the
+  // whole suite stayed green — every pin on it matched a substring, and a
+  // substring cannot tell rendered code from code behind a falsy operand. The
+  // same ban the Φ strip and the binding map carry, applied here, plus a
+  // structural anchor so the branch cannot be re-gated behind anything else.
+  pin.doesNotMatch(
+    withoutComments(read("components/genesis/PhaseTimingTable.tsx")),
+    /(?<![=!<>]\s{0,3})\b(?:false|0|null|undefined)\s*&&|&&\s*(?:false|0|null|undefined)\b(?!\s{0,3}[=!<>])/,
+    "expected no dead-branch short-circuit (false/0/null/undefined && ...) anywhere in the timing table -- that is how a rendered disclosure becomes a pinned string nobody sees",
+  );
+  pin.match(
+    read("components/genesis/PhaseTimingTable.tsx"),
+    /\{quarantine && \(/,
+    "expected the quarantine disclosure to be gated on the server's own answer and NOTHING else -- `quarantine` must be the FIRST operand of its JSX expression",
+  );
+  pin.match(
+    read("components/genesis/PhaseTimingTable.tsx"),
+    /\{t\(quarantine\.message\.ko, quarantine\.message\.en, quarantine\.message\.ja\)\}/,
+    "expected the SERVER's own trilingual sentence to render verbatim -- the screen writes the heading, never the account of what a machine did to a file",
+  );
+
+  // THE WIRE: the attestation's declared_amber_s comes from the stored table
+  // value, verbatim. MUTATION THIS KILLS (measured 2026-08-25): the confirm
+  // handler sending a locally-held amber again, or `null`, while the table
+  // goes on displaying a number nobody recorded.
+  pin.match(
+    page,
+    /declared_amber_s: review\.sheet\.declared_amber_s,\s*\n\s*amber_declaration_note: review\.sheet\.amber_declaration_note,/,
+    "expected the confirmation to take the amber AND its 근거 straight from the stored review -- the table's value is the declaration",
+  );
+
+  // THE SECOND FIELD MAY NOT COME BACK. The old 선언 황색시간 / 황색시간 근거 /
+  // 확인 메모 inputs and their state are gone from the default surface; a
+  // returning `useState` for any of them fails here even under a new label.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /선언 황색시간|declared amber \(s\)|申告黄色時間|황색시간 근거|amber declaration note|확인 메모|confirmation note/,
+    "expected the separate 선언 황색시간 / 황색시간 근거 / 확인 메모 inputs to stay off the default surface -- #58 struck them, and the table carries the amber now",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /setAmber\b|setAmberNote\b|<textarea\b/,
+    "expected the retired amber/note inputs to leave their STATE behind too -- a re-added box with a new label would otherwise pass the wording ban above",
+  );
+});
+
+contractTest("unit #58: 수준/계획 resolves ONLY when the sheet offers exactly one", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  // #54's only-unique-candidate idiom, applied where #58 asks for it. THE
+  // MUTATION THIS EXISTS FOR: auto-picking among SEVERAL -- e.g. resolving
+  // `plan_choices[0]` whenever the list is non-empty -- which would be this app
+  // deciding which 시간분할 a human's confirmation belongs to.
+  pin.match(
+    page,
+    /const onlyPlan = loaded\.sheet\.plan_choices\.length === 1 \? loaded\.sheet\.plan_choices\[0\] : null;/,
+    "expected the pair to be resolved ONLY when the sheet offers exactly one -- `length === 1`, never `length > 0`",
+  );
+  // Both directions on the render side: ONE is shown as a resolved value,
+  // SEVERAL brings the picker back, NONE still asks for the two numbers.
+  pin.match(
+    page,
+    /\{review\.sheet\.plan_choices\.length === 1 \? \(/,
+    "expected exactly one pair to render as the resolved VALUE, not as a one-option picker",
+  );
+  pin.match(
+    page,
+    /\) : review\.sheet\.plan_choices\.length > 1 \? \(/,
+    "expected SEVERAL pairs to render the picker -- the only-unique idiom is a two-way rule, and a one-way pin would pass a version that auto-picks the first of five",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /plan_choices\.length > 0 \?/,
+    "expected no `length > 0` branch -- that is how 'the only candidate' silently becomes 'the first candidate'",
+  );
+  // EVERY `plan_choices[0]` read must sit inside a `length === 1` guard. A
+  // regex ban alone cannot say that (the guarded reads are legitimate and there
+  // are three of them), so it is MEASURED: each occurrence is checked against
+  // the source that precedes it, and an unguarded one -- anywhere, present or
+  // future -- fails on the count.
+  const planSource = withoutComments(page);
+  const unguardedFirstPlan = [...planSource.matchAll(/plan_choices\[0\]/g)].filter(
+    (match) => !/plan_choices\.length === 1/.test(planSource.slice(Math.max(0, (match.index ?? 0) - 500), match.index)),
+  ).length;
+  pin.match(
+    `unguarded=${unguardedFirstPlan}`,
+    /^unguarded=0$/,
+    "expected every plan_choices[0] read to be guarded by `plan_choices.length === 1` -- an unguarded first-element read IS auto-picking among several",
+  );
+  // The gate on 확인 is unchanged: an unresolved pair still cannot confirm.
+  pin.match(
+    page,
+    /nodeId != null &&\s*\n\s*planChosen &&/,
+    "expected canSubmit to still require a chosen plan -- #58 resolved the unique case, it did not remove the requirement",
+  );
+});
+
+contractTest("unit #58: the binding's node map is the draft's own map, and a click on it selects nothing else", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const pickMap = read("components/genesis/DraftNodePickMap.tsx");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  // REUSE, NOT REIMPLEMENT. The renderer is unit #29's DraftLocalMap and the
+  // data is the SAME census fetch GenesisTileMap makes for the job-detail map.
+  // A second map implementation would be a second answer to "where is this
+  // draft", and the two would drift.
+  pin.match(
+    pickMap,
+    /import DraftLocalMap from "@\/components\/genesis\/DraftLocalMap";/,
+    "expected the binding map to REUSE the existing draft renderer rather than draw its own",
+  );
+  pin.match(
+    pickMap,
+    /fetchGenesisDraftNetwork\(jobId\)/,
+    "expected the binding map to read the SAME draft census the job-detail map reads -- one endpoint, one shape",
+  );
+  pin.doesNotMatch(
+    withoutComments(pickMap),
+    /<svg\b|<polyline\b|<circle\b|leaflet/i,
+    "expected the wrapper to draw NOTHING itself -- it is a data path and an absence-namer around the map this repo already has",
+  );
+
+  // NO DEAD MAP: it renders only when a 생성 작업 is selected, and the empty
+  // state is a sentence rather than a basemap with nothing on it.
+  pin.match(page, /\{jobId \? \(\s*\n\s*<DraftNodePickMap/, "expected the map to render only once a generation is chosen");
+  pin.match(
+    page,
+    /생성 작업을 고르면 그 초안의 지도가 여기에 나타나고, 노드를 눌러 고를 수 있습니다\./,
+    "expected the no-generation state to be a named line, never a blank map box",
+  );
+
+  // ONE SELECTION, TWO VIEWS. The map's click lands in the SAME `bindNode` the
+  // candidate list's own button calls, and the map is told which node is bound
+  // by the SAME `nodeId` the chip and the list highlight from. THE MUTATION
+  // THIS KILLS: a second piece of selection state for the map, whose first
+  // symptom would be a confirmation recorded against a node the person was no
+  // longer looking at.
+  pin.match(
+    page,
+    /const candidate = candidates\.find\(\(entry\) => entry\.node_id === candidateNodeId\);\s*\n\s*if \(candidate\) bindNode\(candidate\);/,
+    "expected a map click to route into the SAME bindNode the candidate list uses",
+  );
+  pin.match(page, /selectedNodeId=\{nodeId\}/, "expected the map to read the page's own nodeId, not a copy of it");
+  pin.doesNotMatch(
+    withoutComments(page),
+    /useState<number \| null>\(null\)[\s\S]{0,40}mapNode|setMapSelected|selectedMapNode/,
+    "expected no second selection state for the map -- one selection, two views",
+  );
+  pin.doesNotMatch(
+    withoutComments(pickMap),
+    /useState<number/,
+    "expected the map wrapper to hold no selection state of its own either -- the page owns it",
+  );
+  pin.doesNotMatch(
+    withoutComments(localMap),
+    /useState<number \| null>/,
+    "expected the renderer to hold no node-selection state either -- `selectedNodeId` is a prop, the same discipline its link/connector selection already follows",
+  );
+
+  // A CLICK IS SELECTION, NEVER CONFIRMATION. Neither map file may carry the
+  // confirming act, and the renderer says so where the prop is declared.
+  pin.doesNotMatch(
+    withoutComments(pickMap),
+    /confirmPhaseDiagram|MappingAttestation|attested_by/,
+    "expected the map never to reach the confirming call -- the 확인 button in the binding section is the only act that records anything",
+  );
+  pin.match(
+    localMap,
+    /onSelectNode\?: \(nodeId: number\) => void;/,
+    "expected the node click to be a SELECT callback the caller owns, with no confirm shape anywhere near it",
+  );
+
+  // THE DRAFT'S OWN NODES. The map draws census entries, narrowed to what the
+  // SERVER offered as candidates -- it invents none and places none.
+  pin.match(
+    pickMap,
+    /const nodes: GenesisDraftNode\[\] = data\.nodes\.filter\(\(node\) => wanted\.has\(node\.id\)\);/,
+    "expected every dot to be one of the DRAFT's own nodes, narrowed by the server's candidate ids -- never a synthesised point",
+  );
+  // A draft with no geometry degrades to a NAMED absence, never a blank box.
+  pin.match(pickMap, /function MapAbsence\(/, "expected one shape for every named absence this map can have");
+  pin.match(pickMap, /data\.links\.length === 0/, "expected a draft with nothing to draw to say so rather than render an empty canvas");
+});
+
+// ---------------------------------------------------------------------------
+// Unit #58, SECOND PASS — the pins the refuter's surviving mutations demanded.
+// Every one below is written against a mutation that PASSED the first pass.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #58: the confirming act has exactly ONE caller, and a map click is not it", (pin) => {
+  const page = withoutComments(read("app/genesis/phases/page.tsx"));
+
+  // MEASURED (refuter, 2026-08-25): wiring `submit()` into
+  // `selectCandidateNode` — so that clicking a dot on the map RECORDS the
+  // attestation — survived the entire suite. Every pin this unit had asked
+  // whether the button still existed and whether the map still selected; none
+  // asked how many things could CONFIRM. That directly violates the recorded
+  // rule (docs/phase2/DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도 카드
+  // 단순화 — 도식+시간표, 짧은 확인 (#58)"): a click is selection, and the
+  // confirming act is the one 확인 button.
+  //
+  // ROUND 3 — THE NAME WAS THE WRONG THING TO COUNT. MEASURED (refuter):
+  // the pin below counted mentions of `submit`, so DUPLICATING that callback's
+  // BODY under a fresh name — a second literal `confirmPhaseDiagram(...)` call
+  // wired to the map — kept the whole suite green while a map click recorded a
+  // real attestation. What must be single-sited is the ACT, not the identifier
+  // that happens to wrap it today.
+  //
+  // So both mutating calls this page can make are counted FILE-WIDE, and each
+  // is anchored to the one body that may make it. MEASURED 2026-08-25: exactly
+  // one call site each.
+  const confirmCalls = (page.match(/\bconfirmPhaseDiagram\(/g) ?? []).length;
+  pin.match(
+    `confirmCalls=${confirmCalls}`,
+    /^confirmCalls=1$/,
+    "expected exactly ONE confirmPhaseDiagram( call site in the page -- the confirming ACT is what must be single-sited, and a duplicated body under a new name is a second way to attest",
+  );
+  pin.match(
+    page,
+    /const updated = await confirmPhaseDiagram\(review\.review_id, \{/,
+    "expected the one confirming call to be the one inside `submit` -- the count cannot be held at 1 by moving it somewhere else",
+  );
+  const amendCalls = (page.match(/\bamendPhaseDiagramTiming\(/g) ?? []).length;
+  pin.match(
+    `amendCalls=${amendCalls}`,
+    /^amendCalls=1$/,
+    "expected exactly ONE amendPhaseDiagramTiming( call site -- an amendment is stamped with somebody's name too, so a second caller is a second way to write one",
+  );
+  pin.match(
+    page,
+    /const updated = await amendPhaseDiagramTiming\(review\.review_id, amendment\);/,
+    "expected the one amending call to be the one inside `amendTiming`",
+  );
+
+  // The identifier count is KEPT as a second layer -- it is what catches a
+  // second caller of the SAME callback, which the act-count above cannot see.
+  // `submit` appears exactly TWICE: its definition, and the 확인 button.
+  const submitMentions = (page.match(/\bsubmit\b/g) ?? []).length;
+  pin.match(
+    `submitMentions=${submitMentions}`,
+    /^submitMentions=2$/,
+    "expected `submit` to appear exactly twice in the page -- its own definition and the ONE 확인 button that calls it. A third mention is a second way to confirm, whatever it is attached to",
+  );
+  // ...and the two are the ones we think they are, so the count cannot be kept
+  // at two by renaming the definition or moving the call somewhere else.
+  pin.match(
+    page,
+    /const submit = useCallback\(async \(\) => \{/,
+    "expected mention one to be the definition of the confirming act",
+  );
+  pin.match(
+    page,
+    /onClick=\{submit\}\s*\n\s*disabled=\{!canSubmit\}/,
+    "expected mention two to be the 확인 button's own onClick, gated by canSubmit",
+  );
+  // The selection path must reach `bindNode` and NOTHING that records.
+  const selectBody = sliceBetween(
+    read("app/genesis/phases/page.tsx"),
+    "const selectCandidateNode = useCallback(",
+    "const setRow = useCallback(",
+  );
+  pin.match(selectBody, /\S/, "expected to find selectCandidateNode's body (boundary moved?)");
+  pin.doesNotMatch(
+    withoutComments(selectBody),
+    /submit|confirmPhaseDiagram|amendPhaseDiagramTiming/,
+    "expected selecting a node to record NOTHING -- no confirmation, and not even an amendment",
+  );
+});
+
+contractTest("unit #58: the confirmation's 수준/계획 is the one on screen, unaltered", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  // MEASURED (refuter, 2026-08-25): `level_no: Number(levelRaw) + 1` survived.
+  // With SEVERAL real TOD plans that silently confirms a DIFFERENT plan that
+  // also exists — which no server check can catch, because there is no second
+  // source for what the screen was showing. (A pair that exists NOWHERE is now
+  // refused server-side: `phase_diagram_attestation_unknown_plan`. This pin
+  // holds the other half.)
+  //
+  // So the payload's two numbers are pinned to read the SAME state the display
+  // reads, with nothing between the read and the send.
+  pin.match(
+    page,
+    /const \[levelRaw, planRaw\] = planChoice\.split\(":"\);/,
+    "expected the payload's pair to be split off the very `planChoice` state the picker and the resolved-value text render",
+  );
+  pin.match(
+    page,
+    /level_no: Number\(levelRaw\),\s*\n\s*plan_id: Number\(planRaw\),/,
+    "expected level_no/plan_id to be the parsed halves VERBATIM -- no offset, no fallback, no recomputation between the state and the wire",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /Number\(levelRaw\)\s*[-+*/]|Number\(planRaw\)\s*[-+*/]|levelRaw\s*[-+*/]\s*\d|planRaw\s*[-+*/]\s*\d/,
+    "expected no arithmetic on the confirmed plan's numbers -- an off-by-one here signs a plan the person never chose, and with several real plans nothing downstream can tell",
+  );
+  // The same `planChoice` is what the display reads, both ways.
+  pin.match(
+    page,
+    /const \[planLevelRaw, planIdRaw\] = planChoice\.split\(":"\);/,
+    "expected the displayed pair to be derived from the SAME state the payload is -- two sources here is how the screen and the record disagree",
+  );
+});
+
+contractTest("unit #58: no spread may smuggle an attribute past the affordance pins", (pin) => {
+  // MEASURED (refuter, 2026-08-25): `{...{onClick: submit}}` on an ALLOWED
+  // element passed BOTH affordance pins -- the reading column's and the timing
+  // table's -- because every one of them matches literal attribute names, and
+  // a spread has none. In scope per the recorded threat-model boundary
+  // (docs/phase2/DECISIONS.md, "2026-08-24 — 계약 핀의 위협 모델 경계 (#55b
+  // 3패스에서 명시)"): honest `...rest` forwarding is plausible drift from a
+  // well-meaning editor, not obfuscation.
+  //
+  // A JSX ATTRIBUTE spread is banned; an ordinary object-literal spread is not,
+  // and telling them apart is done by POSITION rather than by guessing: an
+  // object literal is opened after `(`, `=`, `[` or `,`, while an attribute
+  // spread sits in attribute position, after whitespace inside a tag.
+  // POSITION, widened round 3. The first cut looked at two characters and so
+  // misread `return {\n  ...x` as attribute position -- it would have failed an
+  // honest refactor. It now looks back past whitespace to the first real
+  // character: an object literal is opened after `=`, `(`, `[`, `,`, `:`, `?`,
+  // `{`, `=>` (its `>`) or the word `return`; an attribute spread's brace
+  // follows a tag name, an attribute name, a quote, or a closing brace.
+  //
+  // KNOWN, and covered elsewhere: a props object handed to
+  // `React.createElement` reads as object position here, because it IS one.
+  // That escape is caught by the total-spread COUNT pins below -- a new spread
+  // of any kind in either file has to be re-measured -- and by the
+  // host-element vocabulary pins, which no createElement call can satisfy.
+  const attributeSpreads = (source: string): number =>
+    [...source.matchAll(/\{\s*\.\.\./g)].filter((match) => {
+      const before = source.slice(0, match.index).replace(/\s+$/, "");
+      return !("=([,:?{>".includes(before.slice(-1)) || /\breturn$/.test(before));
+    }).length;
+
+  const page = read("app/genesis/phases/page.tsx");
+  const readingColumn = withoutComments(
+    sliceBetween(page, ") : (\n            <>\n              <Panel", "{/* #55 — THE SECONDARY ACT."),
+  );
+  pin.match(readingColumn, /\S/, "expected to find the reading column's own source slice (markers moved?)");
+  // MEASURED 2026-08-25: the reading column carries NO spread of any kind, so
+  // the ban there is flat.
+  pin.match(
+    `regionSpreads=${(readingColumn.match(/\{\s*\.\.\./g) ?? []).length}`,
+    /^regionSpreads=0$/,
+    "expected the display-only reading column to carry no spread at all -- an attribute spread there is invisible to every tag and attribute pin above it",
+  );
+
+  // MEASURED 2026-08-25: the timing table carries exactly FOUR spreads, all of
+  // them ordinary object literals in its draft bookkeeping (`{ ...current }`,
+  // `{ ...amendment }`). None is in attribute position, and none may be.
+  const timing = withoutComments(read("components/genesis/PhaseTimingTable.tsx"));
+  pin.match(
+    `timingObjectSpreads=${(timing.match(/\{\s*\.\.\./g) ?? []).length}`,
+    /^timingObjectSpreads=4$/,
+    "expected the timing table's four object-literal spreads and no more -- a fifth is either new bookkeeping (re-measure) or an attribute spread",
+  );
+  pin.match(
+    `timingAttrSpreads=${attributeSpreads(timing)}`,
+    /^timingAttrSpreads=0$/,
+    "expected NO spread in attribute position in the timing table -- `{...{onClick: submit}}` on an <input> is a confirmation affordance that no attribute-name pin can see",
+  );
+  const pickMap = withoutComments(read("components/genesis/DraftNodePickMap.tsx"));
+  pin.match(
+    `mapAttrSpreads=${attributeSpreads(pickMap)}`,
+    /^mapAttrSpreads=0$/,
+    "expected NO spread in attribute position on the binding map either -- it forwards props to a renderer, which is exactly where a smuggled handler would sit",
+  );
+});
+
+contractTest("unit #58: every string this unit added is a real ko/en/ja triple", (pin) => {
+  // THE #50-d CLASS AGAIN. `t(ko, en, ja?)` types `ja` as optional, so blanking
+  // it passes typecheck and every behavioural pin. MEASURED (refuter,
+  // 2026-08-25): blanking the ja argument of the timing table's headers and of
+  // the map's absence lines survived the whole suite, and the no-timing
+  // sentence was pinned in ko ONLY -- an en reword would not have been caught
+  // either. Quote-boundary anchored (the #55b/#57 idiom): only the exact ko AND
+  // en AND ja text, in that order, satisfies these.
+  const timing = withoutComments(read("components/genesis/PhaseTimingTable.tsx"));
+  const map = withoutComments(read("components/genesis/DraftNodePickMap.tsx"));
+  const page = withoutComments(read("app/genesis/phases/page.tsx"));
+
+  const TIMING_TRIPLES: [string, string, string][] = [
+    ["신호 시간", "Signal timing", "信号時間"],
+    ["황색시간(초)", "amber (s)", "黄色時間(秒)"],
+    ["선언", "declared", "申告"],
+    ["수준", "level", "水準"],
+    ["계획", "plan", "計画"],
+    ["주기", "cycle", "周期"],
+    ["옵셋", "offset", "オフセット"],
+    ["시간대", "time of day", "時間帯"],
+    ["현시", "phase", "現示"],
+    ["녹색(초)", "green (s)", "青(秒)"],
+    ["소거(초)", "clearance (s)", "クリアランス(秒)"],
+    ["최소녹색", "min green", "最小青"],
+    ["최대녹색", "max green", "最大青"],
+    [
+      "이 값이 아래 네트워크 결박에 기록되는 선언 황색시간입니다. 시트는 황색+전적색을 하나의 값으로만 인쇄하므로, 황색시간은 이 표에 적는 사람의 선언입니다.",
+      "This is the declared amber the binding below records. The sheet prints 황색+전적색 as ONE number, so the amber is the declaration of whoever types it here.",
+      "この値が下のネットワーク結縛に記録される申告黄色時間です。シートは黄色+全赤を一つの値でのみ印刷するため、黄色時間はここに記入する人の申告です。",
+    ],
+    [
+      "아래 시간은 의뢰인 시트의 텍스트에서 읽은 값이라 화면에서 고칠 수 없습니다. 고치려면 엑셀로 내보내 수정한 뒤 다시 올리십시오.",
+      "The times below were read out of the client's own sheet, so they cannot be edited here. Export to Excel, correct it there and upload it again.",
+      "以下の時間は依頼元シートの本文から読み取った値のため、画面では修正できません。エクセルに書き出して修正のうえ再度アップロードしてください。",
+    ],
+    [
+      "신호 시간이 기록되어 있지 않습니다 — 이 교차로로는 signals 입력을 만들 수 없습니다.",
+      "No signal timing is recorded — no signals input can be built from this intersection.",
+      "信号時間が記録されていません — この交差点からは signals 入力を作成できません。",
+    ],
+    [
+      "수정 기록 일부 없음",
+      "Part of the amendment history is missing",
+      "修正記録の一部が欠落",
+    ],
+  ];
+  for (const [ko, en, ja] of TIMING_TRIPLES) {
+    pin.match(timing, tripleArgs(ko, en, ja), `expected the timing table's exact ko/en/ja triple for ${ko}`);
+  }
+
+  const MAP_TRIPLES: [string, string, string][] = [
+    ["초안 네트워크를 불러오는 중입니다…", "Loading the draft network…", "草案ネットワークを読み込み中…"],
+    [
+      "이 생성 작업의 초안 네트워크를 읽지 못해 지도를 그릴 수 없습니다. 아래 후보 목록으로 선택하십시오.",
+      "The draft network for this generation could not be read, so no map is drawn. Pick from the candidate list below.",
+      "この生成ジョブの草案ネットワークを読めなかったため、地図は描けません。下の候補一覧から選択してください。",
+    ],
+    [
+      "이 초안에는 그릴 도형이 없습니다 — 링크가 한 개도 없는 생성입니다.",
+      "This draft has nothing to draw — the generation produced no links at all.",
+      "この草案には描く図形がありません — リンクが一つもない生成です。",
+    ],
+    [
+      "이 초안에서 이 교차로의 후보 노드를 찾지 못했습니다 — 지도에 표시할 점이 없습니다.",
+      "No candidate node for this intersection was found in this draft — there is no dot to show.",
+      "この草案でこの交差点の候補ノードは見つかりませんでした — 地図に表示する点がありません。",
+    ],
+  ];
+  for (const [ko, en, ja] of MAP_TRIPLES) {
+    pin.match(map, tripleArgs(ko, en, ja), `expected the binding map's exact ko/en/ja triple for ${ko}`);
+  }
+  // The interpolated one takes backticks, so it is anchored on those.
+  pin.match(
+    map,
+    tripleArgs(
+      "점 ${nodes.length}개는 이 초안이 가진 노드입니다. 점을 누르면 선택될 뿐이며, 기록되는 것은 아래 확인 단추뿐입니다.",
+      "The ${nodes.length} dot(s) are nodes this draft holds. Clicking one only SELECTS it; the only act that records anything is the 확인 button below.",
+      "${nodes.length}個の点はこの草案が持つノードです。点を押しても選択されるだけで、記録されるのは下の確認ボタンだけです。",
+      "`",
+    ),
+    "expected the map's dot-count line to be a full triple too -- it is the sentence that says a click records nothing",
+  );
+
+  const PAGE_TRIPLES: [string, string, string][] = [
+    ["확인", "Confirm", "確認"],
+    [
+      "엑셀은 접근로↔현시를 담지만, 어느 초안 노드의 어느 링크인지는 담지 못합니다 — 그 연결이 이 절입니다.",
+      "The workbook carries approach↔phase, but not WHICH draft node and which link ids — that connection is what this section is.",
+      "エクセルは流入路↔現示は持ちますが、どの草案ノードのどのリンクかは持てません — その接続がこの節です。",
+    ],
+    [
+      "생성 작업을 고르면 그 초안의 지도가 여기에 나타나고, 노드를 눌러 고를 수 있습니다.",
+      "Pick a generation and its draft's map appears here, with its nodes clickable.",
+      "生成ジョブを選ぶとその草案の地図がここに表示され、ノードを押して選べます。",
+    ],
+    // ROUND 3 RESIDUE: #58 rewrote this label into TWO branches (the resolved
+    // value, and the picker) and neither was pinned, so its `ja` was blankable.
+    ["수준 / 계획 ID", "level / plan", "水準 / 計画ID"],
+  ];
+  for (const [ko, en, ja] of PAGE_TRIPLES) {
+    pin.match(page, tripleArgs(ko, en, ja), `expected the page's exact ko/en/ja triple for ${ko}`);
+  }
+  // BOTH branches carry it -- the resolved-value text and the several-plans
+  // picker -- so blanking either one's ja fails on the count as well.
+  pin.match(
+    `levelPlanLabels=${(page.match(/수준 \/ 계획 ID/g) ?? []).length}`,
+    /^levelPlanLabels=2$/,
+    "expected the 수준/계획 label in BOTH branches (the resolved value and the picker) -- one of them losing its triple is how a language quietly drops out of half the states",
+  );
+
+  // ROUND 3 RESIDUE: the class-level blank-argument ban never reached page.tsx.
+  // MEASURED 2026-08-25: zero blank `t()` arguments exist there today, so the
+  // ban goes file-wide with no carve.
+  pin.doesNotMatch(
+    page,
+    /t\(\s*""|,\s*""\s*\)|,\s*""\s*,/,
+    "expected no blank language argument anywhere in the phases page either -- `ja` is optional in the type, which is exactly why every surface that renders it is pinned",
+  );
+
+  // AND THE CLASS, not just this inventory: no `t()` call in either new file
+  // may carry a BLANK argument in any position.
+  for (const [label, source] of [
+    ["PhaseTimingTable.tsx", timing],
+    ["DraftNodePickMap.tsx", map],
+  ] as const) {
+    pin.doesNotMatch(
+      source,
+      /t\(\s*""|,\s*""\s*\)|,\s*""\s*,/,
+      `expected no blank language argument anywhere in ${label} -- \`ja\` is optional in the type, which is exactly why it is pinned here`,
+    );
+  }
+});
+
+contractTest("unit #58: the binding map's named absences are reachable, not decorative", (pin) => {
+  const map = read("components/genesis/DraftNodePickMap.tsx");
+
+  // THE #55b VACUITY CLASS. The three absence sentences are pinned by
+  // substring, and a substring pin cannot tell rendered code from code
+  // disabled by a falsy operand — MEASURED (refuter, 2026-08-25): wrapping a
+  // branch in `if (false && ...)` kept every one of them green. Same ban the Φ
+  // strip carries, same reason, comments stripped because this very comment
+  // names the family.
+  pin.doesNotMatch(
+    withoutComments(map),
+    /(?<![=!<>]\s{0,3})\b(?:false|0|null|undefined)\s*&&|&&\s*(?:false|0|null|undefined)\b(?!\s{0,3}[=!<>])/,
+    "expected no dead-branch short-circuit (false/0/null/undefined && ...) anywhere in the binding map -- that is how a named-absence pin is left matching a branch that never renders",
+  );
+  // ...and each branch is anchored STRUCTURALLY on its own guard, so the
+  // sentence cannot be kept while the condition that reaches it is rewritten.
+  pin.match(map, /if \(!jobId\) return null;/, "expected the no-generation case to be the first guard, returning nothing at all");
+  pin.match(map, /if \(loading\) \{/, "expected the loading branch to be reached by the resolved loading flag");
+  pin.match(map, /if \(error \|\| !data\) \{/, "expected the failed-read branch to cover BOTH a refusal and a missing census");
+  pin.match(map, /if \(data\.links\.length === 0\) \{/, "expected the nothing-to-draw branch to be reached by the census's own emptiness");
+  pin.match(
+    map,
+    /\{nodes\.length === 0\s*\n?\s*\? t\(/,
+    "expected the no-candidate line to be chosen by the measured node count, not by a flag somebody can leave true",
+  );
+});
+
 // #55's new component -- components/genesis/PhaseDiagramSketch.tsx. The Φ
 // strip draws the STORED reading's own parsed rows, and nothing else. These
 // pins are the three rules the component's own header comment names.
@@ -4972,10 +5788,19 @@ contractTest("the 현시도 screen exports labelled drafts, one review and all o
 contractTest("a review with no 대전 TOD table is ASKED for 수준/계획 ID, never given a default", (pin) => {
   const page = read("app/genesis/phases/page.tsx");
 
+  // REWRITTEN 2026-08-25 for unit #58. AUTHORITY: docs/phase2/DECISIONS.md,
+  // "2026-08-24 — 사용자 결정: 현시도 카드 단순화 — 도식+시간표, 짧은 확인 (#58)"
+  // -- "수준/계획 auto-resolve when unique (#54's only-unique idiom); a picker
+  // appears only when several exist". The pin this replaces asserted
+  // `plan_choices.length > 0 ? (` , which cannot tell ONE pair from SEVERAL
+  // and so would have passed a version that silently picked the first of five.
+  // The three-way is pinned in full by the test below
+  // ("unit #58: 수준/계획 resolves ONLY when the sheet offers exactly one");
+  // what stays here is this test's own claim -- that NONE still ASKS.
   pin.match(
     page,
-    /review\.sheet\.plan_choices\.length > 0 \? \(/,
-    "expected the select to be offered only when the sheet actually parsed some (수준, ID) pairs",
+    /review\.sheet\.plan_choices\.length > 1 \? \(/,
+    "expected the select to be offered only when the sheet parsed SEVERAL (수준, ID) pairs -- one pair is resolved, none is asked for",
   );
   pin.match(page, /planChosen/, "expected an explicit check that both numbers were supplied");
   pin.match(
@@ -5498,6 +6323,14 @@ contractTest("U-1: three accent colours, tint in the fill, ink in the text", (pi
     // rather than passing by never looking. Fixed-index pins below
     // (files[0]/[1]/[2]) are unaffected: this entry is appended, not inserted.
     ["components/genesis/PhaseDiagramSketch.tsx", read("components/genesis/PhaseDiagramSketch.tsx")],
+    // UNIT #58, and the SAME class this array was last widened for. The
+    // refuter planted `text-[9px]` + an amber class in each of the two files
+    // #58 added and the whole suite stayed green -- a new component gets none
+    // of the three rules below for free, and the warning left above did not
+    // stop it happening a second time. Appended, not inserted: the
+    // fixed-index pins further down (files[0]/[1]/[2]) are unaffected.
+    ["components/genesis/PhaseTimingTable.tsx", read("components/genesis/PhaseTimingTable.tsx")],
+    ["components/genesis/DraftNodePickMap.tsx", read("components/genesis/DraftNodePickMap.tsx")],
   ];
 
   // ---- RULE 1: a tinted box is a FILL, never an INK -------------------------
