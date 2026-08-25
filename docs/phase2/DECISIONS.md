@@ -7000,3 +7000,30 @@ Execution rules for unit #59:
   ASSUME_INPUT_DRIVES_NODE_TOTAL in every audit block it touches.
 - Existing #54 single-input mappings stay valid unchanged (the node's latest word rules are
   untouched); the store gains group-shaped candidates without breaking old records.
+
+## 2026-08-25 — 사용자 테스트 1차 피드백: 화면 정리 5건 + /report 프로파일 문 + 데모 잠금 킷 (#60/#61)
+
+User's live test of the pushed build produced these decisions (their words paraphrased tightly):
+
+**#60a (화면 정리, frontend):**
+- 황색 선언의 두 안내 문장("이 값이 아래 네트워크 결박에…", "yunha님이 …에 선언한… (이전 값: 없음)") 제거 — 표가 곧 선언이라는 규칙은 유지하되 산문은 걷어낸다.
+- genesis 영역 페이지: 폴리곤/바운딩박스 설명 문장 제거, 출처 기록(provenance: 인스턴스·
+  받은 시각·sha256·라이선스·보낸 질의) 블록은 펼치기 뒤로.
+- 결박 절의 노드 픽 지도가 다크 테마 위에 흰 배경 박스로 떠서 식별 곤란 → 테마 배경.
+- 보정 노드 타일 높이 불일치(진단 줄 있는 카드만 큼) → 균일 높이.
+**#60b (/report 정리 + 프로파일 문):**
+- 잔글씨(절별 MRWA 인용문 등 문단성 텍스트)를 기본 화면에서 제거 — "make a separate
+  preview file and project texts as md format. text preview only, no style preview" →
+  텍스트 전용 MD 미리보기 표면 신설, 페이지에는 행동만.
+- 과거 보고서 DOCX를 올릴 문이 화면에 없음(R-4는 백엔드만, R-5b는 읽기만) → /report에
+  프로파일 업로드 버튼(auth, R-4 POST 배선).
+**#61 (장면 4·6 잠금 해제 킷) — 측정된 사실:**
+- demo0824L(87c51893caa2)에는 genesis 드래프트가 없어(genesis/ 디렉터리 부재) 현시도
+  결박·⑥ 완료가 구조적으로 불가; step ⑥은 controllers==0 && reviews==0일 때만
+  NOT_APPLICABLE(calibration_rail._step_6 측정).
+- 혼잡 워크북은 설계상 2노드(수요 노드 8 + 대조 5) — 홀드아웃(≥4)을 열려면 다노드
+  워크북 + 신규 런(revision) = COM ~1h 재제조.
+- 킷 구성: 하네스 확장(_build_demo_workbook 다노드) → COM 재제조(오케스트레이터 레인,
+  백그라운드) → 같은 ws에 demo-crossroads.osm genesis 잡 → 사용자 클릭 2개(블랭크 현시도
+  확인 + Table 5-6 전체 프롬프트) → 장면 4·6이 잠금 해제까지 완주 가능해짐. 대본은 해당
+  장면만 해법 동반 재발행.

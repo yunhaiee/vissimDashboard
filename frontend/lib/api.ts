@@ -3602,6 +3602,53 @@ export async function fetchReportStyleProfiles(): Promise<ReportStyleProfileSumm
   return payload.profiles;
 }
 
+/** `GET /api/agent/audit/sessions`'s per-session row (Track R unit R-5c) --
+ * only sessions whose action ledger actually holds an applied/rolled-back/
+ * failed parameter change, i.e. the exact rows
+ * `services.report.figures.approval_history_table` would render for that
+ * `session_id`. Never `AgentDownloadEntry`'s "saved a write" set -- see
+ * `fetchReportAuditSessions`'s own doc comment for why that would be an
+ * invented mapping. */
+export interface ReportAuditSessionSummary {
+  session_id: string;
+  approval_count: number;
+  last_approval_at: string | null;
+}
+
+/** `GET /api/agent/audit/sessions`'s full response: the capped, newest-first
+ * page AND `total` -- the count BEFORE the cap. Refuter-measured 2026-08-25:
+ * the backend caps at 20 (le=200 via `?limit=`) because an unbounded walk
+ * cost 2.92s over 500 synthetic sessions, and it discloses `total`
+ * specifically so a truncated page is never mistaken for the whole list --
+ * the sibling `fetchAgentDownloads` listing truncates SILENTLY (no total),
+ * which is the shape this route's own backend docstring names and refuses to
+ * repeat. */
+export interface ReportAuditSessionsPage {
+  sessions: ReportAuditSessionSummary[];
+  total: number;
+}
+
+/** Sessions in THIS workspace worth offering on the /report page's
+ * approval-history session picker (Track R unit R-5c, delegated in
+ * docs/phase2/DECISIONS.md's 2026-08-24 "HWP는 v1 제외 확정 · 승인 이력 세션
+ * 픽커는 위임" entry -- R-5b had named the gap: the page carried no
+ * `session_id` input at all, so `approval_history_table` rendered a
+ * permanent named absence).
+ *
+ * Reads `backend/routers/agent_audit.py`'s own listing route, not
+ * `fetchAgentDownloads` -- that one lists sessions that saved a write
+ * (`edit_NNN.inpx`), a DIFFERENT set from "sessions whose ledger holds an
+ * applied change" (a write can dispatch and get postwrite-rolled-back with no
+ * surviving snapshot, and a snapshot can exist from a plan that was never
+ * gated at all). Using the downloads set here would be exactly the invented
+ * mapping DECISIONS.md's R-5c entry rules out by name, so this calls the
+ * route that measures the ledger directly instead. */
+export async function fetchReportAuditSessions(): Promise<ReportAuditSessionsPage> {
+  const r = await apiFetch("/api/agent/audit/sessions", { cache: "no-store" });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()) as ReportAuditSessionsPage;
+}
+
 /** What `POST /compose` publishes BESIDE the document: the two headline counts
  * it puts on response headers. `null` means the header was not readable (a
  * cross-origin response exposes no custom headers), which is not the same as

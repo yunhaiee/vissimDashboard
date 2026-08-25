@@ -45,6 +45,7 @@ import LegacyReportBuilder from "@/components/report/LegacyReportBuilder";
 import {
   composeReport,
   composeReportArtifacts,
+  fetchReportAuditSessions,
   fetchReportFigures,
   fetchReportGraphics,
   fetchReportSpine,
@@ -52,6 +53,7 @@ import {
   fetchScenarios,
   ReportRefusedError,
   type ComposeReportRequest,
+  type ReportAuditSessionsPage,
   type ReportFigureParams,
   type ReportFigureSourceCaption,
   type ReportGraphicFigure,
@@ -158,6 +160,9 @@ export default function ReportPage() {
   const [scenariosLoaded, setScenariosLoaded] = useState<Loaded<ScenarioMeta[]> | null>(null);
   const [spineLoaded, setSpineLoaded] = useState<Loaded<ReportSpinePayload> | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState<Loaded<ReportStyleProfileSummary[]> | null>(null);
+  const [approvalSessionsLoaded, setApprovalSessionsLoaded] = useState<Loaded<ReportAuditSessionsPage> | null>(
+    null,
+  );
   const [figuresLoaded, setFiguresLoaded] = useState<Loaded<ReportTableFigure[]> | null>(null);
   const [graphicsLoaded, setGraphicsLoaded] = useState<Loaded<ReportGraphicFigure[]> | null>(null);
 
@@ -165,6 +170,7 @@ export default function ReportPage() {
   const [beforeScenarioId, setBeforeScenarioId] = useState("");
   const [afterScenarioId, setAfterScenarioId] = useState("");
   const [styleProfileId, setStyleProfileId] = useState("");
+  const [approvalSessionId, setApprovalSessionId] = useState("");
   const [reportLanguage, setReportLanguage] = useState("");
   const [excludedSectionIds, setExcludedSectionIds] = useState<string[]>([]);
 
@@ -173,13 +179,21 @@ export default function ReportPage() {
   const [failure, setFailure] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<ComposeOutcome | null>(null);
 
+  // R-5c (docs/phase2/DECISIONS.md, 2026-08-24 "승인 이력 세션 픽커는 위임"):
+  // `session_id` joins this SAME object, at its ONE construction site, rather
+  // than forking a second figure-params literal for the approval-history
+  // table alone -- R-5b's own pins (below, in tests/dashboard-contract.test.ts)
+  // already hold every consumer of `figureParams` to "one identifier, read
+  // everywhere", and extending the object here is what lets the preview
+  // fetch AND the compose body pick the change up for free.
   const figureParams: ReportFigureParams = useMemo(
     () => ({
       scenario_id: scenarioId || null,
       before_scenario_id: beforeScenarioId || null,
       after_scenario_id: afterScenarioId || null,
+      session_id: approvalSessionId || null,
     }),
-    [scenarioId, beforeScenarioId, afterScenarioId],
+    [scenarioId, beforeScenarioId, afterScenarioId, approvalSessionId],
   );
   const figureKey = useMemo(() => JSON.stringify(figureParams), [figureParams]);
 
@@ -227,6 +241,20 @@ export default function ReportPage() {
 
   useEffect(() => {
     let cancelled = false;
+    fetchReportAuditSessions()
+      .then((data) => {
+        if (!cancelled) setApprovalSessionsLoaded(ok("approvalSessions", data));
+      })
+      .catch((caught) => {
+        if (!cancelled) setApprovalSessionsLoaded(failed("approvalSessions", caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     fetchReportFigures(figureParams)
       .then((data) => {
         if (!cancelled) setFiguresLoaded(ok(figureKey, data));
@@ -256,6 +284,7 @@ export default function ReportPage() {
   const scenarios = resolve(scenariosLoaded, "scenarios");
   const spine = resolve(spineLoaded, "spine");
   const profiles = resolve(profilesLoaded, "profiles");
+  const approvalSessions = resolve(approvalSessionsLoaded, "approvalSessions");
   const tables = resolve(figuresLoaded, figureKey);
   const graphics = resolve(graphicsLoaded, figureKey);
 
@@ -416,6 +445,60 @@ export default function ReportPage() {
           </select>
         </label>
 
+        {/* R-5c: the approval-history session picker. Renders ONLY when the
+            server actually measured a session worth offering (never an empty
+            <select>); the default stays "선택 안 함" so an untouched screen
+            keeps rendering approval_history_table's own named absence exactly
+            as it did before this unit. */}
+        {approvalSessions.loading ? (
+          <p className="text-[13px] text-slate-500">
+            {t(
+              "승인 이력 세션 목록을 불러오는 중…",
+              "Loading approval-history sessions…",
+              "承認履歴セッション一覧を読み込み中…",
+            )}
+          </p>
+        ) : approvalSessions.data !== null && approvalSessions.data.sessions.length > 0 ? (
+          <label className="flex flex-col gap-1 text-[14px] text-slate-600">
+            <span className="font-semibold">{t("승인 이력 세션", "Approval-history session", "承認履歴セッション")}</span>
+            <select
+              value={approvalSessionId}
+              onChange={(event) => setApprovalSessionId(event.target.value)}
+              className="ui-select h-9 min-w-[240px] rounded-md border border-slate-300 px-2 text-[14px]"
+            >
+              <option value="">{t("선택 안 함", "Not selected", "選択しない")}</option>
+              {approvalSessions.data.sessions.map((session) => (
+                <option key={session.session_id} value={session.session_id}>
+                  {session.session_id} ({session.approval_count}
+                  {session.last_approval_at ? ` · ${session.last_approval_at}` : ""})
+                </option>
+              ))}
+            </select>
+            {/* R-5c refuter fix: the backend caps this list (default 20) and
+                discloses `total` rather than truncating silently -- when the
+                cap actually hid something, this line says so instead of
+                letting an older approval-bearing session go missing with no
+                trace. */}
+            {approvalSessions.data.total > approvalSessions.data.sessions.length ? (
+              <span className="text-[12px] text-slate-500">
+                {t(
+                  `최근 ${approvalSessions.data.sessions.length}건만 표시됩니다 (전체 ${approvalSessions.data.total}건) — 더 오래된 세션은 목록에 없을 수 있습니다.`,
+                  `Showing only the most recent ${approvalSessions.data.sessions.length} of ${approvalSessions.data.total} sessions — older ones may be missing from this list.`,
+                  `直近${approvalSessions.data.sessions.length}件のみ表示（全${approvalSessions.data.total}件）— これより古いセッションは一覧にない場合があります。`,
+                )}
+              </span>
+            ) : null}
+          </label>
+        ) : (
+          <p className="text-[13px] text-slate-500">
+            {t(
+              "승인 이력을 가진 세션이 없습니다.",
+              "No session carries an approval history.",
+              "承認履歴を持つセッションがありません。",
+            )}
+          </p>
+        )}
+
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -446,6 +529,16 @@ export default function ReportPage() {
             "저장된 스타일 프로파일 목록을 읽지 못했습니다 — Prism 기본 스타일로만 생성할 수 있습니다.",
             "The stored style profiles could not be read — only the Prism default style is available.",
             "保存済みスタイルプロファイル一覧を読めませんでした — Prism既定スタイルでのみ生成できます。",
+          )}
+        </p>
+      ) : null}
+
+      {approvalSessions.error !== null ? (
+        <p className="rounded-lg border border-slate-300 px-3 py-2 text-[14px] text-slate-500">
+          {t(
+            "승인 이력이 있는 세션 목록을 읽지 못했습니다 — 세션을 선택하지 않은 것과 동일하게 처리됩니다.",
+            "The list of sessions with an approval history could not be read — treated the same as none selected.",
+            "承認履歴のあるセッション一覧を読めませんでした — 選択なしと同様に扱われます。",
           )}
         </p>
       ) : null}

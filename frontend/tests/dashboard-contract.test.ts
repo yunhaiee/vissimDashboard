@@ -14387,13 +14387,16 @@ contractTest("R-5b: /report is the design doc's layout, and the old workbook pat
   );
 
   // 상단: the run picker, the before/after pair the 전후 차트 needs, the style
-  // profile (default = Prism 기본), and the report language.
+  // profile (default = Prism 기본), the report language, and (R-5c,
+  // docs/phase2/DECISIONS.md 2026-08-24 "승인 이력 세션 픽커는 위임") the
+  // approval-history session picker R-5b's own gap report named.
   for (const [state, what] of [
     ["setScenarioId", "the run picker"],
     ["setBeforeScenarioId", "the before-run picker the 전후 chart needs"],
     ["setAfterScenarioId", "the after-run picker the 전후 chart needs"],
     ["setStyleProfileId", "the style-profile picker"],
     ["setReportLanguage", "the report-language picker"],
+    ["setApprovalSessionId", "the R-5c approval-history session picker"],
   ] as const) {
     pin.match(page, literalPattern(state), `expected ${what} in the top bar`);
   }
@@ -14405,13 +14408,26 @@ contractTest("R-5b: /report is the design doc's layout, and the old workbook pat
     /<option key=\{scenario\.id\} value=\{scenario\.id\}>\s*\{scenario\.name\}/,
     "expected the run pickers to carry the scenario ID as the option value and the name only as the label",
   );
+  // The same idiom, on the R-5c picker: the option's VALUE is the raw
+  // session_id field the backend measured, never a formatted display string
+  // (the display text -- id + count + date -- sits in the JSX text node that
+  // follows, not in the value). MEASURED mutation: swapping `value={session.
+  // session_id}` for a display-label expression survives every other pin in
+  // this file (nothing else regexes the SELECT's runtime value), so this is
+  // the one guard against a picker that submits a label instead of an id.
+  pin.match(
+    page,
+    /<option key=\{session\.session_id\} value=\{session\.session_id\}>/,
+    "expected the approval-history session picker's <option value> to be the raw session_id field, never a formatted display string",
+  );
 
-  // Every endpoint R-1..R-5a publishes is wired.
+  // Every endpoint R-1..R-5a publishes is wired, plus R-5c's session list.
   for (const call of [
     "fetchReportSpine()",
     "fetchReportFigures(figureParams)",
     "fetchReportGraphics(figureParams)",
     "fetchReportStyleProfiles()",
+    "fetchReportAuditSessions()",
     "composeReport(requestBody)",
     "composeReportArtifacts(requestBody)",
   ]) {
@@ -14499,13 +14515,34 @@ contractTest("R-5b: the compose request body is the selection on screen, and the
     /\[includedSectionIds, styleProfileId, effectiveLanguage, figureParams\]/,
     "expected the memoised request body to depend on `figureParams` itself, so a change to the preview's inputs rebuilds the document's",
   );
-  // ONE construction site for the figure params, counted by the three field
-  // names appearing together. A second equal-fields literal anywhere in this
-  // file -- the refuter's mutation -- makes this 2.
+  // ONE construction site for the figure params, counted by the FOUR field
+  // names appearing together -- R-5c (docs/phase2/DECISIONS.md, 2026-08-24
+  // "승인 이력 세션 픽커는 위임") extended this same tuple with `session_id`
+  // rather than forking a second params object for the approval-history
+  // picker, precisely so this pin (and the two above it) keep holding: the
+  // preview fetch and the compose body still read the ONE `figureParams`
+  // identifier, so a session picked on screen cannot diverge from the
+  // session the document is typeset from. A second equal-fields literal
+  // anywhere in this file -- the refuter's original mutation, and equally a
+  // NEW literal that sets `session_id` outside this one -- makes this count
+  // 2 or drops the fourth clause from the match entirely.
   pin.match(
-    `figureParamConstructions=${(withoutComments(page).match(/scenario_id:[\s\S]{0,200}?before_scenario_id:[\s\S]{0,200}?after_scenario_id:/g) ?? []).length}`,
+    `figureParamConstructions=${(withoutComments(page).match(/scenario_id:[\s\S]{0,200}?before_scenario_id:[\s\S]{0,200}?after_scenario_id:[\s\S]{0,200}?session_id:/g) ?? []).length}`,
     /^figureParamConstructions=1$/,
-    "expected exactly ONE place on this screen to build the figure params -- a second construction is how the preview and the document start describing different runs",
+    "expected exactly ONE place on this screen to build the figure params, including R-5c's session_id field -- a second construction (or a session_id set outside this one) is how the preview and the document start describing different sessions",
+  );
+  // session_id's OWN single-source-of-truth pin, exact-string rather than a
+  // bare word-boundary count: the picker's <option>/<select> legitimately
+  // reference `session.session_id` (a LIST ITEM's field) several times to
+  // build its options, which the generic per-field-count idiom below cannot
+  // tell apart from a second WRITE into figureParams. This pin anchors on the
+  // one shape that IS a write -- the `session_id: approvalSessionId || null,`
+  // key -- so it stays meaningful even though the identifier `session_id`
+  // itself appears more than once on this screen.
+  pin.match(
+    `sessionIdAssignments=${(withoutComments(page).match(/session_id: approvalSessionId \|\| null,/g) ?? []).length}`,
+    /^sessionIdAssignments=1$/,
+    "expected exactly ONE place this screen sets figureParams.session_id -- a second is a second source of truth for which session's approval history the report scores",
   );
   for (const field of ["scenario_id", "before_scenario_id", "after_scenario_id"]) {
     pin.match(
@@ -14525,6 +14562,97 @@ contractTest("R-5b: the compose request body is the selection on screen, and the
     /\.\.\.body|delete body|Object\.assign/,
     "expected composeReport to add no field and remove none -- what the screen shows is what the typesetter is asked for",
   );
+});
+
+contractTest("R-5c: the approval-history session picker is delegated, measured, and never invents", (pin) => {
+  // Track R unit R-5c (docs/phase2/DECISIONS.md, 2026-08-24 "HWP는 v1 제외
+  // 확정 · 승인 이력 세션 픽커는 위임"): R-5b named the gap -- /report had no
+  // session_id input, so figures.approval_history_table rendered a permanent
+  // named absence. This test extends R-5b's OWN pins above (the top-bar
+  // affordance list, the endpoint-wiring list, and figureParamConstructions)
+  // rather than duplicating them, and adds the shapes specific to this unit:
+  // the server is the only source of which sessions exist, the picker's
+  // value is the raw id, and the untouched default keeps today's
+  // absent-with-reason behaviour exactly as it was.
+  const page = read("app/report/page.tsx");
+  const source = withoutComments(page);
+
+  // ABSENT BY DEFAULT. `approvalSessionId` starts at "", the same idiom every
+  // other figure-params field on this screen uses, and NOTHING seeds it from
+  // the fetched list -- an untouched screen must keep asking for the figure
+  // with no session_id, exactly as it did before this unit existed (R-2's
+  // approval_history_table renders its own named absence for that case).
+  pin.match(
+    source,
+    /const \[approvalSessionId, setApprovalSessionId\] = useState\(""\);/,
+    "expected approvalSessionId to default to the empty string -- the same 'nothing picked yet' idiom every other figure-params field uses",
+  );
+  pin.doesNotMatch(
+    source,
+    /setApprovalSessionId\((?!""\)|event\.target\.value\))/,
+    "expected setApprovalSessionId to be called ONLY by the picker's onChange (event.target.value) or a reset to \"\" -- anything else is the screen choosing a session on the user's behalf",
+  );
+
+  // NEVER INVENTED: the ONLY source of session rows on screen is the fetched
+  // list. A well-meaning "helpfully" default -- e.g. auto-selecting
+  // approvalSessions.data.sessions[0] -- would defeat the picker's whole
+  // point (a session the SERVER did not measure as ledger-bearing must never
+  // be sent), so this bans indexing into the fetched array anywhere outside
+  // the options-rendering map.
+  const topBar = sliceBetween(page, "{/* R-5c: the approval-history session picker.", "<div className=\"flex items-center gap-2\">");
+  pin.match(topBar, /\S/, "expected to find the R-5c picker's own top-bar slice (markers moved?)");
+  pin.doesNotMatch(
+    withoutComments(topBar),
+    /approvalSessions\.data\.sessions\[|approvalSessions\.data\.sessions\.find|approvalSessions\.data\.sessions\.at\(/,
+    "expected the picker to render every fetched session as an <option> and pick none of them automatically -- selection is the user's act, not this screen's guess",
+  );
+
+  // THE THREE STATES, structurally: loading, a real non-empty list (the
+  // <select>), and everything else (zero sessions OR an unread list) as one
+  // named line -- never an empty <select> with only the placeholder option.
+  pin.match(
+    topBar,
+    /approvalSessions\.loading \? \([\s\S]{0,400}approvalSessions\.data !== null && approvalSessions\.data\.sessions\.length > 0 \? \([\s\S]{0,2000}<select[\s\S]{0,2000}\) : \(/,
+    "expected the picker to gate the <select> on a REAL non-empty fetched list, with loading handled as its own branch first",
+  );
+  pin.doesNotMatch(
+    withoutComments(topBar),
+    /<select[^>]*>\s*(?:\{[^}]*\}\s*)?<option value="">[^<]*<\/option>\s*<\/select>/,
+    "expected the zero-sessions state to render a named line, not a <select> holding only the placeholder option",
+  );
+
+  // THE CAP DISCLOSURE (refuter fix, 2026-08-25): the backend caps this list
+  // (default 20, ?limit= up to 200) and returns `total`, the count BEFORE
+  // truncation, specifically so an older approval-bearing session going
+  // missing is never silent. This pins the comparison structurally --
+  // `total > sessions.length` -- so a mutation that always/never shows the
+  // note, or that compares the wrong pair of numbers, fails here.
+  pin.match(
+    topBar,
+    /approvalSessions\.data\.total > approvalSessions\.data\.sessions\.length \? \(/,
+    "expected the truncation note to be gated on total EXCEEDING the returned count, not on any other condition",
+  );
+  pin.match(
+    topBar,
+    tripleArgs(
+      "최근 ${approvalSessions.data.sessions.length}건만 표시됩니다 (전체 ${approvalSessions.data.total}건) — 더 오래된 세션은 목록에 없을 수 있습니다.",
+      "Showing only the most recent ${approvalSessions.data.sessions.length} of ${approvalSessions.data.total} sessions — older ones may be missing from this list.",
+      "直近${approvalSessions.data.sessions.length}件のみ表示（全${approvalSessions.data.total}件）— これより古いセッションは一覧にない場合があります。",
+      "`",
+    ),
+    "expected the truncation note's exact ko/en/ja triple, each interpolating the SHOWN count and the TOTAL",
+  );
+
+  // ko/en/ja for the picker's own strings, and none of them may go blank --
+  // the general per-file ban lower in this suite covers every t() call, this
+  // just names the R-5c ones for a reader tracing this unit specifically.
+  for (const [ko, en, ja] of [
+    ["승인 이력 세션", "Approval-history session", "承認履歴セッション"],
+    ["승인 이력 세션 목록을 불러오는 중…", "Loading approval-history sessions…", "承認履歴セッション一覧を読み込み中…"],
+    ["승인 이력을 가진 세션이 없습니다.", "No session carries an approval history.", "承認履歴を持つセッションがありません。"],
+  ] as const) {
+    pin.match(source, tripleArgs(ko, en, ja), `expected the R-5c picker's exact ko/en/ja triple for ${ko}`);
+  }
 });
 
 contractTest("R-5b: every absence and every limitation on /report is the server's own sentence", (pin) => {
@@ -14829,6 +14957,24 @@ contractTest("R-5b: every string this unit added is a real ko/en/ja triple", (pi
     ["보고서 언어", "Report language", "レポート言語"],
     ["화면 언어를 따름", "Follow the screen", "画面の言語に従う"],
     ["선택 안 함", "Not selected", "選択しない"],
+    // R-5c (docs/phase2/DECISIONS.md, 2026-08-24 "승인 이력 세션 픽커는 위임"):
+    // the approval-history session picker's own three states.
+    ["승인 이력 세션", "Approval-history session", "承認履歴セッション"],
+    [
+      "승인 이력 세션 목록을 불러오는 중…",
+      "Loading approval-history sessions…",
+      "承認履歴セッション一覧を読み込み中…",
+    ],
+    [
+      "승인 이력을 가진 세션이 없습니다.",
+      "No session carries an approval history.",
+      "承認履歴を持つセッションがありません。",
+    ],
+    [
+      "승인 이력이 있는 세션 목록을 읽지 못했습니다 — 세션을 선택하지 않은 것과 동일하게 처리됩니다.",
+      "The list of sessions with an approval history could not be read — treated the same as none selected.",
+      "承認履歴のあるセッション一覧を読めませんでした — 選択なしと同様に扱われます。",
+    ],
     ["생성 (DOCX + 도판 zip)", "Generate (DOCX + figure zip)", "生成 (DOCX + 図版zip)"],
     ["도판 원본 zip만", "Figure originals zip only", "図版原本zipのみ"],
     ["생성 중…", "Generating…", "生成中…"],
