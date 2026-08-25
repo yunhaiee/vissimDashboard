@@ -38,8 +38,11 @@
 // carries.
 // ---------------------------------------------------------------------------
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useAuth } from "@/components/AuthProvider";
 import { useLanguage } from "@/components/LanguageProvider";
 import LegacyReportBuilder from "@/components/report/LegacyReportBuilder";
 import {
@@ -51,6 +54,7 @@ import {
   fetchReportSpine,
   fetchReportStyleProfiles,
   fetchScenarios,
+  uploadReportStyleProfile,
   ReportRefusedError,
   type ComposeReportRequest,
   type ReportAuditSessionsPage,
@@ -60,11 +64,14 @@ import {
   type ReportRefusal,
   type ReportSpinePayload,
   type ReportSpineSection,
+  type ReportStyleProfileRecord,
   type ReportStyleProfileSummary,
   type ReportTableFigure,
   type ScenarioMeta,
 } from "@/lib/api";
 import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
+import { loginHref } from "@/lib/authRedirect";
+import { buildMarkdownPreview } from "@/lib/reportMarkdownPreview";
 import {
   readReportManifest,
   SECTION_STATE_EXCLUDED,
@@ -156,6 +163,8 @@ type ComposeOutcome = {
 
 export default function ReportPage() {
   const { lang, t } = useLanguage();
+  const { status: authStatus } = useAuth();
+  const pathname = usePathname();
 
   const [scenariosLoaded, setScenariosLoaded] = useState<Loaded<ScenarioMeta[]> | null>(null);
   const [spineLoaded, setSpineLoaded] = useState<Loaded<ReportSpinePayload> | null>(null);
@@ -178,6 +187,21 @@ export default function ReportPage() {
   const [refusal, setRefusal] = useState<ReportRefusal | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<ComposeOutcome | null>(null);
+
+  // #60b (docs/phase2/DECISIONS.md, 2026-08-25 "/report 정리 + 프로파일 문"):
+  // the profile-upload door's own state, kept separate from the compose
+  // outcome above -- an upload is a DIFFERENT action with a different
+  // receipt (a stored profile, not a document), so its busy/refusal/failure
+  // must never blank or be blanked by a compose in flight.
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadRefusal, setUploadRefusal] = useState<ReportRefusal | null>(null);
+  const [uploadFailure, setUploadFailure] = useState<string | null>(null);
+  const [uploadedProfile, setUploadedProfile] = useState<ReportStyleProfileRecord | null>(null);
+
+  // #60b: the client-only Markdown text projection's own fold state -- it
+  // renders nothing this screen did not already fetch, so it needs no
+  // Loaded<> of its own.
+  const [mdPreviewOpen, setMdPreviewOpen] = useState(false);
 
   // R-5c (docs/phase2/DECISIONS.md, 2026-08-24 "승인 이력 세션 픽커는 위임"):
   // `session_id` joins this SAME object, at its ONE construction site, rather
@@ -358,6 +382,61 @@ export default function ReportPage() {
     [requestBody],
   );
 
+  // #60b: uploads to R-4's OWN route (POST /api/report/style-profiles) --
+  // never a new backend surface. On success this REFRESHES the profile list
+  // from the server (not a locally-patched array, which could drift from
+  // what the backend actually now holds) and SELECTS the new profile, so the
+  // very next compose is already offered to use it.
+  const uploadProfile = useCallback(async (file: File) => {
+    setUploadBusy(true);
+    setUploadRefusal(null);
+    setUploadFailure(null);
+    try {
+      const record = await uploadReportStyleProfile(file);
+      setUploadedProfile(record);
+      const refreshed = await fetchReportStyleProfiles();
+      setProfilesLoaded(ok("profiles", refreshed));
+      setStyleProfileId(record.id);
+    } catch (caught) {
+      if (caught instanceof ReportRefusedError) {
+        setUploadRefusal(caught.refusal);
+      } else {
+        setUploadFailure(caught instanceof Error ? caught.message : String(caught));
+      }
+    } finally {
+      setUploadBusy(false);
+    }
+  }, []);
+
+  // #60b: THE TEXT PREVIEW. Built client-side from the SAME payloads already
+  // on screen -- `sections`, `tables.data`, `graphics.data` -- fetched with
+  // the one `figureParams` above; no second request. See
+  // lib/reportMarkdownPreview.ts for what "no invented content" means here.
+  const unboundTitle = t("절에 묶이지 않은 도판", "Figures bound to no section", "節に紐づかない図版");
+  const markdownPreview = useMemo(
+    () =>
+      buildMarkdownPreview({
+        lang,
+        t,
+        sections,
+        tableFigures: tables.data ?? [],
+        graphicFigures: graphics.data ?? [],
+        unboundTitle,
+        excludedSectionIds,
+      }),
+    [lang, t, sections, tables.data, graphics.data, unboundTitle, excludedSectionIds],
+  );
+
+  // A CLIENT-SIDE blob download, deliberately NOT the compose idiom above
+  // (`composeReport`/`composeReportArtifacts`, which stream the server's own
+  // `Content-Disposition` filename). This file never leaves the browser --
+  // it is a projection of data already on screen, not a server artifact --
+  // so `downloadBlob` (already defined above for the compose downloads) is
+  // handed a blob this page built rather than one the network returned.
+  const downloadMarkdownPreview = useCallback(() => {
+    downloadBlob(new Blob([markdownPreview], { type: "text/markdown;charset=utf-8" }), "report-preview.md");
+  }, [markdownPreview]);
+
   const runOptions = (scenarios.data ?? []).map((scenario) => (
     <option key={scenario.id} value={scenario.id}>
       {scenario.name}
@@ -430,6 +509,67 @@ export default function ReportPage() {
             ))}
           </select>
         </label>
+
+        {/* #60b (docs/phase2/DECISIONS.md, 2026-08-25 "/report 정리 + 프로파일
+            문"): the door the user's own walkthrough named missing -- R-4's
+            extractor existed only on the backend and R-5b only ever READ
+            stored profiles, so a past company report's DOCX had nowhere to
+            land on screen. THREE STATES, exactly like `NetworkDiffView`'s
+            401 handling: still loading (no affordance either way -- a
+            control that might 401 the instant it is clicked is not a
+            control), signed out (a NAMED line, never a dead file input --
+            `useAuth()` is asked BEFORE the door renders rather than after a
+            doomed upload attempt), and signed in (the real control). */}
+        <div className="flex flex-col gap-1 text-[14px] text-slate-600">
+          <span className="font-semibold">{t("프로파일 업로드", "Upload profile", "プロファイルのアップロード")}</span>
+          {authStatus === "loading" ? null : authStatus === "anonymous" ? (
+            <p className="text-[13px] text-slate-500">
+              {t(
+                "스타일 프로파일을 업로드하려면 로그인이 필요합니다.",
+                "Signing in is required to upload a style profile.",
+                "スタイルプロファイルをアップロードするにはログインが必要です。",
+              )}{" "}
+              <Link href={loginHref(pathname)} className="font-semibold underline">
+                {t("로그인", "Sign in", "ログイン")}
+              </Link>
+            </p>
+          ) : (
+            <input
+              type="file"
+              accept=".docx"
+              disabled={uploadBusy}
+              aria-label={t("프로파일 업로드", "Upload profile", "プロファイルのアップロード")}
+              onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                event.target.value = "";
+                if (file) void uploadProfile(file);
+              }}
+              className="text-[13px]"
+            />
+          )}
+          {uploadBusy ? (
+            <p className="text-[12px] text-slate-500">{t("업로드 중…", "Uploading…", "アップロード中…")}</p>
+          ) : uploadRefusal !== null ? (
+            <p className="text-[12px] text-slate-500">{pick(uploadRefusal.message, lang)}</p>
+          ) : uploadFailure !== null ? (
+            <p className="text-[12px] text-slate-500">{uploadFailure}</p>
+          ) : uploadedProfile !== null ? (
+            <div className="text-[12px] text-slate-500">
+              <p>
+                {t(
+                  `새 프로파일을 저장했습니다: ${uploadedProfile.name}`,
+                  `Saved a new profile: ${uploadedProfile.name}`,
+                  `新しいプロファイルを保存しました: ${uploadedProfile.name}`,
+                )}
+              </p>
+              {(uploadedProfile.original_profile.not_extracted ?? []).map((item) => (
+                <p key={item.field}>
+                  {t("추출 불가", "not extractable", "抽出不可")} — {item.field}: {pick(item.reason, lang)}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </div>
 
         <label className="flex flex-col gap-1 text-[14px] text-slate-600">
           <span className="font-semibold">{t("보고서 언어", "Report language", "レポート言語")}</span>
@@ -520,8 +660,46 @@ export default function ReportPage() {
               ? t("내보내는 중…", "Exporting…", "書き出し中…")
               : t("도판 원본 zip만", "Figure originals zip only", "図版原本zipのみ")}
           </button>
+          <button
+            type="button"
+            onClick={() => setMdPreviewOpen((previous) => !previous)}
+            className="ui-button-ghost px-3 py-2 text-[14px]"
+          >
+            {t("미리보기 (텍스트)", "Preview (text)", "プレビュー（テキスト）")}
+          </button>
         </div>
       </section>
+
+      {/* ---- #60b: the TEXT-ONLY Markdown projection, a client-side read of
+          the same fetched payloads above -- no style, no image, and no new
+          request. See lib/reportMarkdownPreview.ts's module comment for what
+          "no invented content" means for this pane. */}
+      {mdPreviewOpen ? (
+        <section className="rounded-xl border border-slate-200 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-[15px] font-semibold text-white">
+              {t("미리보기 (텍스트)", "Preview (text)", "プレビュー（テキスト）")}
+            </h2>
+            <button
+              type="button"
+              onClick={downloadMarkdownPreview}
+              className="ui-button-ghost px-3 py-1.5 text-[13px]"
+            >
+              {t("다운로드 (.md)", "Download (.md)", "ダウンロード（.md）")}
+            </button>
+          </div>
+          <p className="mt-1 text-[12px] text-slate-500">
+            {t(
+              "서식 없는 텍스트 사본입니다 — 스타일 미리보기가 아닙니다.",
+              "A styling-free text copy — not a style preview.",
+              "書式のないテキスト写しです — スタイルプレビューではありません。",
+            )}
+          </p>
+          <pre className="mt-2 max-h-[480px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 p-3 text-[12px] text-slate-700">
+            {markdownPreview}
+          </pre>
+        </section>
+      ) : null}
 
       {profiles.error !== null ? (
         <p className="rounded-lg border border-slate-300 px-3 py-2 text-[14px] text-slate-500">
@@ -587,7 +765,17 @@ export default function ReportPage() {
             </p>
           ) : (
             <>
-              <p className="mt-1 text-[12px] text-slate-500">{spine.data.minimum.sentence}</p>
+              {/* #60b (docs/phase2/DECISIONS.md, 2026-08-25 "/report 정리"): this
+                  sentence quotes MRWA OMG v2.0 verbatim and runs 350 characters --
+                  paragraph-length fine print, not a status line, so it moves behind
+                  the app's established 자세히 fold instead of sitting open on the
+                  tree's surface. The MD text preview below carries it too. */}
+              <details className="mt-1">
+                <summary className="cursor-pointer text-[12px] text-slate-500">
+                  {t("자세히 (스파인의 근거)", "More (the spine's own basis)", "詳細（スパインの根拠）")}
+                </summary>
+                <p className="mt-1 text-[12px] text-slate-500">{spine.data.minimum.sentence}</p>
+              </details>
               <ol className="mt-3 space-y-2">
                 {sections.map((section) => (
                   <li key={section.id} className="rounded-lg border border-slate-200 px-3 py-2">
@@ -604,11 +792,7 @@ export default function ReportPage() {
                       lang={lang}
                       t={t}
                     />
-                    {section.basis.map((line) => (
-                      <p key={line} className="mt-1 text-[12px] text-slate-500">
-                        {line}
-                      </p>
-                    ))}
+                    <BasisFold basis={section.basis} t={t} />
                   </li>
                 ))}
                 {unboundFigures.length > 0 ? (
@@ -704,6 +888,56 @@ function SectionToggle(props: { title: string; included: boolean; onToggle: () =
   );
 }
 
+/** A section's `basis` -- the MRWA clause quote(s) it exists because of --
+ * behind the app's established 자세히 fold (#60b, docs/phase2/DECISIONS.md
+ * "2026-08-25 — /report 정리"). MEASURED live on this build's own data: each
+ * quote runs 200-380 characters, paragraph length, never a status line, so it
+ * is exactly the class the user's "if they are the paragraphs, dont show
+ * them" asked off the default surface. Renders nothing for a section with no
+ * basis (the design doc's own admin-added sections may have none) rather than
+ * an empty fold with nothing inside it. */
+function BasisFold(props: { basis: string[]; t: Translate }) {
+  const { basis, t } = props;
+  if (basis.length === 0) return null;
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer text-[12px] text-slate-500">
+        {t("자세히 (근거 조항 원문)", "More (the regulation clause text)", "詳細（根拠条文原文）")}
+      </summary>
+      {basis.map((line) => (
+        <p key={line} className="mt-1 text-[12px] text-slate-500">
+          {line}
+        </p>
+      ))}
+    </details>
+  );
+}
+
+/** A section's NOT_AVAILABLE Table 5-15 outputs, behind the same 자세히 fold
+ * as `BasisFold` (#60b). MEASURED live: R-1's own reason for each gap runs
+ * 200-490 characters -- the user's own words named this exact shape
+ * ("per-output NOT_AVAILABLE reason paragraphs") as fine print to move, in
+ * the same breath as the MRWA quotes. The literal `{output.name}:
+ * {output.reason}` line is UNCHANGED from before this unit -- only its
+ * wrapper moved -- so it stays the server's own sentence, verbatim, exactly
+ * as the R-5b pin already requires. */
+function NotAvailableFold(props: { notAvailable: { name: string; reason: string }[]; t: Translate }) {
+  const { notAvailable, t } = props;
+  if (notAvailable.length === 0) return null;
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer text-[13px] text-slate-500">
+        {t("자세히 (추출 불가 사유)", "More (why these could not be extracted)", "詳細（抽出できなかった理由）")}
+      </summary>
+      {notAvailable.map((output) => (
+        <p key={output.name} className="mt-1 text-[13px] text-slate-500">
+          {t("추출 불가", "not extractable", "抽出不可")} — {output.name}: {output.reason}
+        </p>
+      ))}
+    </details>
+  );
+}
+
 /** The per-section data-source state the design doc asks the tree to carry. A
  * present figure is named; an absent one is grey and carries the SERVER's own
  * reason; a section with no figure at all says so and names the module that
@@ -740,11 +974,7 @@ function EvidenceStateList(props: {
           ))}
         </ul>
       )}
-      {notAvailable.map((output) => (
-        <p key={output.name} className="mt-1 text-[13px] text-slate-500">
-          {t("추출 불가", "not extractable", "抽出不可")} — {output.name}: {output.reason}
-        </p>
-      ))}
+      <NotAvailableFold notAvailable={notAvailable} t={t} />
     </>
   );
 }
@@ -778,11 +1008,7 @@ function SectionPreview(props: {
   return (
     <section className="rounded-xl border border-slate-200 px-4 py-3">
       <h3 className="text-[15px] font-semibold text-white">{title}</h3>
-      {basis.map((line) => (
-        <p key={line} className="mt-1 text-[12px] text-slate-500">
-          {line}
-        </p>
-      ))}
+      <BasisFold basis={basis} t={t} />
 
       {figures.length === 0 ? (
         <p className="mt-2 text-[14px] text-slate-500">
@@ -798,11 +1024,7 @@ function SectionPreview(props: {
         )
       )}
 
-      {notAvailable.map((output) => (
-        <p key={output.name} className="mt-2 text-[13px] text-slate-500">
-          {t("추출 불가", "not extractable", "抽出不可")} — {output.name}: {output.reason}
-        </p>
-      ))}
+      <NotAvailableFold notAvailable={notAvailable} t={t} />
     </section>
   );
 }
@@ -848,7 +1070,7 @@ function TableFigureBlock(props: { figure: ReportTableFigure; lang: string; t: T
           </tbody>
         </table>
       </div>
-      <SourceCaptionLine caption={figure.source_caption} citation={figure.citation} t={t} />
+      <CaptionFold caption={figure.source_caption} citation={figure.citation} t={t} />
     </div>
   );
 }
@@ -884,8 +1106,31 @@ function GraphicFigureBlock(props: { figure: ReportGraphicFigure; lang: string; 
           {(figure.legend ?? []).map((entry) => pick(entry, lang)).join(" · ")}
         </p>
       ) : null}
-      <SourceCaptionLine caption={figure.source_caption} citation={figure.citation} t={t} />
+      <CaptionFold caption={figure.source_caption} citation={figure.citation} t={t} />
     </div>
+  );
+}
+
+/** `SourceCaptionLine` behind the same 자세히 fold as `BasisFold`/
+ * `NotAvailableFold` (#60b). MEASURED live: `dataset_revision` and `reader`
+ * alone push a real caption line past 300-450 characters -- paragraph length,
+ * exactly the "figure caption/citation lines" the user's own words named
+ * among the fine print to move off the surface. Folded uniformly (the rarer
+ * "출처 정보 없음" one-liner included) rather than branching on content length
+ * here, which would duplicate `SourceCaptionLine`'s own presence check. */
+function CaptionFold(props: {
+  caption: ReportFigureSourceCaption | undefined;
+  citation: string | null | undefined;
+  t: Translate;
+}) {
+  const { caption, citation, t } = props;
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer text-[12px] text-slate-500">
+        {t("자세히 (출처·인용)", "More (source, citation)", "詳細（出典・引用）")}
+      </summary>
+      <SourceCaptionLine caption={caption} citation={citation} t={t} />
+    </details>
   );
 }
 

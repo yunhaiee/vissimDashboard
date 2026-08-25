@@ -14873,10 +14873,29 @@ contractTest("R-5b: every absence and every limitation on /report is the server'
   // bare substring pin stayed green while one of them was replaced with a
   // client-written "no reason" sentence, because the other one still matched.
   // The same shape #58's `수준 / 계획 ID` count pin exists for.
+  //
+  // RE-ANCHORED (#60b, docs/phase2/DECISIONS.md "2026-08-25 -- 사용자 테스트
+  // 1차 피드백"): the two inline renders this pin used to count were folded
+  // into ONE shared `NotAvailableFold` component -- R-1's own reason for a
+  // NOT_AVAILABLE output runs 200-490 characters live, paragraph length, and
+  // the user's own words named exactly this shape ("per-output NOT_AVAILABLE
+  // reason paragraphs") as fine print to move behind the app's established
+  // 자세히 fold. The literal `{output.name}: {output.reason}` line the OLD
+  // pin counted now appears once, not twice, by construction -- sharing the
+  // renderer is a STRONGER guarantee against "one site drifts, the other
+  // doesn't" than duplicating it ever was, since there is only one
+  // implementation left to drift. This pin now counts the TWO CALL SITES
+  // instead, so a mutation that drops either call (or inlines a second,
+  // divergent renderer past the shared one) still fails here.
   pin.match(
-    `notAvailableRows=${(source.match(/\{output\.name\}: \{output\.reason\}/g) ?? []).length}`,
-    /^notAvailableRows=2$/,
-    "expected BOTH the tree row and the preview row to carry R-1's own measured reason for a NOT_AVAILABLE output -- one of them drifting is how half a screen starts inventing reasons",
+    source,
+    /\{output\.name\}: \{output\.reason\}/,
+    "expected NotAvailableFold's shared render to carry R-1's own measured reason for a NOT_AVAILABLE output, verbatim",
+  );
+  pin.match(
+    `notAvailableFoldCallSites=${(source.match(/<NotAvailableFold notAvailable=\{notAvailable\} t=\{t\} \/>/g) ?? []).length}`,
+    /^notAvailableFoldCallSites=2$/,
+    "expected BOTH the tree row and the preview row to hand their own NOT_AVAILABLE list to the shared fold -- one of them drifting (a second inline renderer, or a dropped call) is how half a screen stops naming a gap",
   );
   pin.match(
     `absenceSentences=${(source.match(/\{pick\(figure\.reason, lang\)\}<\/p>/g) ?? []).length}`,
@@ -15227,6 +15246,34 @@ contractTest("R-5b: every string this unit added is a real ko/en/ja triple", (pi
       "The downloaded file could not be read as a zip.",
       "ダウンロードしたファイルをzipとして読めませんでした。",
     ],
+    // #60b (docs/phase2/DECISIONS.md, 2026-08-25 "/report 정리 + 프로파일
+    // 문"): the four 자세히 folds that took the MRWA quotes, the NOT_AVAILABLE
+    // paragraphs and the source-caption/citation lines off the default
+    // surface, the profile-upload door's own three states, and the text
+    // preview's own affordances.
+    ["자세히 (스파인의 근거)", "More (the spine's own basis)", "詳細（スパインの根拠）"],
+    ["자세히 (근거 조항 원문)", "More (the regulation clause text)", "詳細（根拠条文原文）"],
+    [
+      "자세히 (추출 불가 사유)",
+      "More (why these could not be extracted)",
+      "詳細（抽出できなかった理由）",
+    ],
+    ["자세히 (출처·인용)", "More (source, citation)", "詳細（出典・引用）"],
+    ["프로파일 업로드", "Upload profile", "プロファイルのアップロード"],
+    [
+      "스타일 프로파일을 업로드하려면 로그인이 필요합니다.",
+      "Signing in is required to upload a style profile.",
+      "スタイルプロファイルをアップロードするにはログインが必要です。",
+    ],
+    ["로그인", "Sign in", "ログイン"],
+    ["업로드 중…", "Uploading…", "アップロード中…"],
+    ["미리보기 (텍스트)", "Preview (text)", "プレビュー（テキスト）"],
+    ["다운로드 (.md)", "Download (.md)", "ダウンロード（.md）"],
+    [
+      "서식 없는 텍스트 사본입니다 — 스타일 미리보기가 아닙니다.",
+      "A styling-free text copy — not a style preview.",
+      "書式のないテキスト写しです — スタイルプレビューではありません。",
+    ],
   ];
   for (const [ko, en, ja] of PLAIN_TRIPLES) {
     pin.match(page, tripleArgs(ko, en, ja), `expected the report screen's exact ko/en/ja triple for ${ko}`);
@@ -15247,6 +15294,12 @@ contractTest("R-5b: every string this unit added is a real ko/en/ja triple", (pi
       "실림 · 명명된 부재 ${section.named_absences.length}건",
       "included · ${section.named_absences.length} named absence(s)",
       "収録 · 名前付き不在 ${section.named_absences.length}件",
+    ],
+    // #60b: the upload door's own success line, naming the SAVED profile.
+    [
+      "새 프로파일을 저장했습니다: ${uploadedProfile.name}",
+      "Saved a new profile: ${uploadedProfile.name}",
+      "新しいプロファイルを保存しました: ${uploadedProfile.name}",
     ],
   ];
   for (const [ko, en, ja] of TEMPLATE_TRIPLES) {
@@ -15397,4 +15450,407 @@ contractTest("R-5b: the report surface has a 12px floor and no amber", (pin) => 
     /^legacyAmber=3$/,
     "the legacy builder's THREE amber classes are the moved banner and no more -- a fourth means new amber was written into demoted code",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #60b (docs/phase2/DECISIONS.md, "2026-08-25 -- 사용자 테스트 1차
+// 피드백", the #60b block): /report loses its fine print and gains the
+// profile-upload door.
+//
+// User's own words: too many fine texts on the default screen; "if they are
+// the paragraphs, dont show them. make a separate preview file and project
+// texts as md format. text preview only, no style preview"; and "과거
+// 보고서를 올릴 문이 없다" (no door to upload a past report). Two fixes:
+//
+//  1. DECLUTTER. MEASURED live on this build's own data (not assumed):
+//     `section.basis` runs 200-380 characters per quote, a figure's own
+//     absence reason runs 50-110 characters, R-1's NOT_AVAILABLE reason runs
+//     200-490 characters, and a present figure's source-caption/citation
+//     line runs 300-450 characters once `dataset_revision`/`reader` are in
+//     it (which they always are). The first, third and fourth are paragraph
+//     length and moved behind the app's established 자세히 fold; the second
+//     is a genuine one-liner and is UNCHANGED (the R-5b pins above already
+//     anchor it verbatim, unmoved).
+//  2. THE DOOR. `POST /api/report/style-profiles` (R-4) existed on the
+//     backend with nowhere to reach it from the screen -- R-5b only ever
+//     READ stored profiles. A file input joins the style-profile picker,
+//     authenticated the same way `NetworkDiffView`/`app/admin/page.tsx`
+//     already gate on `useAuth()`.
+// ---------------------------------------------------------------------------
+
+contractTest(
+  "#60b: the MRWA quote, the NOT_AVAILABLE paragraph and the caption/citation line moved behind 자세히",
+  (pin) => {
+    const page = read("app/report/page.tsx");
+    const source = withoutComments(page);
+
+    // THE SPINE-LEVEL QUOTE (`spine.data.minimum.sentence`): MEASURED live at
+    // 350 characters -- inside a fold now, not sitting open above the tree.
+    const minimumFold = sliceBetween(page, "자세히 (스파인의 근거)", "</details>");
+    pin.match(minimumFold, /\S/, "expected to find the spine-level basis fold (markers moved?)");
+    pin.match(
+      minimumFold,
+      /\{spine\.data\.minimum\.sentence\}/,
+      "expected the spine's own basis sentence to render INSIDE its fold, not before it",
+    );
+
+    // THE PER-SECTION QUOTE: `BasisFold`, called once from the tree row and
+    // once from the preview card -- MEASURED at 200-380 characters per quote.
+    pin.match(
+      `basisFoldCallSites=${(source.match(/<BasisFold basis=\{(?:section\.basis|basis)\} t=\{t\} \/>/g) ?? []).length}`,
+      /^basisFoldCallSites=2$/,
+      "expected BOTH the tree row and the preview card to hand their own basis array to the shared fold",
+    );
+    const basisFoldBody = sliceBetween(page, "function BasisFold(props", "function NotAvailableFold(");
+    pin.match(basisFoldBody, /\S/, "expected to find BasisFold's own source slice (marker moved?)");
+    pin.match(basisFoldBody, /<details/, "expected BasisFold's own body to be a <details> fold, not an open paragraph");
+    pin.match(
+      basisFoldBody,
+      /\{line\}\s*<\/p>/,
+      "expected BasisFold to still render each basis LINE verbatim WHOLE -- only its wrapper moved",
+    );
+
+    // THE NOT_AVAILABLE PARAGRAPH: `NotAvailableFold` -- its own call-site
+    // count is re-anchored in the "every absence and every limitation" test
+    // above; this only asserts its BODY is actually a fold.
+    const notAvailableFoldBody = sliceBetween(page, "function NotAvailableFold(props", "function EvidenceStateList(");
+    pin.match(notAvailableFoldBody, /\S/, "expected to find NotAvailableFold's own source slice (marker moved?)");
+    pin.match(notAvailableFoldBody, /<details/, "expected NotAvailableFold's own body to be a <details> fold");
+
+    // THE CAPTION/CITATION LINE: `CaptionFold`, called from both figure
+    // kinds -- MEASURED at 300-450 characters once `dataset_revision`/
+    // `reader` sit in the caption (they always do for a present figure).
+    pin.match(
+      `captionFoldCallSites=${(source.match(/<CaptionFold caption=\{figure\.source_caption\} citation=\{figure\.citation\} t=\{t\} \/>/g) ?? []).length}`,
+      /^captionFoldCallSites=2$/,
+      "expected BOTH TableFigureBlock and GraphicFigureBlock to hand their figure's caption/citation to the shared fold",
+    );
+    const captionFoldBody = sliceBetween(page, "function CaptionFold(props", "function SourceCaptionLine(props");
+    pin.match(captionFoldBody, /\S/, "expected to find CaptionFold's own source slice (marker moved?)");
+    pin.match(captionFoldBody, /<details/, "expected CaptionFold's own body to be a <details> fold");
+    pin.match(
+      captionFoldBody,
+      /<SourceCaptionLine caption=\{caption\} citation=\{citation\} t=\{t\} \/>/,
+      "expected CaptionFold to still render SourceCaptionLine INSIDE the fold -- its own verbatim pins (R-5b, elsewhere in this suite) are untouched",
+    );
+  },
+);
+
+contractTest(
+  "#60b: the profile-upload door posts to R-4's own route, refreshes and selects on success, and refusals render verbatim",
+  (pin) => {
+    const page = read("app/report/page.tsx");
+    const source = withoutComments(page);
+    const api = read("lib/api.ts");
+
+    // THE ROUTE. `uploadReportStyleProfile` is the only new mutation this
+    // unit wires, and it must hit R-4's own POST /style-profiles -- a
+    // different path is a different, unreviewed backend surface.
+    const uploader = withoutComments(
+      sliceBetween(api, "export async function uploadReportStyleProfile(", "\nexport "),
+    );
+    pin.match(uploader, /\S/, "expected to find uploadReportStyleProfile's own source slice (marker moved?)");
+    pin.match(
+      uploader,
+      /apiMutationFetch\(`\/api\/report\/style-profiles\?\$\{params\.toString\(\)\}`, \{/,
+      "expected the upload to POST R-4's own /api/report/style-profiles route",
+    );
+    pin.match(uploader, /method: "POST",/, "expected the upload to be a POST, matching the route's own method");
+    pin.match(
+      uploader,
+      /body: file,/,
+      "expected the raw FILE BYTES to be the request body -- this backend carries no multipart/form-data (routers/report.py's own docstring)",
+    );
+
+    // THE CALL SITE hands the picked File straight to the uploader.
+    pin.match(
+      source,
+      /const record = await uploadReportStyleProfile\(file\);/,
+      "expected the upload handler to call uploadReportStyleProfile with the picked File, unmodified",
+    );
+
+    // SUCCESS REFRESHES AND SELECTS. A locally-patched array could drift
+    // from what the backend actually now holds, so the profile list is
+    // RE-FETCHED from the server, and the new profile is SELECTED so the
+    // very next compose already offers it. Adjacency-anchored (the same
+    // idiom the compose-receipt pin above uses) so a mutation that drops
+    // either call, or reorders select-before-refresh, fails here.
+    pin.match(
+      source,
+      /const refreshed = await fetchReportStyleProfiles\(\);\s*setProfilesLoaded\(ok\("profiles", refreshed\)\);\s*setStyleProfileId\(record\.id\);/,
+      "expected a successful upload to REFETCH the profile list from the server and then SELECT the new profile's id, in that order",
+    );
+
+    // THE REFUSAL IS THE SERVER'S OWN SENTENCE, verbatim -- same discipline
+    // as every other refusal on this screen (closing-boundary anchored, the
+    // #55b round-3 idiom, so an appended .slice cannot hide inside it).
+    pin.match(
+      source,
+      /\{pick\(uploadRefusal\.message, lang\)\}<\/p>/,
+      "expected an upload refusal (bomb-guard, not-a-docx) to render the server's own sentence WHOLE",
+    );
+
+    // THE THREE STATES: loading (no affordance either way -- a control that
+    // might 401 the instant it renders is not a control), signed out (a
+    // NAMED line, never a dead file input), signed in (the real control).
+    // `useAuth()` is asked BEFORE the door renders, never after a doomed
+    // upload attempt -- the same order app/admin/page.tsx already uses.
+    pin.match(
+      source,
+      /authStatus === "loading" \? null : authStatus === "anonymous" \? \(/,
+      "expected the upload door to branch on useAuth()'s own three states, loading checked first",
+    );
+    pin.match(
+      source,
+      /<Link href=\{loginHref\(pathname\)\} className="font-semibold underline">/,
+      "expected the signed-out state to offer an actual sign-in link (the NetworkDiffView idiom), not just a sentence",
+    );
+    pin.match(
+      source,
+      /<input\s+type="file"\s+accept="\.docx"/,
+      "expected the signed-in state to render the real file input, restricted to .docx",
+    );
+
+    // THE NOT_EXTRACTED LIST renders as short one-liners (the C1-b grammar:
+    // extraction is a PROPOSAL, not a measurement) -- reusing the exact
+    // "추출 불가" wording the NOT_AVAILABLE outputs already use elsewhere on
+    // this screen, never a client-invented sentence.
+    pin.match(
+      source,
+      /\{\(uploadedProfile\.original_profile\.not_extracted \?\? \[\]\)\.map\(\(item\) => \(/,
+      "expected the upload receipt to render EVERY not_extracted entry the server returned",
+    );
+    pin.match(
+      source,
+      /\{t\("추출 불가", "not extractable", "抽出不可"\)\} — \{item\.field\}: \{pick\(item\.reason, lang\)\}/,
+      "expected each not_extracted entry to name its field and the server's own reason verbatim",
+    );
+  },
+);
+
+contractTest("#60b: the Markdown text-preview builder is verbatim and invents nothing it was not handed", (pin) => {
+  const lib = read("lib/reportMarkdownPreview.ts");
+  const source = withoutComments(lib);
+
+  // TRUNCATION IS BANNED, FILE-WIDE. Every reason/basis/citation sentence is
+  // spliced through by reference; MEASURED (the #55b idiom): a `.slice(0, N)`
+  // anywhere in this file is exactly how "verbatim" quietly becomes "the
+  // first N characters".
+  pin.doesNotMatch(
+    source,
+    /\.slice\(|\.substring\(|\.substr\(/,
+    "expected NO truncation method anywhere in the Markdown builder -- a server sentence spliced through this file must arrive whole",
+  );
+
+  // THE ONE STRING TRANSFORM this file performs (mdCell's pipe-escape, so a
+  // literal `|` in a TABLE CELL cannot masquerade as a column separator) is
+  // confined to `mdCell` and nowhere else -- a second `.replace()` anywhere
+  // outside it is how a reason/basis/citation sentence could quietly be
+  // rewritten instead of spliced through.
+  const mdCellBody = sliceBetween(source, "function mdCell(value: unknown): string {", "function sourceCaptionLine(");
+  pin.match(mdCellBody, /\S/, "expected to find mdCell's own source slice (marker moved?)");
+  pin.match(mdCellBody, /\.replace\(/, "expected mdCell itself to carry the file's one .replace() call");
+  const outsideMdCell = source.replace(mdCellBody, "");
+  pin.doesNotMatch(
+    outsideMdCell,
+    /\.replace\(/,
+    "expected NO .replace() anywhere OUTSIDE mdCell -- a reason/basis/citation sentence must never be rewritten, only spliced through",
+  );
+
+  // NO NEW FETCH. This module is a pure projection of data the CALLER
+  // already fetched (its own module comment states this); a request here
+  // would be a second, unpinned source of report content.
+  pin.doesNotMatch(
+    source,
+    /\bfetch\(|apiFetch\(|apiMutationFetch\(/,
+    "expected the Markdown builder to make no network request of its own",
+  );
+
+  // EVERY reason/title/column/legend field this file reads is a `ReportText`
+  // and MUST go through `pick(...)` -- never spliced in directly, which
+  // would silently ignore `lang` and always print one language.
+  pin.match(source, /pick\(item\.figure\.reason, lang\)/, "expected an absent figure's reason to be picked by language");
+  pin.match(source, /pick\(section\.title, lang\)/, "expected a section heading to be picked by language");
+  pin.match(source, /pick\(item\.figure\.title, lang\)/, "expected a figure's own title to be picked by language");
+  pin.match(source, /pick\(column, lang\)/, "expected a table column heading to be picked by language");
+  pin.match(source, /pick\(entry, lang\)/, "expected a legend entry to be picked by language");
+
+  // NEW STRINGS, EXACT TRIPLES. The class-level ban first (a blank/missing
+  // `ja` argument is the #50-d/#57/#58 class), then each string this file
+  // adds beyond the ones it deliberately reuses verbatim from the page
+  // (`출처 정보 없음`, `선택에서 제외됨…`, `이 절의 증거 없음`, `추출 불가`
+  // -- already pinned on app/report/page.tsx above, and reused rather than
+  // re-declared here for the same reason `unboundTitle` is passed in rather
+  // than re-translated).
+  pin.doesNotMatch(
+    source,
+    /\bt\((["`])(?:[^"`\\]|\\.)*\1\s*,\s*(["`])(?:[^"`\\]|\\.)*\2\s*\)/,
+    "every t() in the Markdown builder must carry a ja argument -- a two-argument call is how a language quietly drops out",
+  );
+  pin.doesNotMatch(source, /,\s*""\s*\)/, "no t() argument in the Markdown builder may be the empty string");
+
+  const NEW_TRIPLES: [string, string, string][] = [
+    ["보고서 텍스트 미리보기", "Report text preview", "レポートのテキストプレビュー"],
+    [
+      "이 미리보기는 이 화면이 이미 읽어 온 데이터로만 만든 텍스트 사본입니다 — 서식이나 도판 이미지는 담지 않습니다.",
+      "This preview is a text copy built only from data this screen already fetched — it carries no styling and no figure images.",
+      "このプレビューはこの画面が既に取得したデータのみで作ったテキスト写しです — 書式や図版画像は含みません。",
+    ],
+    [
+      "그래픽 원본(SVG)은 이 텍스트 미리보기에 담기지 않습니다 — 내려받은 문서 또는 도판 zip에서 확인하세요.",
+      "The graphic original (SVG) is not carried in this text preview — see the downloaded document or the figure zip.",
+      "グラフィック原本（SVG）はこのテキストプレビューには含まれません — ダウンロードした文書または図版zipで確認してください。",
+    ],
+    ["한계 목록", "Limitations", "制限一覧"],
+    ["명명된 한계 없음", "No named limitation", "名前付き制限なし"],
+  ];
+  for (const [ko, en, ja] of NEW_TRIPLES) {
+    pin.match(lib, tripleArgs(ko, en, ja), `expected the Markdown builder's exact ko/en/ja triple for ${ko}`);
+  }
+});
+
+test("#60b: the Markdown text-preview builder passes server sentences through byte-exact, and fabricates no row", async () => {
+  const { buildMarkdownPreview } = await import("../lib/reportMarkdownPreview.ts");
+
+  const t = (_ko: string, en: string) => en;
+
+  // Distinctive, ugly-on-purpose markers (pipes, asterisks, an em dash) so a
+  // truncation, an escape, or a dropped character is easy to catch, and
+  // globally unique so `includes()` cannot accidentally match unrelated text.
+  const sectionA = {
+    id: "sec_a",
+    title: { ko: "가", en: "Section A", ja: "セクションA" },
+    basis: ["BASIS QUOTE WITH | PIPE AND *STAR* CHARACTERS — VERBATIM MARKER Z9Q7"],
+    source_keys: [],
+    required_outputs: [
+      {
+        type: "GroupX",
+        evaluation_method: null,
+        time_period: null,
+        outputs: [
+          {
+            name: "Output One",
+            availability: "NOT_AVAILABLE" as const,
+            extractor: null,
+            reason: "REASON WITH | PIPE VERBATIM MARKER K3M1",
+          },
+          { name: "Output Two (available)", availability: "AVAILABLE" as const, extractor: null, reason: null },
+        ],
+      },
+    ],
+    regulation_derived: true,
+  };
+  const sectionExcluded = {
+    id: "sec_b",
+    title: { ko: "나", en: "Section B (excluded)", ja: "セクションB" },
+    basis: ["THIS QUOTE MUST NEVER APPEAR -- EXCLUDED_SENTINEL_X1"],
+    source_keys: [],
+    required_outputs: [],
+    regulation_derived: true,
+  };
+  const tableFigure = {
+    figure_id: "fig_table_1",
+    spine_section_id: "sec_a",
+    absent: false,
+    title: { ko: "표", en: "Table Figure", ja: "表" },
+    columns: [
+      { key: "a", ko: "가", en: "Col A", ja: "列A" },
+      { key: "b", ko: "나", en: "Col B", ja: "列B" },
+    ],
+    rows: [
+      { a: "r1c1", b: "r1c2" },
+      { a: "r2c1", b: "r2c2" },
+      { a: "r3c1", b: "pipe|value" },
+    ],
+    source_caption: { run_id: "RUN_VERBATIM_777" },
+    citation: "CITATION VERBATIM 42",
+  };
+  const absentTableFigure = {
+    figure_id: "fig_table_absent",
+    spine_section_id: "sec_a",
+    absent: true,
+    reason: { ko: "가", en: "ABSENT REASON VERBATIM | PIPE Q8W4", ja: "な" },
+  };
+  const excludedSectionFigure = {
+    figure_id: "fig_excluded_only",
+    spine_section_id: "sec_b",
+    absent: false,
+    title: { ko: "제외", en: "Excluded-section Table SHOULD_NOT_APPEAR_MARKER_77", ja: "な" },
+    columns: [{ key: "x", ko: "가", en: "X", ja: "な" }],
+    rows: [{ x: "hidden" }],
+  };
+  const graphicFigure = {
+    figure_id: "fig_graphic_1",
+    spine_section_id: null,
+    absent: false,
+    title: { ko: "그림", en: "Graphic Figure", ja: "図" },
+    svg: "<svg>SHOULD NOT APPEAR IN MD SVG_SENTINEL_9</svg>",
+    legend: [{ key: "l1", ko: "가", en: "Legend One", ja: "な", fill: "#fff", stroke: "#000" }],
+    source_caption: {},
+    citation: null,
+  };
+
+  const md = buildMarkdownPreview({
+    lang: "en",
+    t,
+    sections: [sectionA, sectionExcluded],
+    tableFigures: [tableFigure, absentTableFigure, excludedSectionFigure],
+    graphicFigures: [graphicFigure],
+    unboundTitle: "Unbound figures",
+    excludedSectionIds: ["sec_b"],
+  });
+
+  // VERBATIM PASSTHROUGH -- every server sentence survives byte-exact,
+  // pipes and all.
+  assert.ok(md.includes("BASIS QUOTE WITH | PIPE AND *STAR* CHARACTERS — VERBATIM MARKER Z9Q7"), "basis quote must survive verbatim");
+  assert.ok(md.includes("REASON WITH | PIPE VERBATIM MARKER K3M1"), "a NOT_AVAILABLE reason must survive verbatim");
+  assert.ok(md.includes("ABSENT REASON VERBATIM | PIPE Q8W4"), "an absent figure's reason must survive verbatim");
+  assert.ok(md.includes("CITATION VERBATIM 42"), "a citation must survive verbatim");
+  assert.ok(md.includes("RUN_VERBATIM_777"), "a source-caption value must survive verbatim");
+  assert.ok(md.includes("Legend One"), "a legend entry must survive verbatim");
+
+  // NO FABRICATION -- an excluded section contributes NOTHING, not even the
+  // figure bound to it, and an AVAILABLE output is never listed as a gap.
+  assert.ok(!md.includes("EXCLUDED_SENTINEL_X1"), "an excluded section's basis quote must never render");
+  assert.ok(!md.includes("SHOULD_NOT_APPEAR_MARKER_77"), "a figure bound to an excluded section must never render");
+  assert.ok(!md.includes("Output Two"), "an AVAILABLE output must never be listed among the gaps");
+  assert.ok(md.includes("Excluded by selection"), "the excluded section must state its own excluded line");
+
+  // NO IMAGE -- the graphic's raw SVG markup never enters the text preview.
+  assert.ok(!md.includes("SVG_SENTINEL_9") && !md.includes("<svg"), "the graphic's raw SVG must never appear in the text preview");
+  assert.ok(md.includes("The graphic original (SVG) is not carried"), "the graphic figure must explain its own absence from the text preview");
+
+  // ROW FIDELITY -- exactly the caller's three rows, one Markdown row each,
+  // and the pipe-bearing cell is ESCAPED (not dropped, not left unescaped).
+  const tableStart = md.indexOf("| Col A | Col B |");
+  assert.ok(tableStart >= 0, "expected the table figure's own header row");
+  const bodyLines = md
+    .slice(tableStart)
+    .split("\n")
+    .filter((line) => line.startsWith("| r"));
+  assert.equal(bodyLines.length, 3, "expected exactly the caller's three rows, no more and no fewer");
+  assert.ok(bodyLines.some((line) => line.includes("pipe\\|value")), "expected the pipe-bearing cell value to be ESCAPED, not dropped");
+
+  // LIMITATIONS AT THE END -- both gap classes are aggregated, byte-exact.
+  const limitationsAt = md.indexOf("## Limitations");
+  assert.ok(limitationsAt >= 0, "expected a final Limitations section");
+  const limitationsBody = md.slice(limitationsAt);
+  assert.ok(limitationsBody.includes("REASON WITH | PIPE VERBATIM MARKER K3M1"), "a NOT_AVAILABLE reason must reach the Limitations section");
+  assert.ok(limitationsBody.includes("ABSENT REASON VERBATIM | PIPE Q8W4"), "an absent figure's reason must reach the Limitations section");
+
+  // UNBOUND FIGURES get their own heading, in the caller's own label.
+  assert.ok(md.includes("## Unbound figures"), "expected the caller's own unbound-figures title, verbatim");
+
+  // EMPTY INPUT -- no section, no figure -- still names its own limitations
+  // state rather than rendering nothing or throwing.
+  const empty = buildMarkdownPreview({
+    lang: "en",
+    t,
+    sections: [],
+    tableFigures: [],
+    graphicFigures: [],
+    unboundTitle: "Unbound figures",
+    excludedSectionIds: [],
+  });
+  assert.ok(empty.includes("No named limitation"), "expected the empty-input case to name its own empty limitations list");
 });

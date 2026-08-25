@@ -3602,6 +3602,66 @@ export async function fetchReportStyleProfiles(): Promise<ReportStyleProfileSumm
   return payload.profiles;
 }
 
+/** One catalogue leaf `services.report.style_profile.extract_style_profile`
+ * could not pin down, named with the server's own reason -- the C1-b grammar
+ * ("EXTRACTION IS A PROPOSAL, NOT A MEASUREMENT") this module's docstring
+ * states: no leaf is silently `None`, every gap gets an entry here instead. */
+export interface ReportStyleProfileNotExtracted {
+  field: string;
+  reason: ReportText;
+}
+
+/** `GET /style-profiles/{id}` / `POST /style-profiles`'s FULL record --
+ * `services.report.style_profile.get_profile`'s shape. `original_profile` is
+ * the extracted catalogue itself (every field optional -- a real DOCX has
+ * holes); `not_extracted` is that catalogue's own first-class gap list,
+ * which is why it is read from here rather than invented on this side. */
+export interface ReportStyleProfileRecord {
+  id: string;
+  name: string;
+  source_file: string;
+  source_sha256: string;
+  created_at: string;
+  original_profile: {
+    not_extracted: ReportStyleProfileNotExtracted[];
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+/** R-4's extractor: one styled DOCX -> one stored style-profile PROPOSAL
+ * (`POST /api/report/style-profiles`). Raw body + `?filename=`, the exact
+ * upload SHAPE `uploadPhaseDiagramTemplate` (below) uses and for the
+ * identical reason -- this backend carries no `python-multipart`, so
+ * `multipart/form-data` was never an option for either route.
+ *
+ * AUTHENTICATED (`Depends(current_user)`; see routers/report.py's module
+ * docstring, "Auth decision for POST /style-profiles"): the upload writes a
+ * per-workspace registry entry -- id, name, source file, created_at -- in
+ * this same request, so it takes the phase-diagrams-upload SHAPE (a durable,
+ * provenance-bearing record) rather than the token-staging shape
+ * `uploadObservationWorkbook` uses. `reportError` turns an unauthenticated
+ * 401 into a plain `Error` (the backend's `current_user` dependency answers
+ * with a bare localized string, not the `{reason_code, message}` refusal
+ * envelope) -- the report screen does not rely on that message, though: it
+ * asks `useAuth()` before ever showing the control, so this request is
+ * reachable only once a session already exists.
+ *
+ * Returns the FULL stored record (`GET .../{id}`'s shape), `not_extracted`
+ * included, so the caller renders the extraction's own named absences from
+ * this one response rather than a second round trip. */
+export async function uploadReportStyleProfile(file: File, name?: string): Promise<ReportStyleProfileRecord> {
+  const params = new URLSearchParams({ filename: file.name });
+  if (name) params.set("name", name);
+  const r = await apiMutationFetch(`/api/report/style-profiles?${params.toString()}`, {
+    method: "POST",
+    cache: "no-store",
+    body: file,
+  });
+  if (!r.ok) throw await reportError(r);
+  return r.json();
+}
+
 /** `GET /api/agent/audit/sessions`'s per-session row (Track R unit R-5c) --
  * only sessions whose action ledger actually holds an applied/rolled-back/
  * failed parameter change, i.e. the exact rows
