@@ -2670,6 +2670,15 @@ export interface CalibrationRailTrack {
     code: string;
     why: { ko: string; en: string; ja: string };
     opens_when: { ko: string; en: string; ja: string };
+    /** #57: the gate's own navigation targets for this reason (blocking node
+     * ids, the Table 5-6 off-row nodes, the signal-timing node list, the
+     * graded-node count) — `services/calibration_rail.py` forwards
+     * `parameter_search._refusal()`'s `detail` verbatim. The lock card's
+     * per-reason action chips read this to decide WHERE to send a reader;
+     * they never compute a target of their own. Optional because a refusal
+     * code this file does not build a chip for is still rendered as prose
+     * only, and an older cached payload may predate this field. */
+    detail?: Record<string, unknown>;
   }[];
   /** Present only when `locked` is false. */
   card: {

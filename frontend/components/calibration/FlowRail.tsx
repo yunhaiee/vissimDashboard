@@ -88,6 +88,7 @@
 //     `TrackGuardrail` used to be. Backend enforcement is untouched.
 // ---------------------------------------------------------------------------
 
+import Link from "next/link";
 import { useState } from "react";
 
 // #50-d (user, 2026-08-20): the ⑫ guardrail SECTION — the two-path forecast, the
@@ -112,6 +113,7 @@ import {
   type GroupedSteps,
 } from "@/lib/calibrationStations";
 import { pick } from "@/lib/serverText";
+import ParameterSearchRefusalAction from "@/components/calibration/ParameterSearchRefusalAction";
 import ParameterSearchStart from "@/components/calibration/ParameterSearchStart";
 
 type Translate = (ko: string, en: string, ja?: string) => string;
@@ -272,6 +274,8 @@ export function ParameterSearchTrack({
   scenarioId = "",
   sessionId = null,
   onSearchFinished,
+  onSelectStation,
+  onSelectNode,
 }: {
   track: CalibrationRailTrack;
   lang: string;
@@ -283,6 +287,15 @@ export function ParameterSearchTrack({
    * broadcast. Passed through untouched — this component never inspects it. */
   sessionId?: string | null;
   onSearchFinished?: () => void;
+  /** Unit #57: threaded straight into `ParameterSearchRefusalAction` for the
+   * SIGNAL_STEP_UNVERIFIED chip — see that file's own header comment for why
+   * a real `<button>` cannot live in this function. Optional, and the chip
+   * degrades to a plain `Link` when it is not supplied. */
+  onSelectStation?: (station: CalibrationStationId) => void;
+  /** Unit #57: same reason, for the LADDER_NOT_EXHAUSTED chip. Optional, and
+   * that one chip simply does not render without it — there is no page to
+   * fall back to for "select this node". */
+  onSelectNode?: (nodeId: string) => void;
 }) {
   const card = track.card;
   const refusals = track.refusals ?? [];
@@ -304,6 +317,17 @@ export function ParameterSearchTrack({
           {refusals.map((refusal) => (
             <li key={refusal.code}>
               {pick(refusal.why, lang)} <span className="text-slate-500">{pick(refusal.opens_when, lang)}</span>
+              <br />
+              {/* #57: the reason's ONE action, or nothing -- see
+                  ParameterSearchRefusalAction.tsx's own header comment for
+                  why it cannot be a `<button>` written directly in this
+                  buttonless-pinned function. */}
+              <ParameterSearchRefusalAction
+                refusal={refusal}
+                t={t}
+                onSelectStation={onSelectStation}
+                onSelectNode={onSelectNode}
+              />
             </li>
           ))}
         </ul>

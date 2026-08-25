@@ -553,6 +553,22 @@ export default function CalibrationWorkspacePage() {
     setStationIntent(stationForStep(step));
   }, []);
 
+  // #57's LADDER_NOT_EXHAUSTED chip: switch to the scoring station's node tab
+  // AND select the node, so the reader lands on its diagnosis card rather than
+  // an empty grid. Built from the two handlers this screen already had —
+  // `handleSelectStation` (the rail's own station switch) and `handleNodeClick`
+  // (the SAME toggle NodeScoreTable and BaseValidationMap call) — plus the one
+  // thing neither of those covers: forcing the tab off "기준 모델 검증" back to
+  // "노드 채점", since a node's diagnosis card only renders on that tab.
+  const handleSelectScoringNode = useCallback(
+    (nodeId: string) => {
+      setScoringView("nodes");
+      handleSelectStation("scoring");
+      handleNodeClick(nodeId);
+    },
+    [handleSelectStation, handleNodeClick, setScoringView],
+  );
+
   // ONE grouping, read by the rail's rows and by the open station alike — two
   // groupings would let a row point at a station that does not show that step.
   // Derived plainly during render: it is a fold of at most thirteen rows, and
@@ -1071,6 +1087,11 @@ export default function CalibrationWorkspacePage() {
                     // card, so the rail is re-read the same way an approval
                     // re-reads it: by bumping the request key.
                     onSearchFinished={handleProposalResolved}
+                    // #57: the locked track's SIGNAL_STEP_UNVERIFIED and
+                    // LADDER_NOT_EXHAUSTED chips reuse this screen's own
+                    // station/node selection rather than inventing either.
+                    onSelectStation={handleSelectStation}
+                    onSelectNode={handleSelectScoringNode}
                   />
                 </div>
               )}

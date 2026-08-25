@@ -512,9 +512,24 @@ def test_only_step_12_carries_a_second_track():
 # ---------------------------------------------------------------------------
 
 
-def _search_evidence(*, entrance="measured", rung="CAPACITY_LIMIT", signals="DONE", nodes=6):
-    """A bundle that opens #51's gate, with one knob per way of shutting it."""
+def _search_evidence(
+    *,
+    entrance="measured",
+    rung="CAPACITY_LIMIT",
+    signals="DONE",
+    nodes=6,
+    behavior_params=None,
+):
+    """A bundle that opens #51's gate, with one knob per way of shutting it.
+
+    ``behavior_params`` (#57) is the fifth knob: the ``(ax, bx_add, bx_mult)``
+    triple the single applied row carries. Defaults to ``_GUIDELINE_1950`` —
+    the SAME "prescription is on the network" default every other test here
+    already relies on — so passing ``_VISSIM_DEFAULT`` instead is what shuts
+    the gate on ``TABLE_5_6_NOT_APPLIED`` without touching any other knob.
+    """
     node_ids = [str(n) for n in range(1, nodes + 1)]
+    applied_params = behavior_params if behavior_params is not None else _GUIDELINE_1950
     return {
         "reality_check": {
             "status": "CHECKED",
@@ -537,7 +552,7 @@ def _search_evidence(*, entrance="measured", rung="CAPACITY_LIMIT", signals="DON
                 for node_id in node_ids
             ],
         },
-        "applied_rows": [_behavior("1", *_GUIDELINE_1950)],
+        "applied_rows": [_behavior("1", *applied_params)],
         "signal_controller_count": 1,
         # Step 6 reads DONE from the phase-diagram evidence the rail already uses.
         "phase_diagrams": [{"confirmed": True}] if signals == "DONE" else [],
@@ -620,6 +635,68 @@ def test_the_track_reads_this_rails_own_step_6_rather_than_a_second_opinion():
     assert parameter_search.SIGNAL_STEP_UNVERIFIED in {
         refusal["code"] for refusal in track["refusals"]
     }
+
+
+# ---------------------------------------------------------------------------
+# #57 — the lock card's per-reason action chips read `detail`, not just `why`
+# ---------------------------------------------------------------------------
+
+
+def test_the_tracks_refusals_forward_the_gates_own_detail_payload_not_only_the_sentence():
+    """Until this unit ``parameter_search_track`` copied only ``code``, ``why``
+    and ``opens_when`` off each refusal -- ``detail`` (the navigation targets
+    an action chip needs: which nodes, which behaviours, how many) was built by
+    ``parameter_search._refusal()`` and then dropped at this module's own
+    wire. A frontend chip reading `refusal.detail` had nothing there no matter
+    how it was written.
+
+    Two knobs off ``_VISSIM_DEFAULT`` (off the Table 5-6 row) and ``nodes=2``
+    (below the holdout minimum) shut three doors on one bundle, so this proves
+    the forwarding for three differently-shaped ``detail`` payloads at once.
+    """
+    track = _search_track(_search_evidence(behavior_params=_VISSIM_DEFAULT, nodes=2))
+    by_code = {refusal["code"]: refusal for refusal in track["refusals"]}
+
+    assert parameter_search.TABLE_5_6_NOT_APPLIED in by_code
+    table_5_6_detail = by_code[parameter_search.TABLE_5_6_NOT_APPLIED]["detail"]
+    assert table_5_6_detail["nodes"] == ["1", "2"]
+    assert table_5_6_detail["table_5_6"]["off_published_row"] == ["1"]
+    assert table_5_6_detail["table_5_6"]["applied"] is False
+    assert table_5_6_detail["citation"] == mrwa_reference.TABLE_5_6_CITATION
+
+    assert parameter_search.LADDER_NOT_EXHAUSTED in by_code
+    ladder_detail = by_code[parameter_search.LADDER_NOT_EXHAUSTED]["detail"]
+    assert ladder_detail["blocking_nodes"] == ["1", "2"]
+
+    assert parameter_search.HOLDOUT_NOT_AVAILABLE in by_code
+    holdout_detail = by_code[parameter_search.HOLDOUT_NOT_AVAILABLE]["detail"]
+    assert holdout_detail["graded_nodes"] == 2
+    assert holdout_detail["minimum"] == parameter_search.MIN_NODES_FOR_HOLDOUT
+
+
+def test_the_signal_refusals_detail_names_its_nodes_and_citation():
+    """The SIGNAL_STEP_UNVERIFIED chip navigates to the rail's ⑥ station
+    without asking the frontend to re-derive anything -- ``signal_timing_nodes``
+    and ``citation`` ride on ``detail`` exactly as ``parameter_search.py``
+    built them.
+
+    NOT asserted here: ``detail["step_6_status"]``. Measured while writing
+    this test -- with ``signals="MISSING"`` (the rail's own step 6 reading
+    something other than DONE) it comes back the STRING ``"DONE"``, because
+    ``parameter_search.py``'s own expression is `None if signal_done is None
+    else "DONE"` -- collapsing "confirmed not done" and "confirmed done" onto
+    the same word and reserving `None` for "no rail was even supplied". That
+    is a pre-existing defect in the field's OWN meaning, not something this
+    unit's wire-forwarding fix should paper over by asserting the wrong value
+    is correct; #57's chip does not read this field (it only needs a station
+    to jump to), so it is left unpinned here rather than pinned wrong.
+    """
+    track = _search_track(_search_evidence(signals="MISSING"))
+    refusal = next(
+        item for item in track["refusals"] if item["code"] == parameter_search.SIGNAL_STEP_UNVERIFIED
+    )
+    assert refusal["detail"]["signal_timing_nodes"] == []
+    assert refusal["detail"]["citation"] == mrwa_reference.CALIBRATION_STEPS_CITATION
 
 
 # ===========================================================================

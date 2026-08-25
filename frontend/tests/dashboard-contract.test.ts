@@ -243,6 +243,25 @@ function literalPattern(text: string): RegExp {
 }
 
 /**
+ * A `t(ko, en, ja)` call's three arguments, quote-boundary anchored (the
+ * #55b/#56 idiom) so a partial or reworded string cannot satisfy the pin.
+ *
+ * `quote` is the character each argument is wrapped in at the source --
+ * `"` for a plain string literal, a backtick for a template literal that
+ * splices a value in (`${nodeId}` and friends survive the same escaping
+ * `literalPattern` uses, since `$`, `{` and `}` are in its class too, so the
+ * LITERAL characters `${nodeId}` in the source are what this matches -- never
+ * an evaluated value). Loose `\s*,\s*` between arguments tolerates
+ * reformatting; the quoted CONTENT itself must be byte-exact, which is what a
+ * blanked or reworded language argument breaks.
+ */
+function tripleArgs(ko: string, en: string, ja: string, quote: '"' | "`" = '"'): RegExp {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const q = quote === "`" ? "`" : '"';
+  return new RegExp(`${q}${esc(ko)}${q}\\s*,\\s*${q}${esc(en)}${q}\\s*,\\s*${q}${esc(ja)}${q}`);
+}
+
+/**
  * `border-sky-300` -- the dark-remap fall-through, in ONE place.
  *
  * globals.css's dark `@theme` remaps sky 50/200/400/500/600 and nothing else, so
@@ -11031,7 +11050,7 @@ contractTest("contract helper: withoutFolds removes fold CONTENTS and keeps the 
   );
 });
 
-/** The five files whose whole body IS the calibration surface.
+/** The six files whose whole body IS the calibration surface.
  *
  * `BaseModelStation.tsx` is deliberately absent from the type-floor sweep and
  * present in the colour sweep, which is not an oversight: it is a 2,600-line
@@ -11040,13 +11059,20 @@ contractTest("contract helper: withoutFolds removes fold CONTENTS and keeps the 
  * folded sections, and a file-wide "nothing under 14px" claim over it would be
  * a claim the scan cannot actually make. What #50-c owed that tab was
  * STRUCTURE -- verdict first, every other section an accordion -- and that is
- * what its own test below checks. */
+ * what its own test below checks.
+ *
+ * `ParameterSearchRefusalAction.tsx` (#57) joined 2026-08-25: the refuter
+ * measured that the file existing was not enough to be SWEPT -- it had to be
+ * NAMED here, or the amber-ban, fall-through-ink and 14px-floor tests below
+ * simply never open it. Proven by planting all three violations in its
+ * `CHIP_CLASS` at once and watching the (then five-file) sweep stay green. */
 const CALIBRATION_SURFACE_FILES = [
   "app/calibration/page.tsx",
   "components/calibration/FlowRail.tsx",
   "components/calibration/NodeScoreTable.tsx",
   "components/calibration/BehaviourStation.tsx",
   "components/calibration/StationProposals.tsx",
+  "components/calibration/ParameterSearchRefusalAction.tsx",
 ];
 
 contractTest("unit #50-c: every citation and machine code is INSIDE a fold, and none of them was deleted", (pin) => {
@@ -11344,17 +11370,18 @@ contractTest(
 );
 
 contractTest(
-  "unit #50-e: the assistant-handoff event name agrees across FloatingAssistant's receiver and all four dispatchers",
+  "unit #50-e: the assistant-handoff event name agrees across FloatingAssistant's receiver and all five dispatchers",
   (pin) => {
     // AUTHORITY: the refuter, 2026-08-23 -- MEASURED: mutating
     // FloatingAssistant.tsx's addEventListener/removeEventListener string by
     // ONE CHARACTER fails ZERO existing tests while silently breaking every
     // dispatcher (app/health/page.tsx, CurationBar.tsx, #50-e's own node-detail
-    // CTA, and #53's ⑪ station CTA) -- the drawer simply never opens, with no
-    // error anywhere a reader would see it. Each side declares the string
-    // independently BY DESIGN (see each file's own comment on why this is not
-    // a shared import -- the event NAME is the contract), which is exactly
-    // why nothing but a cross-file test can catch the two drifting apart.
+    // CTA, #53's ⑪ station CTA, and #57's TABLE_5_6_NOT_APPLIED chip) -- the
+    // drawer simply never opens, with no error anywhere a reader would see it.
+    // Each side declares the string independently BY DESIGN (see each file's
+    // own comment on why this is not a shared import -- the event NAME is the
+    // contract), which is exactly why nothing but a cross-file test can catch
+    // the two drifting apart.
     const EVENT_NAME = "vissim:assistant-handoff";
 
     const listener = withoutComments(read("components/FloatingAssistant.tsx"));
@@ -11374,12 +11401,58 @@ contractTest(
       ["components/dashboard/CurationBar.tsx", "the insight-card handoff button"],
       ["components/calibration/NodeScoreTable.tsx", "the next-action CTA this unit (#50-e) added"],
       ["app/calibration/page.tsx", "#53's ⑪ 경로 선택 station CTA -- the fourth dispatcher"],
+      [
+        "components/calibration/ParameterSearchRefusalAction.tsx",
+        "#57's TABLE_5_6_NOT_APPLIED lock-card chip -- the fifth dispatcher",
+      ],
     ];
     for (const [file, what] of dispatchers) {
       pin.match(
         withoutComments(read(file)),
         new RegExp(`const ASSISTANT_HANDOFF_EVENT = "${EVENT_NAME}";`),
         `expected ${file} (${what}) to declare the exact same event name FloatingAssistant listens for`,
+      );
+    }
+
+    // THE EVENT NAME IS NOT THE WHOLE CONTRACT (refuter, 2026-08-25). Every
+    // dispatcher above agreeing on "vissim:assistant-handoff" says nothing
+    // about what's INSIDE `detail` -- FloatingAssistant reads `detail.prompt`
+    // specifically, so a dispatcher that renamed its payload key (measured:
+    // `{ detail: { prompt } }` -> `{ detail: { text: prompt } }` in
+    // ParameterSearchRefusalAction.tsx) passed every pin above, dispatched a
+    // real event under the right NAME, and the drawer opened with an empty
+    // composer and no error anywhere -- silent breakage indistinguishable
+    // from the event-name drift the pins above already guard, just one layer
+    // deeper. Pinned the SAME way: the field name declared once, checked on
+    // BOTH the receiver's three uses of it and every dispatcher's own object
+    // literal, so a rename on EITHER side dies here.
+    const PAYLOAD_FIELD = "prompt";
+
+    pin.match(
+      listener,
+      new RegExp(`\\(event as CustomEvent<\\{ ${PAYLOAD_FIELD}\\?: string \\}>\\)\\.detail;`),
+      `expected FloatingAssistant to TYPE its event detail around the field every dispatcher sends ("${PAYLOAD_FIELD}")`,
+    );
+    pin.match(
+      listener,
+      new RegExp(`if \\(!detail\\?\\.${PAYLOAD_FIELD}\\) return;`),
+      `expected FloatingAssistant's guard to read the SAME field name it was typed around`,
+    );
+    pin.match(
+      listener,
+      new RegExp(`setPrompt\\(detail\\.${PAYLOAD_FIELD}\\);`),
+      `expected FloatingAssistant to consume the SAME field name -- three call sites, same word, or a rename passing one still breaks the other two`,
+    );
+
+    for (const [file, what] of dispatchers) {
+      // Shorthand (`{ prompt }`) and an explicit computed value
+      // (`{ prompt: buildHandoffPrompt(...) }`, CurationBar's own shape) both
+      // satisfy this -- the KEY is the contract, not which of the two
+      // equivalent ways a file spells sending it.
+      pin.match(
+        withoutComments(read(file)),
+        new RegExp(`detail: \\{ ${PAYLOAD_FIELD}(?::[^}]+)?\\s*\\}`),
+        `expected ${file} (${what}) to send its payload under the SAME field name ("${PAYLOAD_FIELD}") FloatingAssistant reads -- a rename on either side opens the drawer blank with no error anywhere`,
       );
     }
   },
@@ -11465,6 +11538,319 @@ contractTest("unit #50-e: the next-action box hands the user to the assistant, p
   pin.match(builder, /text\.ko/, "expected the ko template to carry the server's own ko next-action text, not a paraphrase");
   pin.match(builder, /text\.en/, "expected the en template to carry the server's own en next-action text");
   pin.match(builder, /text\.ja/, "expected the ja template to carry the server's own ja next-action text");
+});
+
+// ---------------------------------------------------------------------------
+// Unit #57 — the #51 lock card's four NAMED reasons each get ONE action.
+//
+// User report, 2026-08-24: the four refusal codes were prose only. The pins
+// below cover, per DECISIONS.md's 2026-08-24 threat-model note, CLASSES of
+// mutation this suite can actually stop (careless drift and the shapes below,
+// measured by running each one) rather than every re-expression a determined
+// rewrite could reach:
+//   * a chip's whole branch deleted (the closed-vocabulary set-equality pin);
+//   * a chip pointed at the WRONG target (station name, href, or detail
+//     field swapped for another code's);
+//   * the chip file reading or restating the gate's own sentence instead of
+//     leaving that to FlowRail;
+//   * the cross-file handoff event name drifting (folded into #50-e's own
+//     cross-file test above, which now names this file as its fifth
+//     dispatcher).
+// ---------------------------------------------------------------------------
+
+contractTest("unit #57: the lock card renders exactly one action chip per reason it recognises, and none for the rest", (pin) => {
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+
+  // CLOSED VOCABULARY (DECISIONS.md 2026-08-24's own idiom against expression
+  // bypass): every `refusal.code === "..."` branch this file has, as a SET.
+  // Adding a fifth code, renaming one, or losing one changes this set and
+  // fails the assertion below -- a `doesNotMatch`-per-code test would not
+  // catch a fifth code appearing, and four separate `pin.match` calls would
+  // not catch one of the four silently vanishing while the other three still
+  // matched.
+  const codes = [...action.matchAll(/refusal\.code === ([A-Z0-9_]+)\)/g)].map((m) => m[1]);
+  assert.deepStrictEqual(
+    [...codes].sort(),
+    ["HOLDOUT_NOT_AVAILABLE", "LADDER_NOT_EXHAUSTED", "SIGNAL_STEP_UNVERIFIED", "TABLE_5_6_NOT_APPLIED"].sort(),
+    `expected exactly the #51 gate's four navigable refusal codes, found: ${codes.join(", ")}`,
+  );
+
+  // The catch-all: a code this file does not recognise renders NOTHING, never
+  // a guessed default action.
+  //
+  // `\r?\n`, NOT a bare `\n`, immediately before the closing brace -- the SAME
+  // CRLF-tolerance `topLevelFunction` (above) already documents needing ("a
+  // tool that rewrote one of these files with Windows line endings made the
+  // boundary unfindable"). MEASURED 2026-08-25: this file is delivered with
+  // CRLF line endings (the repo mixes both per-file -- NodeScoreTable.tsx and
+  // app/calibration/page.tsx are CRLF, FlowRail.tsx is LF), and a bare `\n`
+  // here made this exact pin fail against the ACTUAL delivered file while
+  // every other #57 pin (which used `\s*` instead) stayed green.
+  pin.match(
+    action,
+    /\r?\n\s*return null;\r?\n\}/,
+    "expected an unrecognised refusal code to fall through to a bare `return null`",
+  );
+
+  // The chip file never reads `refusal.why` / `refusal.opens_when` -- those
+  // sentences are FlowRail's job (rendered once, above where this component
+  // is invoked). A chip that started reading them could start paraphrasing
+  // the gate's own words instead of adding a short label beside them.
+  pin.doesNotMatch(
+    action,
+    /refusal\.why|refusal\.opens_when/,
+    "expected the action file to never touch the server's own sentence fields -- only `refusal.code` and `refusal.detail`",
+  );
+});
+
+contractTest("unit #57: SIGNAL_STEP_UNVERIFIED navigates to the ⑥ signals station, with a same-page-only fallback", (pin) => {
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+  const block = sliceBetween(
+    action,
+    "refusal.code === SIGNAL_STEP_UNVERIFIED",
+    "refusal.code === TABLE_5_6_NOT_APPLIED",
+  );
+  assert.ok(block, "expected a SIGNAL_STEP_UNVERIFIED branch before the TABLE_5_6_NOT_APPLIED one");
+
+  // MUTATION-CHECKED (2026-08-25, builder): changing "signals" to "behaviour"
+  // here (the ⑫ station, an easy typo one line below TABLE_5_6's own station
+  // context) is caught by this pin and by NOTHING else in the suite -- no
+  // other test names the ⑥ station's own key.
+  pin.match(
+    block,
+    /onSelectStation\("signals"\)/,
+    "expected the chip to switch to the SIGNALS station (§2.12.1 step ⑥), never another one",
+  );
+  pin.match(
+    block,
+    /href="\/genesis\/phases"/,
+    "expected the no-callback fallback to link straight to the 현시도 review page",
+  );
+});
+
+contractTest("unit #57: TABLE_5_6_NOT_APPLIED hands off to the assistant with the gate's own pending nodes, never a station jump", (pin) => {
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+  const block = sliceBetween(
+    action,
+    "refusal.code === TABLE_5_6_NOT_APPLIED",
+    "refusal.code === LADDER_NOT_EXHAUSTED",
+  );
+  assert.ok(block, "expected a TABLE_5_6_NOT_APPLIED branch before the LADDER_NOT_EXHAUSTED one");
+
+  // The roadmap row's own choice: a handoff, not `onSelectStation` -- the
+  // reader is already inside the ⑫/behaviour station this evidence lives in.
+  pin.doesNotMatch(block, /onSelectStation/, "expected NO station jump on this chip -- the reader is already there");
+  pin.match(
+    block,
+    /const nodes = stringList\(detail\.nodes\);/,
+    "expected the PENDING nodes to come from `detail.nodes` -- not `detail.blocking_nodes` (a different code's field)",
+  );
+  pin.match(block, /if \(nodes\.length === 0\) return null;/, "expected no chip when the gate named no pending node");
+  pin.match(
+    block,
+    /requestAgentHandoff\(buildTable56PrescriptionPrompt\(nodes, citation, t\)\)/,
+    "expected the handoff prompt built from THIS refusal's own nodes and citation",
+  );
+
+  // The prompt splices the server's OWN node ids into all three languages --
+  // never a generic "some nodes" that could not tell the assistant which ones.
+  const builderAt = action.indexOf("function buildTable56PrescriptionPrompt");
+  const builder = action.slice(builderAt, action.indexOf("\n}", builderAt));
+  const nodeSplices = builder.match(/\$\{nodes\}/g) ?? [];
+  assert.ok(
+    nodeSplices.length >= 3,
+    `expected the joined node ids interpolated into the ko, en AND ja templates -- found ${nodeSplices.length}`,
+  );
+});
+
+contractTest("unit #57: LADDER_NOT_EXHAUSTED selects the gate's FIRST blocking node, never a computed or hardcoded one", (pin) => {
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+  const block = sliceBetween(
+    action,
+    "refusal.code === LADDER_NOT_EXHAUSTED",
+    "refusal.code === HOLDOUT_NOT_AVAILABLE",
+  );
+  assert.ok(block, "expected a LADDER_NOT_EXHAUSTED branch before the HOLDOUT_NOT_AVAILABLE one");
+
+  pin.match(
+    block,
+    /const blockingNodes = stringList\(detail\.blocking_nodes\);/,
+    "expected the blocking nodes to come from `detail.blocking_nodes` -- not `detail.nodes` (TABLE_5_6's own field)",
+  );
+  pin.match(block, /const firstBlockingNode = blockingNodes\[0\];/, "expected the FIRST node, not a sorted/filtered pick");
+  pin.match(
+    block,
+    /if \(!firstBlockingNode \|\| !onSelectNode\) return null;/,
+    "expected no chip with an empty blocking-node list or with no selection callback wired",
+  );
+  pin.match(
+    block,
+    /onSelectNode\(firstBlockingNode\)/,
+    "expected the SAME onNodeClick-shaped callback NodeScoreTable and the map already use",
+  );
+});
+
+contractTest("unit #57: HOLDOUT_NOT_AVAILABLE links to the observations page", (pin) => {
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+  // `sliceBetween` is a plain string `indexOf`, not a regex -- it cannot take
+  // a `\r?\n` alternation, so the end marker was `"\n  return null;\n}"`
+  // (matching the closing brace's exact formatting) until 2026-08-25, when
+  // this file was measured delivered with CRLF line endings: the marker's
+  // bare `\n` never occurs in the actual bytes (`\r\n` does), `indexOf`
+  // returned -1, and `sliceBetween` fell back to `""` -- an EMPTY slice that
+  // then failed the very next assertion, for a reason that had nothing to do
+  // with whether a HOLDOUT_NOT_AVAILABLE branch exists. The catch-all's own
+  // TEXT, "return null;", is exactly as unique a boundary (the HOLDOUT branch
+  // itself never contains that string) and needs no newline at all to find.
+  const block = sliceBetween(action, "refusal.code === HOLDOUT_NOT_AVAILABLE", "return null;");
+  assert.ok(block, "expected a HOLDOUT_NOT_AVAILABLE branch before the file's own closing return null");
+
+  pin.match(block, /href="\/observations"/, "expected the chip to link to the 실측 관측 page, and nowhere else");
+});
+
+contractTest("unit #57: the lock card wires the two navigation callbacks through to the chip renderer, unrenamed", (pin) => {
+  const rail = withoutComments(read("components/calibration/FlowRail.tsx"));
+  const track = topLevelFunction(rail, "ParameterSearchTrack");
+
+  pin.match(
+    track,
+    /<ParameterSearchRefusalAction\s+refusal=\{refusal\}\s+t=\{t\}\s+onSelectStation=\{onSelectStation\}\s+onSelectNode=\{onSelectNode\}\s*\/>/,
+    "expected every refusal to be handed to the action-chip component, with BOTH navigation callbacks threaded through unchanged",
+  );
+  // The server sentence and the chip coexist on the SAME reason -- a mutation
+  // that replaced the sentence line with only the chip (or vice versa) fails
+  // this, because the two are pinned as one bounded block. The gap between
+  // them is a JSX comment (collapses to `{}` under `withoutComments`) plus a
+  // `<br />`, so the window tolerates that rather than requiring bare
+  // whitespace -- but stays short enough that it cannot be satisfied by a
+  // chip anywhere else in the file.
+  pin.match(
+    track,
+    /\{pick\(refusal\.opens_when, lang\)\}<\/span>[\s\S]{0,150}?<ParameterSearchRefusalAction/,
+    "expected the chip to sit directly beside the server's own sentence, never replacing it",
+  );
+
+  const page = withoutComments(read("app/calibration/page.tsx"));
+  pin.match(
+    page,
+    /onSelectStation=\{handleSelectStation\}\s*\n\s*onSelectNode=\{handleSelectScoringNode\}/,
+    "expected the page to wire its OWN station/node handlers into the track -- no bespoke navigation invented for this unit",
+  );
+  pin.match(
+    page,
+    /const handleSelectScoringNode = useCallback\(\s*\(nodeId: string\) => \{\s*setScoringView\("nodes"\);\s*handleSelectStation\("scoring"\);\s*handleNodeClick\(nodeId\);/,
+    "expected the node-select handler to force the SCORING station's node tab open before selecting the node -- otherwise the diagnosis card the chip promises is not on screen",
+  );
+});
+
+contractTest(
+  "unit #57: the server's own sentence renders unadorned -- nothing prepended, nothing appended",
+  (pin) => {
+    // ADJACENCY, not mere presence (refuter, 2026-08-25). The existing #51
+    // pins only check that `refusal.why` and `refusal.opens_when` are READ
+    // somewhere in this function -- never that nothing else sits beside them.
+    // MEASURED: prepending a literal "참고: " immediately before
+    // `{pick(refusal.why, lang)}` passed the full 214-test suite, because
+    // every existing pin's `pick(refusal.why...)` reference was still
+    // present and still reachable, just no longer the FIRST thing in the
+    // <li>. This component's own header says "EVERY SENTENCE STAYS THE
+    // SERVER'S" -- so both edges of the sentence pair are anchored here: the
+    // `<li>` opening tag directly to `{pick(refusal.why, lang)}` (nothing but
+    // whitespace between them), and the closing `</span>` of `opens_when`
+    // directly to `<br />` (nothing appended after it either). A prefix OR a
+    // suffix breaks one of the two anchors.
+    const rail = withoutComments(read("components/calibration/FlowRail.tsx"));
+    const track = topLevelFunction(rail, "ParameterSearchTrack");
+    pin.match(
+      track,
+      /<li key=\{refusal\.code\}>\s*\{pick\(refusal\.why, lang\)\} <span className="text-slate-500">\{pick\(refusal\.opens_when, lang\)\}<\/span>\s*<br \/>/,
+      "expected the server's why/opens_when sentence to be the SOLE content of the <li> -- nothing prepended before `why`, nothing appended after `opens_when`",
+    );
+  },
+);
+
+contractTest("unit #57: no refusal chip can smuggle a search start", (pin) => {
+  // #51's own invariant -- no search-start control reachable from the LOCKED
+  // branch -- is preserved TODAY only by the fact that every `<button>` in
+  // this whole file happens to call something else. Nothing said it had to.
+  // MEASURED (refuter, 2026-08-25): wiring the HOLDOUT_NOT_AVAILABLE chip's
+  // `onClick` to `startParameterSearch(...)` instead of rendering a `Link`
+  // passed the full suite AND typecheck -- #51's zero-button pin on
+  // `ParameterSearchTrack` (unit #51: "the trigger card asks, and offers no
+  // button it cannot honour") only ever swept THAT function, never this one,
+  // and this file exists precisely because a real button had to live
+  // somewhere outside it.
+  // components/calibration/ParameterSearchStart.tsx is the SOLE intended
+  // caller of `startParameterSearch` -- it is the only place the ask-first
+  // cost sentence and the runner-wired measurement sit beside the button
+  // that spends the search budget. A refusal chip on a LOCKED card reaching
+  // that function directly would start a search the card is telling the
+  // reader it CANNOT start.
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+  pin.doesNotMatch(
+    action,
+    /startParameterSearch/,
+    "expected NO refusal chip to call startParameterSearch -- ParameterSearchStart.tsx is the sole caller, by #51's own ask-first/runner-wired design",
+  );
+});
+
+contractTest("unit #57: every chip label is a real ko/en/ja triple, not a blank or a paraphrase", (pin) => {
+  // THE #50-d CLASS OF GAP. `t(ko, en, ja?)` makes `ja` OPTIONAL in the type,
+  // so a call that dropped or blanked it type-checks clean, and the existing
+  // node-id-splice pin (LADDER_NOT_EXHAUSTED / TABLE_5_6_NOT_APPLIED) only
+  // counts `${...}` interpolations -- it says nothing about which STRINGS
+  // surround them. MEASURED (refuter, 2026-08-25): blanking a chip's `ja`
+  // argument to `""` passed typecheck AND the full 214-test suite. Every
+  // VISIBLE label and aria-label this file renders is pinned below as an
+  // exact three-language triple, quote-boundary anchored (the #55b/#56
+  // idiom) so neither a blank nor a reworded language argument can satisfy
+  // it -- only the exact ko AND en AND ja text, in that order, can.
+  const action = withoutComments(read("components/calibration/ParameterSearchRefusalAction.tsx"));
+
+  pin.match(
+    action,
+    tripleArgs("⑥ 신호 단계로 이동", "Go to step ⑥ (signals)", "⑥信号段階へ移動"),
+    "expected the SIGNAL station button's exact ko/en/ja triple",
+  );
+  pin.match(
+    action,
+    tripleArgs("현시도 검토 열기", "Open the 현시도 review", "現示図レビューを開く"),
+    "expected the SIGNAL fallback link's exact ko/en/ja triple",
+  );
+  pin.match(
+    action,
+    tripleArgs(
+      "Table 5-6 처방 요청 (노드 ${nodes.length}개)",
+      "Ask for the Table 5-6 prescription (${nodes.length} node(s))",
+      "Table 5-6処方を依頼 (ノード${nodes.length}件)",
+      "`",
+    ),
+    "expected the TABLE_5_6 chip's aria-label exact ko/en/ja triple",
+  );
+  pin.match(
+    action,
+    tripleArgs(
+      "AI에게 Table 5-6 처방 요청",
+      "Ask the AI for the Table 5-6 prescription",
+      "AIにTable 5-6処方を依頼",
+    ),
+    "expected the TABLE_5_6 chip's visible label exact ko/en/ja triple",
+  );
+  pin.match(
+    action,
+    tripleArgs(
+      "노드 ${firstBlockingNode} 진단 보기",
+      "See node ${firstBlockingNode}'s diagnosis",
+      "ノード${firstBlockingNode}の診断を見る",
+      "`",
+    ),
+    "expected the LADDER chip's exact ko/en/ja triple",
+  );
+  pin.match(
+    action,
+    tripleArgs("실측 관측 페이지로", "Go to observations", "実測観測ページへ"),
+    "expected the HOLDOUT link's exact ko/en/ja triple",
+  );
 });
 
 // #56 (b) -- DECISIONS.md "같은 날 추가 측정 — CTA는 후보 0 노드에 불가능한

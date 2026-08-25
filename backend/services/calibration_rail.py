@@ -1252,8 +1252,23 @@ def parameter_search_track(evidence: Mapping[str, Any]) -> dict[str, Any]:
         return {
             **base,
             "locked": True,
+            # `detail` rides along too (#57): the lock card's per-reason action
+            # chips (frontend/components/calibration/FlowRail.tsx) read the
+            # blocking node ids, the Table 5-6 off-row count and the signal-
+            # timing node list FROM this dict to know where to send a reader —
+            # they never recompute a navigation target of their own. Before
+            # this it was dropped at the wire: `_refusal()` already built it in
+            # `parameter_search.py`, but this comprehension copied only `code`,
+            # `why` and `opens_when` off each refusal, so a chip built from the
+            # rail payload would have had nothing to read no matter how the
+            # frontend rendered it.
             "refusals": [
-                {"code": item["code"], "why": item["why"], "opens_when": item["opens_when"]}
+                {
+                    "code": item["code"],
+                    "why": item["why"],
+                    "opens_when": item["opens_when"],
+                    "detail": item.get("detail", {}),
+                }
                 for item in preconditions["refusals"]
             ],
         }
