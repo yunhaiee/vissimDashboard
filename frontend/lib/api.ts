@@ -3375,6 +3375,300 @@ export async function fetchReportBlockDataCsv(blockType: string): Promise<Blob> 
   return r.blob();
 }
 
+// ---------------------------------------------------------------------------
+// Track R — the report ENGINE (backend/routers/report.py: /spine, /figures,
+// /graphics, /style-profiles, /compose, /compose/artifacts).
+//
+// A DIFFERENT surface from the legacy `/build` + `/data/{block}` pair above,
+// which stays supported and stays wired: that one assembles the old workbook
+// report from a caller-chosen block list. This half reads the MRWA section
+// spine (R-1), R-2's table figures and R-3's graphic figures, R-4's stored
+// style profiles, and posts R-5a's typesetter. Design:
+// docs/product/report-engine-design-2026-08-24.md, "UI (/report 재편)".
+// ---------------------------------------------------------------------------
+
+/** A sentence the report backend wrote, in the three languages it ships. */
+export interface ReportText {
+  ko: string;
+  en: string;
+  ja: string;
+}
+
+/** `services.report.spine`'s availability verdict for one Table 5-15 output. */
+export type ReportOutputAvailability = "AVAILABLE" | "NOT_AVAILABLE";
+
+export interface ReportOutputExtractor {
+  module: string;
+  symbol: string;
+  evidence: string[];
+}
+
+export interface ReportRequiredOutput {
+  name: string;
+  availability: ReportOutputAvailability;
+  extractor: ReportOutputExtractor | null;
+  /** The MEASUREMENT behind the verdict, in the backend's own words. Rendered
+   * verbatim beside a NOT_AVAILABLE output; never paraphrased on this side. */
+  reason: string | null;
+}
+
+export interface ReportRequiredOutputGroup {
+  type: string;
+  outputs: ReportRequiredOutput[];
+  evaluation_method: string | null;
+  time_period: string | null;
+}
+
+export interface ReportSpineSourceKey {
+  key: string;
+  owner: string;
+  what: string;
+}
+
+export interface ReportSpineSection {
+  id: string;
+  title: ReportText;
+  /** The guideline clause + page this section exists because of. */
+  basis: string[];
+  source_keys: ReportSpineSourceKey[];
+  required_outputs: ReportRequiredOutputGroup[];
+  regulation_derived: boolean;
+}
+
+export interface ReportSpinePayload {
+  minimum: { sentence: string; citation: string };
+  extract: string;
+  source_keys: ReportSpineSourceKey[];
+  table_5_15: ReportRequiredOutputGroup[];
+  unavailable_outputs: { type: string; output: string }[];
+  sections: ReportSpineSection[];
+}
+
+/** Every figure in R-2/R-3 carries these, present or absent alike. */
+interface ReportFigureBase {
+  figure_id: string;
+  /** `null` when the figure binds to no regulation-derived section — the
+   * typesetter files those under its own `unbound_figures` section. */
+  spine_section_id: string | null;
+  absent: boolean;
+  /** Present exactly when `absent` — the named reason, in three languages. */
+  reason?: ReportText;
+}
+
+export interface ReportFigureColumn {
+  key: string;
+  ko: string;
+  en: string;
+  ja: string;
+}
+
+/** The provenance stamp every non-absent figure carries (the design doc's
+ * "이 그림은 어느 실행의 것인가"). Keys vary by generator, so it is read as a
+ * bag of strings rather than a fixed record. */
+export type ReportFigureSourceCaption = Record<string, unknown>;
+
+/** R-2's table figures — `GET /api/report/figures`. */
+export interface ReportTableFigure extends ReportFigureBase {
+  title?: ReportText;
+  columns?: ReportFigureColumn[];
+  rows?: Record<string, unknown>[];
+  source_caption?: ReportFigureSourceCaption;
+  citation?: string | null;
+}
+
+/** R-3's graphic figures — `GET /api/report/graphics`. `svg` is a complete
+ * `<svg>` document the SERVER rendered. */
+export interface ReportGraphicFigure extends ReportFigureBase {
+  title?: ReportText;
+  svg?: string;
+  legend?: { key: string; ko: string; en: string; ja: string; fill: string; stroke: string }[];
+  meta?: Record<string, unknown>;
+  source_caption?: ReportFigureSourceCaption;
+  citation?: string | null;
+}
+
+/** R-4's stored style profiles — `GET /api/report/style-profiles`' index rows
+ * (`services.report.style_profile.list_profiles`). */
+export interface ReportStyleProfileSummary {
+  id: string;
+  name: string;
+  source_file: string;
+  source_sha256: string;
+  created_at: string;
+  revision_count: number;
+  has_logo: boolean;
+}
+
+/** The figure inputs `GET /figures`, `GET /graphics` and `POST /compose` all
+ * take, spelled the same on all three so the preview and the document are
+ * never built from two different sets of parameters. */
+export interface ReportFigureParams {
+  scenario_id?: string | null;
+  period?: string | null;
+  observation_set_id?: string | null;
+  observation_period?: string | null;
+  session_id?: string | null;
+  before_scenario_id?: string | null;
+  after_scenario_id?: string | null;
+}
+
+/** `POST /api/report/compose`'s body — `routers.report.ComposeRequest`, field
+ * for field. The backend sets `extra="forbid"`, so a misspelled key is a 422
+ * at the door rather than a silently ignored selection. */
+export interface ComposeReportRequest extends ReportFigureParams {
+  /** `{sections: [...]}` to include exactly those; omit for every section. */
+  selection?: { sections: string[] } | null;
+  style_profile_id?: string | null;
+  language?: string;
+  title?: string | null;
+  filename?: string | null;
+}
+
+/** `services.report.typeset.TypesetRefused` / `StyleProfileRefused` as it
+ * arrives on the wire: FastAPI nests the envelope under `detail`. */
+export interface ReportRefusal {
+  ok: false;
+  reason_code: string;
+  message: ReportText;
+}
+
+/** A refusal that carries the server's own sentence, so a caller can render
+ * that instead of a generic failure line. */
+export class ReportRefusedError extends Error {
+  readonly refusal: ReportRefusal;
+
+  constructor(refusal: ReportRefusal) {
+    super(refusal.reason_code);
+    this.name = "ReportRefusedError";
+    this.refusal = refusal;
+  }
+}
+
+function reportFigureQuery(params: ReportFigureParams): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value) query.set(key, value);
+  }
+  const encoded = query.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+async function reportError(response: Response): Promise<Error> {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    const detail = parsed?.detail;
+    if (detail && typeof detail === "object" && "reason_code" in detail && "message" in detail) {
+      return new ReportRefusedError(detail as unknown as ReportRefusal);
+    }
+    if (typeof detail === "string" && detail.trim()) return new Error(detail);
+  } catch {
+    // Not JSON -- fall through to the raw body, which is still useful.
+  }
+  return new Error(text || `${response.status} ${response.statusText}`.trim());
+}
+
+/** The MRWA section skeleton (R-1). Parameterless on purpose: it is a
+ * transcription of the guideline plus this build's availability audit, so no
+ * run or dataset enters into it. */
+export async function fetchReportSpine(): Promise<ReportSpinePayload> {
+  const r = await apiFetch("/api/report/spine", { cache: "no-store" });
+  if (!r.ok) throw await reportError(r);
+  return r.json();
+}
+
+/** R-2's four table figures, gathered in one call. A figure with no input is
+ * returned ABSENT with its reason, never a 4xx for the whole set. */
+export async function fetchReportFigures(params: ReportFigureParams = {}): Promise<ReportTableFigure[]> {
+  const r = await apiFetch(`/api/report/figures${reportFigureQuery(params)}`, { cache: "no-store" });
+  if (!r.ok) throw await reportError(r);
+  const payload = (await r.json()) as { figures: ReportTableFigure[] };
+  return payload.figures;
+}
+
+/** R-3's three graphic figures. Same "degrade one, not all" contract. */
+export async function fetchReportGraphics(params: ReportFigureParams = {}): Promise<ReportGraphicFigure[]> {
+  const r = await apiFetch(`/api/report/graphics${reportFigureQuery(params)}`, { cache: "no-store" });
+  if (!r.ok) throw await reportError(r);
+  const payload = (await r.json()) as { graphics: ReportGraphicFigure[] };
+  return payload.graphics;
+}
+
+/** Every style profile stored in this workspace, newest first (R-4). */
+export async function fetchReportStyleProfiles(): Promise<ReportStyleProfileSummary[]> {
+  const r = await apiFetch("/api/report/style-profiles", { cache: "no-store" });
+  if (!r.ok) throw await reportError(r);
+  const payload = (await r.json()) as { profiles: ReportStyleProfileSummary[] };
+  return payload.profiles;
+}
+
+/** What `POST /compose` publishes BESIDE the document: the two headline counts
+ * it puts on response headers. `null` means the header was not readable (a
+ * cross-origin response exposes no custom headers), which is not the same as
+ * zero and is rendered differently. */
+export interface ComposedReport {
+  blob: Blob;
+  filename: string;
+  sections: number | null;
+  limitations: number | null;
+}
+
+function headerCount(response: Response, name: string): number | null {
+  const raw = response.headers.get(name);
+  if (raw === null) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** R-5a's styled report, as one .docx.
+ *
+ * `body` is posted VERBATIM: this function adds no field and drops none, so
+ * what the screen shows as the selection is what the typesetter is asked for.
+ * A refusal arrives as `ReportRefusedError` carrying the backend's own
+ * ko/en/ja sentence. */
+export async function composeReport(body: ComposeReportRequest): Promise<ComposedReport> {
+  const r = await apiMutationFetch("/api/report/compose", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!r.ok) throw await reportError(r);
+  const blob = await r.blob();
+  return {
+    blob,
+    filename: filenameFromContentDisposition(r.headers.get("content-disposition")) ?? "prism-report.docx",
+    sections: headerCount(r, "X-Prism-Report-Sections"),
+    limitations: headerCount(r, "X-Prism-Report-Limitations"),
+  };
+}
+
+export interface ComposedReportArtifacts {
+  blob: Blob;
+  filename: string;
+  artifacts: number | null;
+}
+
+/** The sibling bundle: every graphic figure's SVG ORIGINAL plus
+ * `manifest.json`. Same body, same refusals. The manifest is parsed by
+ * lib/reportManifest.ts, which explains why the zip is the only place the
+ * typesetter's limitation SENTENCES are published over HTTP. */
+export async function composeReportArtifacts(body: ComposeReportRequest): Promise<ComposedReportArtifacts> {
+  const r = await apiMutationFetch("/api/report/compose/artifacts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!r.ok) throw await reportError(r);
+  const blob = await r.blob();
+  return {
+    blob,
+    filename: filenameFromContentDisposition(r.headers.get("content-disposition")) ?? "prism-report-artifacts.zip",
+    artifacts: headerCount(r, "X-Prism-Report-Artifacts"),
+  };
+}
+
 export async function resetBaseWorkbook(): Promise<BaseWorkbookResponse> {
   const r = await apiMutationFetch("/api/validation/base-workbook", {
     method: "DELETE",

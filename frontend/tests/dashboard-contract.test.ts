@@ -6,6 +6,7 @@ import test from "node:test";
 import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
 import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline } from "../lib/roadWidth.ts";
 import { messageWithoutSubject } from "../lib/findingMessage.ts";
+import { readReportManifest } from "../lib/reportManifest.ts";
 import {
   BASIS_BOUNDARY_CUT,
   BASIS_RUNWAY_DEFICIT,
@@ -14322,7 +14323,13 @@ contractTest("an effect may only set state after hydration, and says so on the l
     // does not exist while the server renders the route -- same exception,
     // same one-line shape.
     "app/genesis/region/page.tsx",
-    "app/report/page.tsx",
+    // R-5b MOVED the /report suppression rather than removing it: the browser-
+    // local style profile that needs a post-hydration read now lives in the
+    // demoted legacy builder (components/report/LegacyReportBuilder.tsx), and
+    // the rebuilt page reads nothing from localStorage at all. Naming the file
+    // that actually carries the suppression is what keeps this loop from going
+    // vacuously green over a file with none.
+    "components/report/LegacyReportBuilder.tsx",
   ]) {
     const source = read(file);
     const suppressions = source.match(/eslint-disable[^\n]*set-state-in-effect[^\n]*/g) ?? [];
@@ -14339,4 +14346,720 @@ contractTest("an effect may only set state after hydration, and says so on the l
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Track R unit R-5b — the /report rebuild.
+//
+// AUTHORITY for the layout and for every claim these pins make about what the
+// screen owes: docs/product/report-engine-design-2026-08-24.md, section
+// "UI (/report 재편)" -- "좌: 보고서 스파인 트리 (절별 포함/제외 토글, 절별
+// 데이터 소스 상태 — '이 절의 증거 없음'은 회색+사유) / 우: 미리보기 (절 단위) /
+// 상단: 실행/데이터셋 선택 + 스타일 프로파일 선택 (기본: Prism 기본 스타일) /
+// '생성' → DOCX (+ 도판 원본 zip 아티팩트)".
+//
+// The mutation classes these close were measured on this unit's own source, in
+// the shapes docs/phase2/DECISIONS.md ("2026-08-24 — 계약 핀의 위협 모델
+// 경계") names as in scope: a well-meaning edit that filters the selection on
+// the way out, one that swaps a server sentence for a client-written one, one
+// that blanks a `ja` argument, and one that re-points the SVG injection at a
+// string this file built.
+// ---------------------------------------------------------------------------
+
+/** The two files that ARE the /report surface.
+ *
+ * NAMED, not walked, for the reason #57 measured on
+ * `ParameterSearchRefusalAction.tsx`: a file that exists but is not in the
+ * array is not swept, and the sweep stays green over it. Both halves of this
+ * screen are here -- the rebuilt page and the demoted legacy builder -- so a
+ * violation cannot hide by moving between them. */
+const REPORT_SURFACE_FILES = ["app/report/page.tsx", "components/report/LegacyReportBuilder.tsx"];
+
+contractTest("R-5b: /report is the design doc's layout, and the old workbook path is demoted, not deleted", (pin) => {
+  const page = read("app/report/page.tsx");
+  const legacy = read("components/report/LegacyReportBuilder.tsx");
+
+  // 좌 스파인 트리 / 우 미리보기 -- the dashboard split idiom, reused.
+  pin.match(
+    page,
+    /grid gap-4 xl:grid-cols-\[380px_minmax\(0,1fr\)\]/,
+    "expected the spine tree / preview split to use the app's two-pane grid idiom",
+  );
+
+  // 상단: the run picker, the before/after pair the 전후 차트 needs, the style
+  // profile (default = Prism 기본), and the report language.
+  for (const [state, what] of [
+    ["setScenarioId", "the run picker"],
+    ["setBeforeScenarioId", "the before-run picker the 전후 chart needs"],
+    ["setAfterScenarioId", "the after-run picker the 전후 chart needs"],
+    ["setStyleProfileId", "the style-profile picker"],
+    ["setReportLanguage", "the report-language picker"],
+  ] as const) {
+    pin.match(page, literalPattern(state), `expected ${what} in the top bar`);
+  }
+  // #56's lesson, applied: the picker's <option value> is the tool-vocabulary
+  // id (`scenario.id`, e.g. SIM_...), and the NAME is only the label -- the id
+  // is what flows into the request.
+  pin.match(
+    page,
+    /<option key=\{scenario\.id\} value=\{scenario\.id\}>\s*\{scenario\.name\}/,
+    "expected the run pickers to carry the scenario ID as the option value and the name only as the label",
+  );
+
+  // Every endpoint R-1..R-5a publishes is wired.
+  for (const call of [
+    "fetchReportSpine()",
+    "fetchReportFigures(figureParams)",
+    "fetchReportGraphics(figureParams)",
+    "fetchReportStyleProfiles()",
+    "composeReport(requestBody)",
+    "composeReportArtifacts(requestBody)",
+  ]) {
+    pin.match(page, literalPattern(call), `expected ${call} to be wired on the report screen`);
+  }
+
+  // THE DEMOTION, both directions. The legacy surfaces still exist and still
+  // call their own endpoints; the page renders them inside a fold; and the two
+  // paths are NOT merged -- the rebuilt page never calls the legacy endpoints.
+  pin.match(legacy, /buildReport\(spec\)/, "the legacy Word export must still be callable -- it was demoted, not deleted");
+  pin.match(
+    legacy,
+    /fetchReportBlockDataCsv\(blockType\)/,
+    "the legacy per-block CSV export must still be callable -- it reads the validation workbook the typesetter does not",
+  );
+  pin.match(
+    page,
+    /<details[\s\S]{0,900}<LegacyReportBuilder \/>/,
+    "expected the legacy builder to render INSIDE the page's fold -- demoted below the typesetter, not beside it",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /buildReport|fetchReportBlockDataCsv/,
+    "the rebuilt page must not call the legacy workbook endpoints itself -- two data paths, and only one of them is the typesetter's",
+  );
+});
+
+contractTest("R-5b: the compose request body is the selection on screen, and the profile id only when picked", (pin) => {
+  const page = read("app/report/page.tsx");
+  const api = read("lib/api.ts");
+  const builder = withoutComments(sliceBetween(page, "function composeRequestBody(", "\nfunction downloadBlob("));
+  pin.match(builder, /\S/, "expected to find composeRequestBody's own source slice (marker moved?)");
+
+  // THE SELECTION, VERBATIM. `selection.sections` is the checked list and
+  // nothing else happens to it on the way out.
+  pin.match(
+    builder,
+    /selection: \{ sections: args\.includedSectionIds \}/,
+    "expected the request's section list to be the screen's included list, handed over unchanged",
+  );
+  pin.doesNotMatch(
+    builder,
+    /\.filter\(|\.slice\(|\.map\(/,
+    "expected NO filtering, slicing or mapping inside composeRequestBody -- an evidence gap is typeset as a named absence, never dropped on the way to the server",
+  );
+
+  // The included list itself is the complement of what the user unchecked --
+  // one derivation, pinned, so "hidden filtering" would have to happen here in
+  // plain sight.
+  pin.match(
+    page,
+    /treeSectionIds\.filter\(\(id\) => !excludedSectionIds\.includes\(id\)\)/,
+    "expected the included list to be exactly the tree minus what the user unchecked",
+  );
+
+  // THE PROFILE ID: present only when the user picked one. Sending "" would be
+  // an unknown-id refusal; omitting the key is how the Prism default is asked
+  // for. Structural anchor, so a mutation that always sets it fails here.
+  pin.match(
+    builder,
+    /if \(args\.styleProfileId\) body\.style_profile_id = args\.styleProfileId;/,
+    "expected style_profile_id to be set ONLY when a stored profile was picked",
+  );
+  pin.doesNotMatch(
+    builder,
+    /style_profile_id: args\.styleProfileId,/,
+    "expected style_profile_id NOT to be set unconditionally -- an empty id is a refusal, not a default",
+  );
+
+  // THE ONE-INPUT INVARIANT, at the CALL SITE. composeRequestBody's docstring
+  // claims the document is built from the same params the preview was fetched
+  // with, and until now nothing held the caller to it. MEASURED (refuter,
+  // 2026-08-25): replacing the `figureParams` argument with an equal-fields
+  // object literal survived the whole suite -- and once the caller owns its own
+  // literal, adding `period: "AM"` to it makes the DOCUMENT score a window the
+  // PREVIEW above it never showed, silently. Two pins close it: the argument
+  // must be the IDENTIFIER, and the identifier must have exactly one definition.
+  pin.match(
+    page,
+    /composeRequestBody\(\{ includedSectionIds, styleProfileId, language: effectiveLanguage, figureParams \}\)/,
+    "expected the compose body to be built from the `figureParams` IDENTIFIER -- the same object the preview was fetched with, never a second literal that can diverge from it",
+  );
+  pin.match(
+    page,
+    /\[includedSectionIds, styleProfileId, effectiveLanguage, figureParams\]/,
+    "expected the memoised request body to depend on `figureParams` itself, so a change to the preview's inputs rebuilds the document's",
+  );
+  // ONE construction site for the figure params, counted by the three field
+  // names appearing together. A second equal-fields literal anywhere in this
+  // file -- the refuter's mutation -- makes this 2.
+  pin.match(
+    `figureParamConstructions=${(withoutComments(page).match(/scenario_id:[\s\S]{0,200}?before_scenario_id:[\s\S]{0,200}?after_scenario_id:/g) ?? []).length}`,
+    /^figureParamConstructions=1$/,
+    "expected exactly ONE place on this screen to build the figure params -- a second construction is how the preview and the document start describing different runs",
+  );
+  for (const field of ["scenario_id", "before_scenario_id", "after_scenario_id"]) {
+    pin.match(
+      `${field}=${(withoutComments(page).match(new RegExp(`(?<![_A-Za-z])${field}\\b`, "g")) ?? []).length}`,
+      new RegExp(`^${field}=1$`),
+      `expected \`${field}\` to be written exactly once on this screen -- a second mention is a second source of truth for what the report scores`,
+    );
+  }
+
+  // AND THE WIRE. The api layer posts that object and builds no second one.
+  const compose = withoutComments(
+    sliceBetween(api, "export async function composeReport(", "export interface ComposedReportArtifacts"),
+  );
+  pin.match(compose, /body: JSON\.stringify\(body\),/, "expected composeReport to post the caller's body verbatim");
+  pin.doesNotMatch(
+    compose,
+    /\.\.\.body|delete body|Object\.assign/,
+    "expected composeReport to add no field and remove none -- what the screen shows is what the typesetter is asked for",
+  );
+});
+
+contractTest("R-5b: every absence and every limitation on /report is the server's own sentence", (pin) => {
+  const page = read("app/report/page.tsx");
+  const source = withoutComments(page);
+
+  // Each of the five places this screen states something about the user's
+  // model, and the server field it states it from.
+  //
+  // CLOSING-BOUNDARY ANCHORED (the #55b round-3 idiom), because presence alone
+  // is not verbatim. MEASURED (refuter, 2026-08-25): appending `.slice(0, 20)`
+  // to two of these five expressions truncated the backend's sentence on screen
+  // and every pin here stayed green -- a substring pin matches the head of a
+  // longer expression, so `pick(x, lang)` matched inside `pick(x, lang).slice(
+  // 0, 20)`. Each pattern below therefore carries the expression's own closing
+  // brace AND the JSX token that must follow it, so any inserted call, slice,
+  // replace or concatenation breaks the anchor.
+  for (const [pattern, what] of [
+    [/\{pick\(item\.figure\.reason, lang\)\}\s*<\/span>/, "the spine tree's per-figure absence"],
+    [/\{pick\(figure\.reason, lang\)\}<\/p>/, "the preview's per-figure absence"],
+    [/\{pick\(limitation\.reason, lang\)\}\s*<\/p>/, "the typesetter's named limitations"],
+    [/\{pick\(fallback\.reason, lang\)\}\s*\{fallback\.profile_reason/, "each style fallback's reason"],
+    [/\{pick\(refusal\.message, lang\)\}<\/p>/, "a compose refusal"],
+  ] as const) {
+    pin.match(source, pattern, `expected ${what} to render the backend's own sentence WHOLE -- nothing may be appended to it`);
+  }
+  // BOTH SITES, by count. MEASURED (mutation, 2026-08-25): the NOT_AVAILABLE
+  // output renders in TWO places -- the spine tree and the preview -- and a
+  // bare substring pin stayed green while one of them was replaced with a
+  // client-written "no reason" sentence, because the other one still matched.
+  // The same shape #58's `수준 / 계획 ID` count pin exists for.
+  pin.match(
+    `notAvailableRows=${(source.match(/\{output\.name\}: \{output\.reason\}/g) ?? []).length}`,
+    /^notAvailableRows=2$/,
+    "expected BOTH the tree row and the preview row to carry R-1's own measured reason for a NOT_AVAILABLE output -- one of them drifting is how half a screen starts inventing reasons",
+  );
+  pin.match(
+    `absenceSentences=${(source.match(/\{pick\(figure\.reason, lang\)\}<\/p>/g) ?? []).length}`,
+    /^absenceSentences=2$/,
+    "expected BOTH figure kinds' absent branches to render the server's reason WHOLE -- table and graphic, counted with their closing boundary, not matched once as a substring",
+  );
+
+  // NO FABRICATED PREVIEW FOR AN ABSENT FIGURE. Both absent branches are
+  // structurally anchored: they may show the figure id and the server's
+  // reason, and they must not reach for rows, columns or an SVG that a
+  // present figure would have had.
+  // SINGLE-LINE SLICE MARKERS, on purpose. This repo's working tree flips
+  // between LF and CRLF (core.autocrlf=true over `* text=auto`), and a marker
+  // carrying an interior newline stops matching the moment a checkout writes
+  // CRLF. Every slice below still carries its own `\S` guard, so a marker that
+  // really did move fails loudly instead of emptying the haystack -- which is
+  // the dangerous direction for the `doesNotMatch` pins that follow it.
+  for (const [component, closer, tail] of [
+    ["function TableFigureBlock(", "function GraphicFigureBlock(", "const columns = figure.columns"],
+    ["function GraphicFigureBlock(", "/** The design doc's rule", "const svg = figure.svg;"],
+  ] as const) {
+    const absentBranch = withoutComments(
+      sliceBetween(sliceBetween(page, component, closer), "if (figure.absent) {", tail),
+    );
+    pin.match(absentBranch, /\S/, `expected to find ${component}'s absent branch (markers moved?)`);
+    pin.match(absentBranch, /pick\(figure\.reason, lang\)/, `${component}: an absent figure must state the server's reason`);
+    pin.doesNotMatch(
+      absentBranch,
+      /figure\.rows|figure\.columns|figure\.svg|figure\.legend|figure\.meta/,
+      `${component}: an absent figure has no rows, columns or picture -- nothing may be drawn in their place`,
+    );
+  }
+
+  // THE CLASS, per the recorded threat-model boundary: a substring pin cannot
+  // tell rendered code from code behind a falsy operand, so the whole family
+  // is banned file-wide (comments stripped -- this one names it while
+  // explaining it).
+  pin.doesNotMatch(
+    source,
+    /(?<![=!<>]\s{0,3})\b(?:false|0|null|undefined)\s*&&|&&\s*(?:false|0|null|undefined)\b(?!\s{0,3}[=!<>])/,
+    "expected no dead-branch short-circuit (false/0/null/undefined && ...) anywhere on the report screen -- that is how a named absence becomes a pinned string nobody sees",
+  );
+  // And the visibility half of the same family: on a screen whose whole job is
+  // to publish what the document could NOT do, hiding any of it is the same
+  // lie by another mechanism. MEASURED 2026-08-25: none of these appears in
+  // the file, so the ban is flat.
+  pin.doesNotMatch(
+    source,
+    /display:\s*["']?none|visibility:\s*["']?hidden|opacity-0\b|\bsr-only\b|aria-hidden|\binvisible\b/i,
+    "expected no visibility-suppression idiom on the report screen -- a limitation that is rendered but unseeable is not disclosed",
+  );
+});
+
+contractTest("R-5b: the receipt describes THIS compose, and cannot lag one behind", (pin) => {
+  const page = read("app/report/page.tsx");
+  const source = withoutComments(page);
+
+  // MEASURED (refuter, 2026-08-25): caching the manifest in a `useRef` and
+  // rendering the PREVIOUS one survived every pin -- the receipt then reports
+  // the last document's limitations under this document's filename, which is
+  // the exact class of lie this whole screen exists to prevent. Nothing here
+  // asserted WHEN the receipt state is written, only what it contains, so the
+  // fix is structural: the state machine's shape is pinned, not its output.
+
+  // (1) THE CLEAR, first and unconditional. A compose that has begun must not
+  // leave the previous compose's receipt on screen for even one frame.
+  pin.match(
+    source,
+    /setBusy\(mode\);\s*setRefusal\(null\);\s*setFailure\(null\);\s*setOutcome\(null\);/,
+    "expected every compose to clear the previous refusal, failure AND receipt before it starts -- adjacency, so a reordering that leaves a stale receipt up fails here",
+  );
+
+  // (2) THE SET, from THIS compose's own fetch result. The manifest handed to
+  // setOutcome must be the `manifest` bound on the line immediately above it,
+  // which is the one this call awaited -- no cache, no ref, no previous value
+  // may sit between the read and the store. Same discipline the review-fetch
+  // pin states elsewhere in this suite ("no transform, spread-and-patch, or
+  // rebuild may sit between the fetch and the store").
+  pin.match(
+    source,
+    /const manifest = await readReportManifest\(bundle\.blob\);\s*setOutcome\(\{ docx, bundle: \{ filename: bundle\.filename, artifacts: bundle\.artifacts \}, manifest \}\);/,
+    "expected the receipt to be stored directly from THIS compose's manifest read, on the very next line",
+  );
+
+  // (3) TWO WRITERS AND NO MORE: the clear and the set. A third would be a
+  // second story about what the last compose produced.
+  pin.match(
+    `outcomeWrites=${(source.match(/setOutcome\(/g) ?? []).length}`,
+    /^outcomeWrites=2$/,
+    "expected exactly two setOutcome call sites -- the clear at compose start and the store at compose end",
+  );
+  pin.match(
+    `manifestReads=${(source.match(/readReportManifest\(/g) ?? []).length}`,
+    /^manifestReads=1$/,
+    "expected the manifest to be read in exactly one place -- a second read is a second answer about the same document",
+  );
+
+  // (4) AND NO OUT-OF-BAND STORE. MEASURED 2026-08-25: this file carries no
+  // `useRef` at all, so the ban is flat and needs no carve. A ref is how the
+  // refuter's stale-manifest cache was written, and on a screen whose state is
+  // all derived-from-one-request there is no legitimate mutable box for it.
+  pin.doesNotMatch(
+    source,
+    /useRef|MutableRefObject|\.current\s*=/,
+    "expected no ref-shaped storage on the report screen -- a value that survives a re-render outside React's state is exactly where a previous compose's manifest hides",
+  );
+});
+
+contractTest("R-5b: the inline SVG comes from the API payload and from nowhere else", (pin) => {
+  const page = read("app/report/page.tsx");
+  const source = withoutComments(page);
+
+  // EXACTLY ONE injection on this screen, and its argument is the local bound
+  // from the payload's own field one line earlier.
+  pin.match(
+    `reportInjections=${(source.match(/dangerouslySetInnerHTML/g) ?? []).length}`,
+    /^reportInjections=1$/,
+    "expected exactly ONE dangerouslySetInnerHTML on the report screen -- a second one is a second, unpinned source of markup",
+  );
+  pin.match(source, /const svg = figure\.svg;/, "expected the injected string to be bound directly from the payload's svg field");
+  pin.match(
+    source,
+    /dangerouslySetInnerHTML=\{\{ __html: svg \}\}/,
+    "expected the injection to be handed that binding and nothing else -- no concatenation, no template, no second source",
+  );
+  pin.doesNotMatch(source, /__html: (?!svg \}\})/, "expected no other __html source anywhere on the report screen");
+
+  // The app-wide inventory, so a THIRD injection cannot appear unnoticed
+  // somewhere else while this pin guards only /report. Measured 2026-08-25.
+  const carriers = appSourceFiles().filter((file) => /dangerouslySetInnerHTML/.test(withoutComments(read(file))));
+  pin.match(
+    `injectors=${carriers.join(",")}`,
+    /^injectors=app\/report\/page\.tsx,components\/DashboardMap\.tsx$/,
+    "the raw-markup escape hatch must stay confined to the two files that carry it -- add nothing, and strike a file when it is converted",
+  );
+
+  // ...AND THE OTHER HALF OF THE CLASS, which the census above is blind to.
+  // MEASURED (refuter, 2026-08-25): ADDING `ref.current.innerHTML =
+  // props.citation` in a useEffect, beside the untouched
+  // dangerouslySetInnerHTML, kept BOTH pins above green -- they regex one
+  // literal token, and React's JSX prop is only one of the ways this app can
+  // put a string into the DOM as markup. An ordinary-looking ref effect is
+  // exactly the "plausible drift from a well-meaning editor" the recorded
+  // threat-model boundary puts in scope (docs/phase2/DECISIONS.md,
+  // "2026-08-24 — 계약 핀의 위협 모델 경계"), so the ban is stated over the DOM
+  // API class rather than over the one spelling the JSX census can see.
+  for (const file of appSourceFiles()) {
+    pin.doesNotMatch(
+      withoutComments(read(file)),
+      /\.outerHTML\s*=|insertAdjacentHTML|document\.write\s*\(/,
+      `${file}: outerHTML/insertAdjacentHTML/document.write put a string into the DOM as markup with no pin on its source -- there is no legitimate use of any of them in this app`,
+    );
+  }
+
+  // `.innerHTML =` has exactly ONE legitimate shape here, and it injects
+  // nothing: five map components clear their Leaflet container before
+  // re-mounting it. Both halves are asserted -- the SHAPE (every assignment in
+  // the app is the empty-string clear, so an assignment of any expression dies
+  // wherever it is written) and the FILE SET (a sixth file adopting even the
+  // clear has to be re-measured rather than inheriting the carve).
+  const innerHtmlAssignments = appSourceFiles().flatMap((file) =>
+    [...withoutComments(read(file)).matchAll(/[^\n]*\.innerHTML\s*=[^\n]*/g)].map((match) => ({
+      file,
+      line: match[0].trim(),
+    })),
+  );
+  for (const { file, line } of innerHtmlAssignments) {
+    pin.match(
+      line,
+      /^container\.innerHTML = "";$/,
+      `${file}: the only permitted .innerHTML assignment in this app is the map container's empty-string clear -- assigning any expression is an unpinned markup injection`,
+    );
+  }
+  pin.match(
+    `innerHtmlFiles=${[...new Set(innerHtmlAssignments.map((entry) => entry.file))].join(",")}`,
+    /^innerHtmlFiles=components\/BaseValidationMap\.tsx,components\/DashboardMap\.tsx,components\/IntersectionCompareMap\.tsx,components\/genesis\/GenesisTileMap\.tsx,components\/genesis\/RegionLassoMap\.tsx$/,
+    "the container-clear idiom must stay confined to the five map components that carry it -- a sixth file is a re-measurement, not an inherited exemption",
+  );
+});
+
+contractTest("R-5b: excluded-by-selection is the user's choice, and is never worded as an evidence gap", (pin) => {
+  const page = withoutComments(read("app/report/page.tsx"));
+
+  // THE THIRD STATE, in both places it renders: the tree's toggle and the
+  // preview's collapsed card. Different sentences, both saying the same thing
+  // -- that this is a selection, not an absence.
+  pin.match(
+    page,
+    tripleArgs(
+      "선택에서 제외됨 — 증거가 없어서가 아니라 사용자가 뺐습니다.",
+      "Excluded by selection — the user left it out; it is not an evidence gap.",
+      "選択から除外 — 証拠がないからではなく、利用者が外しました。",
+    ),
+    "expected the tree's excluded row to say the section was left out BY THE USER",
+  );
+  pin.match(
+    page,
+    tripleArgs(
+      "선택에서 제외됨 — 이 절은 문서에 실리지 않습니다. 증거가 없다는 뜻이 아닙니다.",
+      "Excluded by selection — this section is not typeset into the document. It does not mean there is no evidence.",
+      "選択から除外 — この節は文書に載りません。証拠がないという意味ではありません。",
+    ),
+    "expected the preview's excluded card to deny the evidence-gap reading in its own words",
+  );
+
+  // AND THE EVIDENCE-GAP SENTENCE, which is a DIFFERENT one. If a future edit
+  // collapses the two into one wording, one of these two pins fails.
+  pin.match(
+    page,
+    tripleArgs("이 절의 증거 없음", "No evidence for this section", "この節の証拠なし"),
+    "expected the evidence-absence wording the design doc names ('이 절의 증거 없음')",
+  );
+  // TWO sites carry it -- the tree row and the preview card -- so one of them
+  // drifting fails on the count as well as on the text. Same measured shape as
+  // the NOT_AVAILABLE row pair above.
+  pin.match(
+    `evidenceAbsentSites=${(page.match(/"이 절의 증거 없음", "No evidence for this section", "この節の証拠なし"/g) ?? []).length}`,
+    /^evidenceAbsentSites=2$/,
+    "expected the evidence-absence triple in BOTH the tree and the preview -- one losing it is how the two panes start disagreeing about the same section",
+  );
+  const excludedBranch = withoutComments(
+    sliceBetween(
+      read("app/report/page.tsx"),
+      "  if (!included) {",
+      '<h3 className="text-[15px] font-semibold text-white">{title}</h3>',
+    ),
+  );
+  pin.match(excludedBranch, /\S/, "expected to find the preview's excluded branch (markers moved?)");
+  pin.doesNotMatch(
+    excludedBranch,
+    /이 절의 증거 없음/,
+    "the excluded branch must NOT borrow the evidence-absence sentence -- the whole point of the third state is that the two read differently",
+  );
+
+  // The manifest's own name for the state is what the receipt branches on --
+  // never a string this file typed.
+  pin.match(
+    page,
+    /section\.state === SECTION_STATE_EXCLUDED/,
+    "expected the receipt to branch on the typesetter's own constant for the third state",
+  );
+  pin.match(
+    read("lib/reportManifest.ts"),
+    /export const SECTION_STATE_EXCLUDED = "excluded_by_selection";/,
+    "expected the third state's id to match services/report/typeset.py's SECTION_STATE_EXCLUDED",
+  );
+});
+
+contractTest("R-5b: every string this unit added is a real ko/en/ja triple", (pin) => {
+  // THE #50-d / #57 / #58 CLASS. `t(ko, en, ja?)` types `ja` as optional, so
+  // blanking it passes typecheck and every behavioural pin above. Quote-
+  // boundary anchored: only the exact ko AND en AND ja text satisfies these.
+  const page = withoutComments(read("app/report/page.tsx"));
+
+  const PLAIN_TRIPLES: [string, string, string][] = [
+    ["보고서", "Report", "レポート"],
+    [
+      "MRWA가 요구하는 절 구조에 이 제품의 도판을 채워 Word 보고서를 조판합니다.",
+      "Typesets a Word report by filling the MRWA-required section structure with this product's figures.",
+      "MRWAが要求する節構造にこの製品の図版を入れてWordレポートを組版します。",
+    ],
+    ["채점할 실행", "Run to score", "採点する実行"],
+    ["전후 비교 — 전", "Before/after — before", "前後比較 — 前"],
+    ["전후 비교 — 후", "Before/after — after", "前後比較 — 後"],
+    ["스타일 프로파일", "Style profile", "スタイルプロファイル"],
+    ["Prism 기본 스타일", "Prism default style", "Prism 既定スタイル"],
+    ["보고서 언어", "Report language", "レポート言語"],
+    ["화면 언어를 따름", "Follow the screen", "画面の言語に従う"],
+    ["선택 안 함", "Not selected", "選択しない"],
+    ["생성 (DOCX + 도판 zip)", "Generate (DOCX + figure zip)", "生成 (DOCX + 図版zip)"],
+    ["도판 원본 zip만", "Figure originals zip only", "図版原本zipのみ"],
+    ["생성 중…", "Generating…", "生成中…"],
+    ["내보내는 중…", "Exporting…", "書き出し中…"],
+    ["보고서 스파인", "Report spine", "レポートスパイン"],
+    ["절에 묶이지 않은 도판", "Figures bound to no section", "節に紐づかない図版"],
+    ["증거 있음", "evidence present", "証拠あり"],
+    ["추출 불가", "not extractable", "抽出不可"],
+    ["출처 정보 없음", "No source caption", "出典情報なし"],
+    ["보고서를 만들지 않았습니다", "No report was produced", "レポートは作成されませんでした"],
+    ["생성 요청이 실패했습니다", "The compose request failed", "生成リクエストが失敗しました"],
+    ["생성 완료", "Composed", "生成完了"],
+    ["이 문서가 하지 못한 것", "What this document does not do", "この文書ができなかったこと"],
+    ["절 상태", "Section states", "節の状態"],
+    ["선택에서 제외됨", "excluded by selection", "選択から除外"],
+    ["스타일", "Style", "スタイル"],
+    ["이 도판에는 SVG가 실려 있지 않습니다.", "This figure carries no SVG.", "この図版にはSVGが含まれていません。"],
+    [
+      "저장된 스타일 프로파일 목록을 읽지 못했습니다 — Prism 기본 스타일로만 생성할 수 있습니다.",
+      "The stored style profiles could not be read — only the Prism default style is available.",
+      "保存済みスタイルプロファイル一覧を読めませんでした — Prism既定スタイルでのみ生成できます。",
+    ],
+    [
+      "스파인을 읽지 못했습니다 — 절 목록 없이는 보고서를 만들 수 없습니다.",
+      "The spine could not be read — no report can be built without the section list.",
+      "スパインを読めませんでした — 節一覧なしではレポートを作成できません。",
+    ],
+    [
+      "도판을 읽지 못했습니다 — 아래 미리보기는 읽어낸 것만 보여 줍니다.",
+      "The figures could not be read — the preview below shows only what was read.",
+      "図版を読めませんでした — 以下のプレビューは読み取れた分のみを表示します。",
+    ],
+    [
+      "문서는 만들지 않았습니다 — 도판 원본 zip만 내보냈습니다.",
+      "No document was produced — only the figure-originals zip was exported.",
+      "文書は作成していません — 図版原本zipのみ書き出しました。",
+    ],
+    ["기존 내보내기 (구 워크북 경로)", "Legacy export (old workbook path)", "従来のエクスポート (旧ワークブック経路)"],
+    [
+      "이 브라우저는 zip 압축을 풀 수 없어 매니페스트를 읽지 못했습니다. zip 파일 자체는 정상적으로 내려받았습니다.",
+      "This browser cannot inflate the bundle, so the manifest was not read. The zip itself downloaded fine.",
+      "このブラウザはzipを展開できないためマニフェストを読めませんでした。zipファイル自体は正常にダウンロードされています。",
+    ],
+    [
+      "내려받은 zip에 manifest.json이 없습니다.",
+      "The downloaded zip carries no manifest.json.",
+      "ダウンロードしたzipにmanifest.jsonがありません。",
+    ],
+    [
+      "manifest.json이 이 화면이 풀 수 없는 방식으로 압축되어 있습니다.",
+      "manifest.json is stored with a compression method this screen cannot read.",
+      "manifest.jsonはこの画面が展開できない圧縮方式で格納されています。",
+    ],
+    [
+      "manifest.json을 JSON으로 해석하지 못했습니다.",
+      "manifest.json could not be parsed as JSON.",
+      "manifest.jsonをJSONとして解釈できませんでした。",
+    ],
+    [
+      "내려받은 파일을 zip으로 읽지 못했습니다.",
+      "The downloaded file could not be read as a zip.",
+      "ダウンロードしたファイルをzipとして読めませんでした。",
+    ],
+  ];
+  for (const [ko, en, ja] of PLAIN_TRIPLES) {
+    pin.match(page, tripleArgs(ko, en, ja), `expected the report screen's exact ko/en/ja triple for ${ko}`);
+  }
+
+  // The interpolated ones take backticks, so they are anchored on those. Each
+  // is a COUNT sentence, which is exactly where a blanked ja hides longest.
+  const TEMPLATE_TRIPLES: [string, string, string][] = [
+    ["절 ${docx.sections}개", "${docx.sections} section(s)", "節 ${docx.sections}個"],
+    ["명명된 한계 ${docx.limitations}건", "${docx.limitations} named limitation(s)", "名前付き限界 ${docx.limitations}件"],
+    ["도판 원본 ${bundle.artifacts}개", "${bundle.artifacts} figure original(s)", "図版原本 ${bundle.artifacts}個"],
+    [
+      "폴백 ${manifest.style.fallbacks.length}건",
+      "${manifest.style.fallbacks.length} fallback(s)",
+      "フォールバック ${manifest.style.fallbacks.length}件",
+    ],
+    [
+      "실림 · 명명된 부재 ${section.named_absences.length}건",
+      "included · ${section.named_absences.length} named absence(s)",
+      "収録 · 名前付き不在 ${section.named_absences.length}件",
+    ],
+  ];
+  for (const [ko, en, ja] of TEMPLATE_TRIPLES) {
+    pin.match(page, tripleArgs(ko, en, ja, "`"), `expected the report screen's exact ko/en/ja triple for ${ko}`);
+  }
+
+  // AND THE CLASS-LEVEL BAN: no `t()` call on this screen may take a blank or
+  // missing third argument. A two-argument call is what a blanking mutation
+  // degrades to, so both shapes are banned outright.
+  pin.doesNotMatch(
+    page,
+    /\bt\((["`])(?:[^"`\\]|\\.)*\1\s*,\s*(["`])(?:[^"`\\]|\\.)*\2\s*\)/,
+    "every t() on the report screen must carry a ja argument -- a two-argument call is how a language quietly drops out",
+  );
+  pin.doesNotMatch(page, /,\s*""\s*\)/, "no t() argument on the report screen may be the empty string");
+});
+
+contractTest("R-5b: the manifest reader names every way it can fail, and the screen has a sentence for each", (pin) => {
+  const lib = read("lib/reportManifest.ts");
+  const page = read("app/report/page.tsx");
+
+  // SET EQUALITY between the reasons the reader can return and the reasons the
+  // screen can say -- the #50-d idiom. A new reason with no sentence, or a
+  // sentence for a reason that cannot happen, fails here. (`not_a_zip` is the
+  // fall-through arm and is named in the union rather than in an `if`, so it
+  // is read off the union alone and asserted to be exactly the remainder.)
+  const union = sliceBetween(lib, "export type ManifestUnreadableReason =", "export type ManifestRead");
+  pin.match(union, /\S/, "expected to find the failure-reason union (declaration moved?)");
+  const declared = [...union.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+  const answered = [...page.matchAll(/reason === "([a-z_]+)"/g)].map((match) => match[1]);
+  pin.match(
+    `declared=${declared.slice().sort().join(",")}`,
+    /^declared=entry_missing,no_decompression_stream,not_a_zip,not_json,unsupported_compression$/,
+    "the manifest reader's failure vocabulary must stay exactly these five -- a sixth needs a sentence on the screen too",
+  );
+  pin.match(
+    `answered=${answered.slice().sort().join(",")}`,
+    /^answered=entry_missing,no_decompression_stream,not_json,unsupported_compression$/,
+    "the screen must answer every reason but the fall-through one by name",
+  );
+
+  // The parser's two load-bearing details, each a real bug if reversed.
+  pin.match(
+    lib,
+    /const localNameLength = view\.getUint16\(localAt \+ 26, true\);/,
+    "expected the LOCAL header's own name length to be read -- the central directory's differs and lands mid-payload",
+  );
+  pin.match(
+    lib,
+    /new Blob\(\[new Uint8Array\(payload\)\]\)/,
+    "expected the entry's bytes to be COPIED before the Blob -- a Blob over the subarray's backing buffer carries the whole archive",
+  );
+  // It reads ONE entry. Anything that walks the archive for the caller is a
+  // second product (an unpacker) hiding in a reader.
+  pin.doesNotMatch(
+    withoutComments(lib),
+    /writeFile|showSaveFilePicker|createObjectURL/,
+    "the manifest reader must not write or offer files -- the SVGs in the same bundle are the user's download, not this module's to unpack",
+  );
+});
+
+test("R-5b: the manifest reader reads a real python zipfile bundle, and names what it cannot read", async () => {
+  // THE FIXTURE IS THE PRODUCER'S OWN OUTPUT: base64 of a zip written by
+  // Python's `zipfile.ZipFile(..., ZIP_DEFLATED)` -- the exact writer
+  // services/report/typeset.py's compose_artifact_zip uses -- carrying an SVG
+  // entry BEFORE the manifest, so the central-directory walk has to step past
+  // a non-matching entry to find it. A hand-rolled fixture would only prove
+  // the reader agrees with a writer this repo does not ship.
+  const bundle =
+    "UEsDBBQAAAAIADKWGV3bwxdcEAAAAJsBAAAWAAAAc3ZnL25ldHdvcmtfc2tldGNoLnN2Z7MpLku3qxgFgwrY6INiBQBQSwMEFAAAAAgAMpYZXTwVdn8kAQAAnQEAAA0AAABtYW5pZmVzdC5qc29udZDNSgMxFIX3fYpL1jLg1lcRCZnJbY2dSYZJLC2l0PgD0hZcqLiorrR0Z10oCFZ9mGEUnHkIM9FaN24u3HPPOSFfvwFA2kJysgUkzYROggxTlRlqeilqNDRhUjRRm6CzSTZqdywSYZgRSmoX2nYSQN9Pd4wUx7pKd1pUKkMxCZFz5FRIylXU9RXemSHTSjrvKus0rHciFaQxi3BXxRwzEAlrIQgNTdZG/lvg7Husthf2Jbd3H+fPxeFpbhfvk7fieJbby9y+5naaH5z9jbRVHfm8H1bzK6iuH8rFUzUflrMllHZZTSdQHt04AaqLUTV6LMcn5fg2ID/5QWM1dzwJjdE/GITnGbFYhJlHtf63duw8IuxG8X6NJuxRjfF3F1k/0Rh8AVBLAQIUABQAAAAIADKWGV3bwxdcEAAAAJsBAAAWAAAAAAAAAAAAAACAAQAAAABzdmcvbmV0d29ya19za2V0Y2guc3ZnUEsBAhQAFAAAAAgAMpYZXTwVdn8kAQAAnQEAAA0AAAAAAAAAAAAAAIABRAAAAG1hbmlmZXN0Lmpzb25QSwUGAAAAAAIAAgB/AAAAkwEAAAAA";
+  const bytes = Uint8Array.from(Buffer.from(bundle, "base64"));
+
+  const result = await readReportManifest(new Blob([new Uint8Array(bytes)]));
+  assert.equal(result.ok, true, "a real ZIP_DEFLATED bundle must be readable");
+  if (result.ok) {
+    assert.equal(result.manifest.kind, "prism.report_typeset_manifest.v1");
+    // The limitation SENTENCE survives the trip in all three languages -- this
+    // is the whole reason the bundle is opened at all.
+    assert.deepEqual(result.manifest.limitations[0].reason, {
+      ko: "가짜 이미지를 끼워 넣지 않습니다.",
+      en: "no placeholder image is faked",
+      ja: "偽の画像は挿入しません",
+    });
+    assert.equal(result.manifest.sections[0].state, "excluded_by_selection");
+  }
+
+  // ...and the failures are NAMED, not swallowed. A bare `null` for both would
+  // make "the manifest is unreadable" and "the manifest says nothing" the same
+  // thing on screen.
+  assert.deepEqual(await readReportManifest(new Blob([new Uint8Array([1, 2, 3])])), {
+    ok: false,
+    reason: "not_a_zip",
+  });
+  assert.deepEqual(await readReportManifest(new Blob([bytes.slice(0, 200)])), {
+    ok: false,
+    reason: "not_a_zip",
+  });
+});
+
+contractTest("R-5b: no spread may smuggle an attribute past the report screen's pins", (pin) => {
+  // The #58 detector, applied to this unit's files. An object-literal spread is
+  // legitimate (composeRequestBody carries one); a JSX ATTRIBUTE spread is
+  // banned, because every affordance and every wording pin above matches
+  // literal attribute names, and a spread has none.
+  const attributeSpreads = (source: string): number =>
+    [...source.matchAll(/\{\s*\.\.\./g)].filter((match) => {
+      const before = source.slice(0, match.index).replace(/\s+$/, "");
+      return !("=([,:?{>".includes(before.slice(-1)) || /\breturn$/.test(before));
+    }).length;
+
+  for (const file of REPORT_SURFACE_FILES) {
+    const source = withoutComments(read(file));
+    pin.match(
+      `attrSpreads=${attributeSpreads(source)}`,
+      /^attrSpreads=0$/,
+      `${file}: no spread may sit in attribute position -- \`{...{onClick: x}}\` is invisible to every attribute-name pin above`,
+    );
+  }
+});
+
+// Style/layout pins, in their own test per this file's rule about keeping
+// brittle restyle pins away from behavioural ones.
+contractTest("R-5b: the report surface has a 12px floor and no amber", (pin) => {
+  for (const file of REPORT_SURFACE_FILES) {
+    const source = withoutComments(read(file));
+    pin.doesNotMatch(
+      source,
+      /text-\[(?:[0-9]|10|11)(?:\.5)?px\]/,
+      `${file}: nothing on the report surface may go below the 12px floor`,
+    );
+    pin.doesNotMatch(source, UNMAPPED_SKY_BORDER, `${file}: border-sky-300 keeps Tailwind's stock cyan under the dark remap`);
+  }
+
+  // THE AMBER BAN, and the ONE measured exception. The rebuilt page carries no
+  // amber; the demoted legacy builder does, in the pre-existing "no dataset
+  // uploaded, using the bundled sample" banner it arrived with. That banner is
+  // MOVED CODE, not new work -- R-5b lifted the old page into a component
+  // without touching its body -- so it is named here rather than restyled by a
+  // builder the user never asked for a colour decision from. Struck from this
+  // exception the day that banner is redesigned.
+  pin.doesNotMatch(
+    withoutComments(read("app/report/page.tsx")),
+    /amber|yellow/i,
+    "app/report/page.tsx: no amber on new surface -- rose/emerald/slate are this app's accents",
+  );
+  pin.match(
+    `legacyAmber=${(withoutComments(read("components/report/LegacyReportBuilder.tsx")).match(/amber-\d{2,3}/g) ?? []).length}`,
+    /^legacyAmber=3$/,
+    "the legacy builder's THREE amber classes are the moved banner and no more -- a fourth means new amber was written into demoted code",
+  );
 });
