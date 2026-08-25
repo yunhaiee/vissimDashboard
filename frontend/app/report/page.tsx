@@ -45,6 +45,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { useLanguage } from "@/components/LanguageProvider";
 import LegacyReportBuilder from "@/components/report/LegacyReportBuilder";
+import MarkdownStructurePreview from "@/components/report/MarkdownStructurePreview";
 import {
   composeReport,
   composeReportArtifacts,
@@ -202,6 +203,12 @@ export default function ReportPage() {
   // renders nothing this screen did not already fetch, so it needs no
   // Loaded<> of its own.
   const [mdPreviewOpen, setMdPreviewOpen] = useState(false);
+  // #64 (second live-test round, 2026-08-26): the pane now renders
+  // STRUCTURE by default ("can u not show the raw md file but in preview
+  // mode?") -- this ONLY toggles which view of the SAME `markdownPreview`
+  // string is shown. The .md download below is unaffected either way; it
+  // always ships `markdownPreview` verbatim.
+  const [mdRawView, setMdRawView] = useState(false);
 
   // R-5c (docs/phase2/DECISIONS.md, 2026-08-24 "승인 이력 세션 픽커는 위임"):
   // `session_id` joins this SAME object, at its ONE construction site, rather
@@ -673,20 +680,36 @@ export default function ReportPage() {
       {/* ---- #60b: the TEXT-ONLY Markdown projection, a client-side read of
           the same fetched payloads above -- no style, no image, and no new
           request. See lib/reportMarkdownPreview.ts's module comment for what
-          "no invented content" means for this pane. */}
+          "no invented content" means for this pane. #64: the pane now
+          RENDERS this same string's structure by default (headings, tables,
+          lists, paragraphs) -- see components/report/MarkdownStructurePreview.tsx
+          and lib/reportMarkdownBlocks.ts. The raw-text view survives behind
+          a toggle for anyone who wants the literal Markdown; the .md
+          download always ships `markdownPreview` byte-identical either way. */}
       {mdPreviewOpen ? (
         <section className="rounded-xl border border-slate-200 px-4 py-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-[15px] font-semibold text-white">
               {t("미리보기 (텍스트)", "Preview (text)", "プレビュー（テキスト）")}
             </h2>
-            <button
-              type="button"
-              onClick={downloadMarkdownPreview}
-              className="ui-button-ghost px-3 py-1.5 text-[13px]"
-            >
-              {t("다운로드 (.md)", "Download (.md)", "ダウンロード（.md）")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMdRawView((previous) => !previous)}
+                className="ui-button-ghost px-3 py-1.5 text-[13px]"
+              >
+                {mdRawView
+                  ? t("구조로 보기", "View as structure", "構造で見る")
+                  : t("원문 보기 (.md)", "View raw (.md)", "原文を見る（.md）")}
+              </button>
+              <button
+                type="button"
+                onClick={downloadMarkdownPreview}
+                className="ui-button-ghost px-3 py-1.5 text-[13px]"
+              >
+                {t("다운로드 (.md)", "Download (.md)", "ダウンロード（.md）")}
+              </button>
+            </div>
           </div>
           <p className="mt-1 text-[12px] text-slate-500">
             {t(
@@ -695,9 +718,15 @@ export default function ReportPage() {
               "書式のないテキスト写しです — スタイルプレビューではありません。",
             )}
           </p>
-          <pre className="mt-2 max-h-[480px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 p-3 text-[12px] text-slate-700">
-            {markdownPreview}
-          </pre>
+          {mdRawView ? (
+            <pre className="mt-2 max-h-[480px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 p-3 text-[12px] text-slate-700">
+              {markdownPreview}
+            </pre>
+          ) : (
+            <div className="mt-2 max-h-[480px] overflow-auto rounded-lg border border-slate-200 p-3">
+              <MarkdownStructurePreview markdown={markdownPreview} />
+            </div>
+          )}
         </section>
       ) : null}
 
@@ -938,10 +967,25 @@ function NotAvailableFold(props: { notAvailable: { name: string; reason: string 
   );
 }
 
-/** The per-section data-source state the design doc asks the tree to carry. A
- * present figure is named; an absent one is grey and carries the SERVER's own
- * reason; a section with no figure at all says so and names the module that
- * would own those numbers. */
+/** The per-section data-source state the design doc asks the tree to carry.
+ *
+ * REDESIGNED for the second live-test round (2026-08-26, user: "still too
+ * many fine text shown in the report page"): the card FACE used to print
+ * every figure's own one-liner directly -- for an absent figure, the
+ * server's `reason` sentence (measured 50-110 characters, unit #60b) sitting
+ * open on every card, one line per figure. The face now carries only the two
+ * count chips; the SAME one-liners this card used to print move behind ONE
+ * new fold (not one fold per sentence -- the same discipline `BasisFold`/
+ * `NotAvailableFold` already use). Nothing is dropped: the fold renders
+ * `presentFigures`/`absentFigures`, the EXACT arrays the chips were counted
+ * from (one source, no fork -- a chip's count and the fold's row count can
+ * never disagree because they read the same variable), so every sentence
+ * this card ever carried is still reachable in exactly one click.
+ *
+ * The `figures.length === 0` branch (no figure bound to this section at all)
+ * is UNCHANGED: it is already a single short line, not the paragraph-length
+ * fine print the user's screenshot named, and it is the R-5b-pinned
+ * "이 절의 증거 없음" sentence besides. */
 function EvidenceStateList(props: {
   figures: PreviewFigure[];
   owners: string[];
@@ -950,6 +994,14 @@ function EvidenceStateList(props: {
   t: Translate;
 }) {
   const { figures, owners, notAvailable, lang, t } = props;
+  const presentFigures = figures.filter((item) => !item.figure.absent);
+  const absentFigures = figures.filter((item) => item.figure.absent);
+
+  // ONE `<NotAvailableFold>` call site, below EITHER branch -- not one per
+  // branch. The pin at "R-5b: every absence and every limitation..." counts
+  // this literal call app-wide and expects exactly two (this component plus
+  // `SectionPreview`'s own); a call inside each `if`/`else` arm would double
+  // the static count even though only one ever actually renders.
   return (
     <>
       {figures.length === 0 ? (
@@ -958,24 +1010,73 @@ function EvidenceStateList(props: {
           {owners.length > 0 ? ` — ${owners.join(", ")}` : ""}
         </p>
       ) : (
-        <ul className="mt-1 space-y-1">
-          {figures.map((item) => (
-            <li key={item.figure.figure_id} className="text-[13px]">
-              {item.figure.absent ? (
-                <span className="text-slate-500">
-                  {item.figure.figure_id} — {pick(item.figure.reason, lang)}
-                </span>
-              ) : (
-                <span className="text-emerald-600">
-                  {item.figure.figure_id} — {t("증거 있음", "evidence present", "証拠あり")}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
+        <>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            {presentFigures.length > 0 ? (
+              <EvidenceChip
+                tone="present"
+                label={t(
+                  `증거 있음 ${presentFigures.length}건`,
+                  `${presentFigures.length} present`,
+                  `証拠あり ${presentFigures.length}件`,
+                )}
+              />
+            ) : null}
+            {absentFigures.length > 0 ? (
+              <EvidenceChip
+                tone="absent"
+                label={t(
+                  `증거 없음 ${absentFigures.length}건`,
+                  `${absentFigures.length} absent`,
+                  `証拠なし ${absentFigures.length}件`,
+                )}
+              />
+            ) : null}
+          </div>
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[13px] text-slate-500">
+              {t("자세히 (도판별 증거 상세)", "More (per-figure evidence detail)", "詳細（図版別証拠詳細）")}
+            </summary>
+            <ul className="mt-1 space-y-1">
+              {presentFigures.map((item) => (
+                <li key={item.figure.figure_id} className="text-[13px]">
+                  <span className="text-emerald-600">
+                    {item.figure.figure_id} — {t("증거 있음", "evidence present", "証拠あり")}
+                  </span>
+                </li>
+              ))}
+              {absentFigures.map((item) => (
+                <li key={item.figure.figure_id} className="text-[13px]">
+                  <span className="text-slate-500">
+                    {item.figure.figure_id} — {pick(item.figure.reason, lang)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </>
       )}
       <NotAvailableFold notAvailable={notAvailable} t={t} />
     </>
+  );
+}
+
+/** A compact status pill -- "증거 있음 N건" / "증거 없음 N건" -- in this app's
+ * existing rounded-pill idiom (the shape `NodeScoreTable.tsx`/
+ * `genesis/jobs/[id]/page.tsx` already use for a count/status badge; this
+ * page itself only ever wrote the same kind/count sentence as plain text
+ * before this unit, e.g. "폴백 N건"). Honest-absence doctrine: the label
+ * ALWAYS carries the kind and the count -- never a bare icon or a bare
+ * "있음/없음" with no number, so the chip alone can never overstate or
+ * understate how much evidence a section actually has. */
+function EvidenceChip(props: { tone: "present" | "absent"; label: string }) {
+  const { tone, label } = props;
+  const toneClasses =
+    tone === "present" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-surface text-slate-600";
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[13px] font-medium ${toneClasses}`}>
+      {label}
+    </span>
   );
 }
 

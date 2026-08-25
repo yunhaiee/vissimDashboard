@@ -14855,14 +14855,23 @@ contractTest("an effect may only set state after hydration, and says so on the l
 // string this file built.
 // ---------------------------------------------------------------------------
 
-/** The two files that ARE the /report surface.
+/** The three files that ARE the /report surface.
  *
  * NAMED, not walked, for the reason #57 measured on
  * `ParameterSearchRefusalAction.tsx`: a file that exists but is not in the
- * array is not swept, and the sweep stays green over it. Both halves of this
- * screen are here -- the rebuilt page and the demoted legacy builder -- so a
- * violation cannot hide by moving between them. */
-const REPORT_SURFACE_FILES = ["app/report/page.tsx", "components/report/LegacyReportBuilder.tsx"];
+ * array is not swept, and the sweep stays green over it. All three halves of
+ * this screen are here -- the rebuilt page, the demoted legacy builder, and
+ * (#64) the Markdown structure renderer the text-preview pane mounts -- so a
+ * violation cannot hide by moving between them. `lib/reportMarkdownBlocks.ts`
+ * is NOT in this list on purpose: it is a pure `lib/` module (mirroring
+ * `lib/reportMarkdownPreview.ts`, also excluded here), not a rendered
+ * surface, and gets its own purity-specific pins below instead of the
+ * styling/spread pins this array feeds. */
+const REPORT_SURFACE_FILES = [
+  "app/report/page.tsx",
+  "components/report/LegacyReportBuilder.tsx",
+  "components/report/MarkdownStructurePreview.tsx",
+];
 
 contractTest("R-5b: /report is the design doc's layout, and the old workbook path is demoted, not deleted", (pin) => {
   const page = read("app/report/page.tsx");
@@ -15574,6 +15583,17 @@ contractTest("R-5b: every string this unit added is a real ko/en/ja triple", (pi
       "A styling-free text copy — not a style preview.",
       "書式のないテキスト写しです — スタイルプレビューではありません。",
     ],
+    // #64 (second live-test round, 2026-08-26): the text-preview pane's own
+    // raw/structure toggle ("can u not show the raw md file but in preview
+    // mode?"), and the FIFTH 자세히 fold -- the spine tree card's per-figure
+    // evidence detail, folded away from the chip on the card face (below).
+    ["원문 보기 (.md)", "View raw (.md)", "原文を見る（.md）"],
+    ["구조로 보기", "View as structure", "構造で見る"],
+    [
+      "자세히 (도판별 증거 상세)",
+      "More (per-figure evidence detail)",
+      "詳細（図版別証拠詳細）",
+    ],
   ];
   for (const [ko, en, ja] of PLAIN_TRIPLES) {
     pin.match(page, tripleArgs(ko, en, ja), `expected the report screen's exact ko/en/ja triple for ${ko}`);
@@ -15600,6 +15620,18 @@ contractTest("R-5b: every string this unit added is a real ko/en/ja triple", (pi
       "새 프로파일을 저장했습니다: ${uploadedProfile.name}",
       "Saved a new profile: ${uploadedProfile.name}",
       "新しいプロファイルを保存しました: ${uploadedProfile.name}",
+    ],
+    // #64: the spine card's two evidence chips -- honest-absence doctrine
+    // names the KIND and the COUNT, never a bare icon or a bare "있음/없음".
+    [
+      "증거 있음 ${presentFigures.length}건",
+      "${presentFigures.length} present",
+      "証拠あり ${presentFigures.length}件",
+    ],
+    [
+      "증거 없음 ${absentFigures.length}건",
+      "${absentFigures.length} absent",
+      "証拠なし ${absentFigures.length}件",
     ],
   ];
   for (const [ko, en, ja] of TEMPLATE_TRIPLES) {
@@ -16154,3 +16186,395 @@ test("#60b: the Markdown text-preview builder passes server sentences through by
   });
   assert.ok(empty.includes("No named limitation"), "expected the empty-input case to name its own empty limitations list");
 });
+
+// ---------------------------------------------------------------------------
+// Unit #64 (second live-test round, 2026-08-26): the /report text-preview
+// pane RENDERS Markdown structure instead of showing the raw string, and the
+// spine tree's per-figure absence one-liners fold behind a count chip.
+//
+// User's own words: "for the md file, can u not show the raw md file but in
+// preview mode?" and (same session) "still too many fine text shown in the
+// report page" -- the spine card's per-figure absence sentences specifically.
+// ---------------------------------------------------------------------------
+
+contractTest("#64: the Markdown structure parser is pure, and recognises only what buildMarkdownPreview actually emits", (pin) => {
+  const lib = read("lib/reportMarkdownBlocks.ts");
+  const source = withoutComments(lib);
+
+  // NO NEW FETCH, NO REACT -- same discipline reportMarkdownPreview.ts is
+  // pinned on: this module reads a string and returns data, nothing else. A
+  // React import or a hook would mean this "pure function" secretly carries
+  // state or a component identity, which the sibling presentational
+  // component (components/report/MarkdownStructurePreview.tsx) is supposed
+  // to own instead.
+  pin.doesNotMatch(
+    source,
+    /\bfetch\(|apiFetch\(|apiMutationFetch\(/,
+    "expected the Markdown structure parser to make no network request of its own",
+  );
+  pin.doesNotMatch(
+    source,
+    /from ["']react["']|"use client"|useState\(|useEffect\(|useMemo\(/,
+    "expected no React import and no hook in the pure parser -- state and JSX belong to the sibling component, not this module",
+  );
+
+  // THE SLICE BAN, RE-DECIDED (this file's own module comment explains why):
+  // every split in this file uses .replace()/.split(), never .slice()/
+  // .substring()/.substr() picking a byte range that could stop short.
+  pin.doesNotMatch(
+    source,
+    /\.slice\(|\.substring\(|\.substr\(/,
+    "expected NO truncation method anywhere in the Markdown structure parser -- splitting a line into blocks/segments must never risk dropping its tail",
+  );
+
+  // KNOWN CONSTRUCTS ONLY -- exactly the two heading levels
+  // buildMarkdownPreview is measured to emit (`# ` and `## `), not a general
+  // `#{1,6}` heading rule. Recognising a level this app never writes would be
+  // inventing support for a construct nothing on this screen produces.
+  pin.match(source, /\/\^## \(\.\*\)\$\//, "expected the level-2 heading regex to match exactly '## ' -- no more, no fewer hashes");
+  pin.match(source, /\/\^# \(\.\*\)\$\//, "expected the level-1 heading regex to match exactly '# '");
+  pin.doesNotMatch(
+    source,
+    /#\{1,6\}|#\{2,6\}|#\+/,
+    "expected no generic multi-level heading regex -- only the two levels this app's own generator writes are 'known'",
+  );
+
+  // THE HONEST FALLBACK, STRUCTURALLY: the LAST arm of the parse loop pushes
+  // a paragraph block for the current line and returns straight to the loop
+  // (`return blocks;` sits immediately after, past only the loop's own
+  // closing brace) -- so no earlier branch's `continue` can skip it, and
+  // nothing wraps it in a condition that could suppress it for some lines.
+  pin.match(
+    source,
+    /blocks\.push\(\{ type: "paragraph", segments: parseInline\(line\) \}\);\s*i \+= 1;\s*\}\s*return blocks;/,
+    "expected the parser's fallback arm to unconditionally push a paragraph block as the LAST statement in the loop, immediately before the function returns -- an unrecognised line must always reach this, never be silently skipped",
+  );
+});
+
+test("#64: known Markdown constructs parse to the right block types, an unknown line survives as text, and no cell is ever truncated", async () => {
+  const { parseMarkdownBlocks } = await import("../lib/reportMarkdownBlocks.ts");
+
+  // EVERY KNOWN CONSTRUCT, one block each.
+  const headings = parseMarkdownBlocks("# Title\n\n## Section");
+  assert.deepEqual(
+    headings.map((b) => (b.type === "heading" ? [b.type, b.level] : b.type)),
+    [
+      ["heading", 1],
+      ["heading", 2],
+    ],
+    "expected '# '/'## ' to parse as heading blocks at levels 1 and 2",
+  );
+
+  const quote = parseMarkdownBlocks("> line one\n> line two");
+  assert.equal(quote.length, 1, "expected consecutive '> ' lines to merge into ONE blockquote block");
+  assert.equal(quote[0].type, "blockquote");
+  if (quote[0].type === "blockquote") {
+    assert.deepEqual(
+      quote[0].lines.map((segments) => segments.map((s) => s.text).join("")),
+      ["line one", "line two"],
+      "expected both quote lines to survive, in order",
+    );
+  }
+
+  const list = parseMarkdownBlocks("- alpha\n- beta\n- gamma");
+  assert.equal(list.length, 1, "expected consecutive '- ' lines to merge into ONE list block");
+  assert.equal(list[0].type, "list");
+  if (list[0].type === "list") {
+    assert.equal(list[0].items.length, 3, "expected all three list items, none dropped");
+  }
+
+  const table = parseMarkdownBlocks("| Col A | Col B |\n| --- | --- |\n| r1c1 | r1c2 |\n| r2c1 | r2c2 |");
+  assert.equal(table.length, 1, "expected a header+separator+rows pipe table to parse as ONE table block");
+  assert.equal(table[0].type, "table");
+  if (table[0].type === "table") {
+    assert.deepEqual(table[0].columns, ["Col A", "Col B"], "expected the table's own header cells as columns");
+    assert.deepEqual(
+      table[0].rows,
+      [
+        ["r1c1", "r1c2"],
+        ["r2c1", "r2c2"],
+      ],
+      "expected exactly the two body rows, no more and no fewer",
+    );
+  }
+
+  const bold = parseMarkdownBlocks("**fig_1** — some reason");
+  assert.equal(bold.length, 1);
+  assert.equal(bold[0].type, "paragraph");
+  if (bold[0].type === "paragraph") {
+    assert.deepEqual(
+      bold[0].segments,
+      [
+        { text: "fig_1", bold: true },
+        { text: " — some reason", bold: false },
+      ],
+      "expected '**fig_1**' to split into a bold segment and a plain-text tail, both surviving whole",
+    );
+  }
+
+  // THE HONEST FALLBACK -- a line matching no known construct (here, a
+  // heading LEVEL this app's own generator never writes) survives as a
+  // plain-text paragraph, verbatim, rather than being dropped or throwing.
+  const unknown = parseMarkdownBlocks("### deeper than this app writes\nHOSTILE <script>alert(1)</script> LINE");
+  assert.equal(unknown.length, 2, "expected both unrecognised lines to survive as their own blocks");
+  for (const block of unknown) assert.equal(block.type, "paragraph", "expected the honest fallback to be a paragraph block");
+  assert.equal(
+    unknown[0].type === "paragraph" && unknown[0].segments.map((s) => s.text).join(""),
+    "### deeper than this app writes",
+    "expected the unrecognised heading-like line to survive character-for-character",
+  );
+  assert.equal(
+    unknown[1].type === "paragraph" && unknown[1].segments.map((s) => s.text).join(""),
+    "HOSTILE <script>alert(1)</script> LINE",
+    "expected a hostile-looking line to survive as inert TEXT, character-for-character -- this parser returns data, never markup",
+  );
+
+  // NO TRUNCATION -- a long table cell (well past any of this app's line-
+  // length habits) survives whole.
+  const longCell = "X".repeat(500) + " VERBATIM TAIL MARKER 8Q3";
+  const wideTable = parseMarkdownBlocks(`| Col |\n| --- |\n| ${longCell} |`);
+  assert.equal(wideTable[0].type, "table");
+  if (wideTable[0].type === "table") {
+    assert.equal(wideTable[0].rows[0][0], longCell, "expected a long cell value to survive whole, not truncated");
+  }
+
+  // THE ESCAPE INTEGRATION: buildMarkdownPreview's mdCell escapes a literal
+  // '|' inside a cell as '\|' so it cannot masquerade as a column separator;
+  // this parser un-escapes it back to '|' for display. Built through the
+  // REAL producer, not a hand-written fixture, so the two modules are proven
+  // to agree rather than merely individually self-consistent.
+  const { buildMarkdownPreview } = await import("../lib/reportMarkdownPreview.ts");
+  const md = buildMarkdownPreview({
+    lang: "en",
+    t: (_ko: string, en: string) => en,
+    sections: [
+      {
+        id: "sec",
+        title: { ko: "가", en: "Section", ja: "な" },
+        basis: [],
+        source_keys: [],
+        required_outputs: [],
+        regulation_derived: true,
+      },
+    ],
+    tableFigures: [
+      {
+        figure_id: "fig",
+        spine_section_id: "sec",
+        absent: false,
+        title: { ko: "가", en: "Table", ja: "な" },
+        columns: [{ key: "a", ko: "가", en: "A", ja: "な" }],
+        rows: [{ a: "pipe|value" }],
+      },
+    ],
+    graphicFigures: [],
+    unboundTitle: "Unbound",
+    excludedSectionIds: [],
+  });
+  const blocks = parseMarkdownBlocks(md);
+  const producedTable = blocks.find((b) => b.type === "table");
+  assert.ok(producedTable, "expected the real builder's output to still contain a parseable table block");
+  if (producedTable && producedTable.type === "table") {
+    assert.equal(producedTable.rows[0][0], "pipe|value", "expected the escaped pipe to round-trip back to a literal '|' for display");
+  }
+});
+
+contractTest(
+  "#64: the spine card's evidence chips and their fold count the SAME arrays, one fold holds every sentence, and none is dropped",
+  (pin) => {
+    const page = read("app/report/page.tsx");
+    const source = withoutComments(page);
+
+    const evidenceBody = sliceBetween(page, "function EvidenceStateList(props", "function EvidenceChip(props");
+    pin.match(evidenceBody, /\S/, "expected to find EvidenceStateList's own source slice (marker moved?)");
+
+    // ONE FOLD, NOT ONE PER SENTENCE. The card face carries only the two
+    // count chips; every one of this section's per-figure one-liners --
+    // MEASURED at 50-110 characters each for an absent figure, unit #60b --
+    // moves behind this ONE toggle.
+    pin.match(
+      `evidenceDetailsCount=${(withoutComments(evidenceBody).match(/<details\b/g) ?? []).length}`,
+      /^evidenceDetailsCount=1$/,
+      "expected exactly ONE 자세히 fold inside the evidence card -- the per-figure one-liners must not each carry their own toggle",
+    );
+
+    // ONE SOURCE, NO FORK: a chip's count and the fold's row count both read
+    // `presentFigures`/`absentFigures` -- the SAME filtered arrays -- so a
+    // mutation that recomputes one of them separately (and could drift from
+    // the other) fails here.
+    for (const kind of ["presentFigures", "absentFigures"]) {
+      pin.match(
+        evidenceBody,
+        new RegExp(`\\$\\{${kind}\\.length\\}건`),
+        `expected the ${kind} chip's label to read ${kind}.length directly`,
+      );
+      pin.match(
+        evidenceBody,
+        new RegExp(`${kind}\\.map\\(\\(item\\) =>`),
+        `expected the fold to iterate ${kind} itself, not a second array recomputed from it`,
+      );
+    }
+    pin.match(
+      `evidenceArrayDeclarations=${(source.match(/const (?:presentFigures|absentFigures) = figures\.filter\(/g) ?? []).length}`,
+      /^evidenceArrayDeclarations=2$/,
+      "expected exactly one declaration each of presentFigures/absentFigures on the whole screen -- a second filter is a second, possibly-diverging count",
+    );
+
+    // REACHABLE: the fold still carries the SERVER's own absence reason,
+    // verbatim -- the exact expression the card face printed directly before
+    // this unit, only its wrapper moved.
+    pin.match(
+      evidenceBody,
+      /\{pick\(item\.figure\.reason, lang\)\}/,
+      "expected the fold to still render an absent figure's own reason verbatim -- moved behind the fold, never deleted",
+    );
+    // ...and the figure id each reason belongs to, so a folded sentence is
+    // still attributable once opened, not an anonymous list.
+    pin.match(
+      evidenceBody,
+      /\{item\.figure\.figure_id\} — \{pick\(item\.figure\.reason, lang\)\}/,
+      "expected each folded absence line to keep naming ITS OWN figure_id, not just the sentence",
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// #64 REFUTER FIX ROUND. Three real defects, all measured against the code
+// landed above:
+//
+//  1. CRLF heading bug (dormant but unconditional): `parseMarkdownBlocks`
+//     split on a bare '\n', so a CRLF-authored line ('...\r\n') left a '\r'
+//     glued to its own end. Every `$'-anchored heading regex (`.` cannot
+//     match '\r') then failed on a CRLF heading, and the line fell through to
+//     the honest-fallback paragraph -- LEAKING the literal '# Title' Markdown
+//     syntax to the reader instead of rendering a heading. The blockquote/
+//     list prefix tests (`/^>\s?/`, `/^-\s+/`, no trailing `$`) tolerated the
+//     same bug silently instead of failing loudly, which is exactly the
+//     asymmetry that let it stay dormant. Fixed by splitting on `\r\n|\n`
+//     ONCE, at the top of the function, so every construct is CRLF-safe by
+//     construction rather than each regex needing its own carve-out.
+//  2. The .md download's byte-identical-regardless-of-view claim (this
+//     unit's own module comment, and the report-back's "download stays
+//     byte-identical") had NO pin -- a mutation serializing the PARSED
+//     structure instead of the raw string passed the whole suite clean.
+//  3. The pane's default view (structure, not raw -- the whole point of this
+//     unit) had no pin either -- flipping `mdRawView`'s initial state to
+//     `true` also passed clean.
+// ---------------------------------------------------------------------------
+
+test("#64 refuter fix: a CRLF-terminated heading parses as a heading, and no construct carries a glued \\r", async () => {
+  const { parseMarkdownBlocks } = await import("../lib/reportMarkdownBlocks.ts");
+
+  // THE DEFECT ITSELF: a CRLF heading must still parse as a heading, not
+  // fall through to the paragraph fallback with the literal '#'/'##' syntax
+  // leaking into the reader's text.
+  const crlfHeadings = parseMarkdownBlocks("# Title\r\n\r\n## Section\r\n");
+  assert.equal(crlfHeadings.length, 2, "expected both CRLF heading lines to parse as their own blocks");
+  assert.equal(crlfHeadings[0].type, "heading", "expected a CRLF-terminated '# ' line to parse as a heading, not fall through to a paragraph");
+  if (crlfHeadings[0].type === "heading") {
+    assert.equal(crlfHeadings[0].level, 1);
+    assert.equal(
+      crlfHeadings[0].segments.map((s) => s.text).join(""),
+      "Title",
+      "expected no glued '\\r' in the heading's own text",
+    );
+  }
+  assert.equal(crlfHeadings[1].type, "heading", "expected a CRLF-terminated '## ' line to parse as a level-2 heading");
+  if (crlfHeadings[1].type === "heading") {
+    assert.equal(crlfHeadings[1].level, 2);
+    assert.equal(crlfHeadings[1].segments.map((s) => s.text).join(""), "Section");
+  }
+
+  // THE SAME CHECK across every OTHER construct -- the prefix tests
+  // (blockquote '>', list '-') tolerated a trailing '\r' in their own
+  // start-anchored regex even under the ORIGINAL bug, which is the
+  // asymmetry that let this stay dormant; proving the FIX holds for them
+  // too (not only headings) is what closes the whole class, not just the
+  // one symptom that was visibly broken.
+  const crlfQuote = parseMarkdownBlocks("> line one\r\n> line two\r\n");
+  assert.equal(crlfQuote[0].type, "blockquote");
+  if (crlfQuote[0].type === "blockquote") {
+    for (const lineSegments of crlfQuote[0].lines) {
+      assert.ok(
+        !lineSegments.some((s) => s.text.includes("\r")),
+        "expected no blockquote line to carry a glued '\\r'",
+      );
+    }
+  }
+
+  const crlfList = parseMarkdownBlocks("- alpha\r\n- beta\r\n");
+  assert.equal(crlfList[0].type, "list");
+  if (crlfList[0].type === "list") {
+    for (const itemSegments of crlfList[0].items) {
+      assert.ok(!itemSegments.some((s) => s.text.includes("\r")), "expected no list item to carry a glued '\\r'");
+    }
+  }
+
+  const crlfTable = parseMarkdownBlocks("| Col A |\r\n| --- |\r\n| val |\r\n");
+  assert.equal(crlfTable[0].type, "table");
+  if (crlfTable[0].type === "table") {
+    assert.equal(crlfTable[0].columns[0], "Col A", "expected no glued '\\r' in a CRLF table's header cell");
+    assert.equal(crlfTable[0].rows[0][0], "val", "expected no glued '\\r' in a CRLF table's body cell");
+  }
+
+  const crlfParagraph = parseMarkdownBlocks("plain fallback text\r\n");
+  assert.equal(crlfParagraph[0].type, "paragraph");
+  if (crlfParagraph[0].type === "paragraph") {
+    assert.equal(
+      crlfParagraph[0].segments.map((s) => s.text).join(""),
+      "plain fallback text",
+      "expected no glued '\\r' in a CRLF paragraph's own fallback text",
+    );
+  }
+});
+
+contractTest(
+  "#64 refuter fix: the parser splits CRLF-safe at its source, the .md download stays raw and view-independent, and the default view is structure",
+  (pin) => {
+    const lib = withoutComments(read("lib/reportMarkdownBlocks.ts"));
+
+    // FINDING 1, AT THE SOURCE: the split itself, not just its behaviour --
+    // so a regression back to a bare '\n' split fails here even before the
+    // behavioural test above would catch it on a specific input.
+    pin.match(
+      lib,
+      /const lines = markdown\.split\(\/\\r\\n\|\\n\/\);/,
+      "expected the parser to split on CRLF-or-LF, not a bare '\\n' -- a bare split leaves a '\\r' glued to every CRLF line, which every '$'-anchored regex below then fails to match",
+    );
+    pin.doesNotMatch(
+      lib,
+      /markdown\.split\("\\n"\)|markdown\.split\('\\n'\)/,
+      "expected no bare '\\n'-only split anywhere in the parser -- that is exactly the CRLF defect this fix closes",
+    );
+
+    const page = read("app/report/page.tsx");
+    const source = withoutComments(page);
+
+    // FINDING 3: the raw/structure toggle's OWN initial value, anchored to
+    // BOTH its own name and its setter's -- a bare `useState(false)` search
+    // would also match unrelated state on this screen, so a mutation that
+    // renamed the pair while flipping the value could still satisfy a
+    // looser pin. This one cannot be satisfied by any OTHER declaration.
+    pin.match(
+      source,
+      /const \[mdRawView, setMdRawView\] = useState\(false\);/,
+      "expected the MD preview pane to default to STRUCTURE view (mdRawView = false) -- this is the unit's own motivating fix ('can u not show the raw md file but in preview mode?'); defaulting to raw silently reverts it",
+    );
+
+    // FINDING 2: the .md download ships `markdownPreview` RAW, byte-
+    // identical, unconditionally -- independent of whichever view (structure
+    // or raw) happens to be on screen when the user clicks download.
+    const downloader = sliceBetween(page, "const downloadMarkdownPreview = useCallback(", "}, [markdownPreview]);");
+    pin.match(downloader, /\S/, "expected to find downloadMarkdownPreview's own source slice (marker moved?)");
+    pin.match(
+      downloader,
+      /downloadBlob\(new Blob\(\[markdownPreview\], \{ type: "text\/markdown;charset=utf-8" \}\), "report-preview\.md"\);/,
+      "expected the .md download to ship the raw markdownPreview string, byte-identical, regardless of which view is on screen",
+    );
+    pin.doesNotMatch(
+      downloader,
+      /mdRawView|parseMarkdownBlocks|MarkdownStructurePreview/,
+      "expected the download to be structurally INDEPENDENT of the raw/structure toggle -- it must never branch on mdRawView or reach for the parsed structure instead of the raw string",
+    );
+  },
+);
