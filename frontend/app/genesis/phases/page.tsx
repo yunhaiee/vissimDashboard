@@ -220,6 +220,27 @@ function PhaseDiagramReviewPageContent() {
   const [jobs, setJobs] = useState<GenesisJob[]>([]);
   const [jobId, setJobId] = useState<string>("");
   const [candidates, setCandidates] = useState<PhaseDiagramNodeCandidate[]>([]);
+  // unit #62 -- the map needs to tell "nobody has searched yet" apart from
+  // "searched and found nothing" (`candidates.length` alone cannot: both read
+  // as an empty array) AND apart from "searched and FAILED" (FINDING 3,
+  // refuter: folding a failure into "idle" is its own false claim -- one
+  // search did run, and did not come back; the page's `error` banner below
+  // carries the reason, this state just names that a search failed at all).
+  const [candidatesStatus, setCandidatesStatus] = useState<"idle" | "loading" | "fetched" | "failed">("idle");
+  const [candidatesTotalNodes, setCandidatesTotalNodes] = useState<number | null>(null);
+  const [candidatesReturnedNodes, setCandidatesReturnedNodes] = useState<number | null>(null);
+  // unit #62 FINDING 2 (refuter, HIGH) -- a request-generation token. Two
+  // candidate fetches for DIFFERENT (selectedId, jobId) pairs can be in
+  // flight at once (switching reviews or generations quickly starts a second
+  // one before the first resolves) and without this guard the LAST TO
+  // RESOLVE wins regardless of which one was actually requested most
+  // recently. MEASURED (refuter): a slow review A's candidates landing after
+  // a fast review B's left B's screen showing A's ranking -- a person could
+  // bind a node ranked for the WRONG intersection. Bumped at the start of
+  // every fetch AND whenever a fetch is abandoned with nothing to supersede
+  // it (jobId cleared); only the fetch whose captured id still matches the
+  // ref when it resolves may write state.
+  const candidatesRequestRef = useRef(0);
   const [nodeId, setNodeId] = useState<number | null>(null);
   const [approachRows, setApproachRows] = useState<ApproachRow[]>([]);
   const [planChoice, setPlanChoice] = useState<string>("");
@@ -320,6 +341,13 @@ function PhaseDiagramReviewPageContent() {
       );
       setApproachRows([]);
       setCandidates([]);
+      // unit #62 -- a review switch invalidates any candidates already on
+      // screen (they were ranked for the PREVIOUS review's 교차로명). Reset to
+      // idle here so the map never shows another intersection's dots for the
+      // instant before the auto-load effect (below) refetches for this one.
+      setCandidatesStatus("idle");
+      setCandidatesTotalNodes(null);
+      setCandidatesReturnedNodes(null);
     } catch (caught) {
       setReview(null);
       setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
@@ -346,17 +374,76 @@ function PhaseDiagramReviewPageContent() {
 
   const loadCandidates = useCallback(async () => {
     if (!selectedId || !jobId) return;
+    // FINDING 2's guard: captured once, checked before EVERY state write this
+    // call makes. A later call (for a different review or job) bumps the ref
+    // before this one's fetch can land, so a stale response is discarded
+    // instead of overwriting a newer, still-in-flight request's screen.
+    const requestId = ++candidatesRequestRef.current;
     setBusy(true);
+    setCandidatesStatus("loading");
     try {
       const payload = await fetchPhaseDiagramCandidates(selectedId, jobId);
+      if (candidatesRequestRef.current !== requestId) return; // superseded -- discard
       setCandidates(payload.candidates);
+      setCandidatesTotalNodes(payload.total_nodes);
+      setCandidatesReturnedNodes(payload.returned_nodes);
+      setCandidatesStatus("fetched");
       setError(null);
     } catch (caught) {
+      if (candidatesRequestRef.current !== requestId) return; // superseded -- discard
+      // unit #62 FINDING 3 -- `failed`, not `idle`. A search DID run here; it
+      // just did not come back. The page's error banner (`error` state,
+      // rendered at the top) carries the reason; the map gets its own
+      // distinct sentence naming the failure rather than reverting to a claim
+      // that nothing was ever tried.
+      setCandidatesStatus("failed");
+      setCandidatesTotalNodes(null);
+      setCandidatesReturnedNodes(null);
       setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
     } finally {
-      setBusy(false);
+      if (candidatesRequestRef.current === requestId) setBusy(false);
     }
   }, [selectedId, jobId]);
+
+  // unit #62 -- AUTO-LOAD. `node_candidates` never writes anything (it is a
+  // pure ranking with its reason attached, never a binding), so running this
+  // fetch the moment a 생성 작업 is chosen is doctrine-safe -- unlike the
+  // confirming POST, there is no act here that needs a person's deliberate
+  // click first. The old design left the map showing a false "찾지 못했습니다"
+  // for anyone who had not yet pressed the (now-manual-reload) button.
+  // Depends on `loadCandidates`, whose own deps are `[selectedId, jobId]`, so
+  // switching either one re-fetches for the new pair.
+  useEffect(() => {
+    if (!jobId) {
+      // FINDING 2, the OTHER half: bump the token here too. No NEW request
+      // follows a cleared jobId to do the invalidating on its own, so an
+      // already-in-flight fetch for the job just cleared must be blocked
+      // explicitly, or it could still land and overwrite this idle reset.
+      //
+      // ROUND 3 FINDING B (refuter, HIGH): the bump ALONE freezes `busy`
+      // permanently. Bumping orphans any in-flight fetch -- when it resolves,
+      // its own guarded `if (candidatesRequestRef.current === requestId)
+      // setBusy(false)` in loadCandidates' `finally` now sees a MISMATCHED
+      // token and skips its reset too, on purpose (that guard is what stops a
+      // stale response from overwriting a newer one). Nothing else was left
+      // to clear `busy` -- MEASURED: `canSubmit` (and so the 확인 button)
+      // stayed disabled forever for anyone who cleared jobId mid-fetch. CLASS
+      // CLOSURE: every site that bumps this ref OUTSIDE loadCandidates must
+      // pair the bump with its own `setBusy(false)` in the SAME block, right
+      // here, since loadCandidates' guarded reset is exactly what the bump
+      // just disabled. (Audited: this is the only such site today; the
+      // contract pin below counts bumps-outside-loadCandidates against
+      // paired resets so a future one cannot be added unpaired.)
+      candidatesRequestRef.current += 1;
+      setCandidatesStatus("idle");
+      setCandidates([]);
+      setCandidatesTotalNodes(null);
+      setCandidatesReturnedNodes(null);
+      setBusy(false);
+      return;
+    }
+    void loadCandidates();
+  }, [jobId, loadCandidates]);
 
   /** Binding a node fills the form with that node's OWN approach links. The
    * phase column is prefilled from the reading where a label matches, and left
@@ -1136,13 +1223,18 @@ function PhaseDiagramReviewPageContent() {
                       ))}
                     </select>
                   </label>
+                  {/* unit #62 -- now a RELOAD, not the only way in: the effect
+                    * above fetches automatically the moment a 생성 작업 is
+                    * chosen (a read-only rank, so auto-running it is
+                    * doctrine-safe). The button stays for the case a draft
+                    * changed underneath an already-chosen job. */}
                   <button
                     type="button"
                     onClick={loadCandidates}
                     disabled={!jobId || busy}
                     className="ui-button-ghost rounded-full px-3.5 py-1.5 text-[14px] font-semibold disabled:opacity-40"
                   >
-                    {t("노드 후보 불러오기", "Load node candidates", "ノード候補を読み込む")}
+                    {t("노드 후보 다시 불러오기", "Reload node candidates", "ノード候補を再読み込み")}
                   </button>
                   {nodeId != null && (
                     <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[14px] font-semibold text-slate-800">
@@ -1164,6 +1256,9 @@ function PhaseDiagramReviewPageContent() {
                       <DraftNodePickMap
                         jobId={jobId}
                         candidateNodeIds={candidates.map((candidate) => candidate.node_id)}
+                        candidatesStatus={candidatesStatus}
+                        totalNodes={candidatesTotalNodes}
+                        returnedNodes={candidatesReturnedNodes}
                         selectedNodeId={nodeId}
                         onSelectNode={selectCandidateNode}
                         t={t}

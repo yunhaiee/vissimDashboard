@@ -1538,14 +1538,32 @@ def node_candidates(
     is at the top instead of being told it is the right one. Nothing here writes
     a node id anywhere: the binding happens when a human confirms it, and the
     attestation is where it lands.
+
+    UNIT #62 -- ``limit`` used to cut ``ranked[:limit]`` unconditionally, which
+    is silent-cap doctrine violated: an OSM draft names every node "Node
+    <osmid>", so `_name_overlap` scores every single one 0.0, the sort falls
+    through to node_id, and the caller offered the 8 lowest-id nodes while
+    hiding the rest with no signal that anything was cut (MEASURED: a 25-node
+    draft offering 8, 17 unofferable). When the name signal cannot discriminate
+    at all -- an empty `intersection_name`, or every candidate landing at 0.0 --
+    a ranking is not actually being applied, so truncating on it would hide
+    real nodes behind a coin flip on node_id. Return everyone in that case; the
+    caller (`routers/genesis.py`) still discloses `total_nodes`/`returned_nodes`
+    so a real truncation, when the name signal DOES discriminate, is nameable
+    on screen instead of silently absorbed.
+
+    ROUND 5 (refuter, MEDIUM, round 4): a REAL name signal always outranks
+    every hint-tier entry in the returned order, regardless of either tier's
+    own score formula -- sorted by `real_signal` first, so a digit-sibling's
+    0.6 can never list above a weak true containment's 0.8x1/N again.
     """
     from .signals import node_approaches  # local: avoids a heavy import at module load
 
     target = _normalise_label(intersection_name or "")
-    ranked: list[tuple[float, dict[str, Any]]] = []
+    ranked: list[tuple[float, bool, dict[str, Any]]] = []
     for node in getattr(draft, "nodes", []):
         name = _normalise_label(getattr(node, "name", "") or "")
-        score, reason = _name_overlap(target, name)
+        score, reason, real_signal = _name_overlap(target, name)
         approaches = []
         for link in node_approaches(draft, node):
             bearing = approach_bearing(link.points)
@@ -1561,6 +1579,7 @@ def node_candidates(
         ranked.append(
             (
                 score,
+                real_signal,
                 {
                     "node_id": node.id,
                     "name": node.name,
@@ -1572,24 +1591,147 @@ def node_candidates(
                 },
             )
         )
-    ranked.sort(key=lambda item: (-item[0], item[1]["node_id"]))
-    return [entry for _score, entry in ranked[:limit]]
+    # ROUND 5 FIX: real_signal FIRST, score second. MEASURED (refuter): tier
+    # 2.5's 0.6 can exceed a weak true containment's 0.8*shorter/longer when
+    # the containment match is between very disparate lengths -- sorting on
+    # score alone let a digit-sibling list ABOVE the correct node. Sorting on
+    # `-real_signal` first makes this true independent of either tier's own
+    # formula, current or future: no hint-tier entry can ever outrank a real
+    # one, only tie-break among entries that agree on realness.
+    ranked.sort(key=lambda item: (-int(item[1]), -item[0], item[2]["node_id"]))
+    entries = [entry for _score, _real_signal, entry in ranked]
+    # FINDING 1's fix, applied here: a tier that is not a REAL signal (the
+    # fallback's coincidental character overlap) can never flip this true, no
+    # matter how many nodes it happens to score above 0.0.
+    discriminates = any(real_signal for _score, real_signal, _entry in ranked)
+    if not discriminates or len(entries) <= limit:
+        return entries
+    return entries[:limit]
 
 
-def _name_overlap(target: str, candidate: str) -> tuple[float, str]:
-    """A deliberately dumb similarity, and the sentence that explains it."""
+def _name_overlap(target: str, candidate: str) -> tuple[float, str, bool]:
+    """A deliberately dumb similarity, its reason, and whether it is a REAL
+    name signal -- the third value ``node_candidates`` uses to decide whether
+    its ranking is allowed to truncate at all.
+
+    UNIT #62 FINDING 1 (refuter, BLOCKER, round 2): the fallback tier's raw
+    character overlap counted a shared DIGIT as signal -- a 교차로명 carrying
+    a route number, e.g. "3번국도교차로", scored positive against an OSM
+    draft's "Node 318918018" purely because both strings contain the digit
+    "3". That flipped `node_candidates`'s `discriminates` true on pure noise,
+    the silent 8-node cap re-activated, and the CORRECT node -- which
+    legitimately scores 0.0, having no OSM name overlap with the 교차로명 at
+    all -- was excluded from the top 8 by garbage matches that merely
+    happened to share a digit.
+
+    ROUND 3 FINDING A (refuter, HIGH -- CLASS CLOSURE): round 2's fix only
+    excluded digits from the FALLBACK tier. Tier 2 (substring containment)
+    was left completely unconditional, so an all-digit `intersection_name`
+    such as "18" (typed through the manual blank-review or excel_upload
+    doors, not just read off an OSM draft) is a literal substring of
+    "node<osmid>" for MOST osmids -- MEASURED: a 25-node draft returned only
+    8. Round 3's fix ran the containment check itself on DIGIT-STRIPPED
+    strings, with a non-empty-residue guard on both sides.
+
+    ROUND 4 (orchestrator-decided semantics, following the round-3 refuter's
+    ONE surviving HIGH): running containment on STRIPPED strings was itself
+    the wrong move -- it PROMOTES digit siblings to full name matches.
+    MEASURED: "원신흥4" vs "원신흥네거리" scored real_signal=True (a
+    containment relationship that does not exist on the real, unstripped
+    strings at all), and against target "신흥들3" the four DISTINCT physical
+    intersections "신흥들1"/"2"/"4"/"5" all scored an identical 0.8 "포함됩니다"
+    tie -- erasing the exact digit that disambiguates separate intersections
+    in this product's own Daejeon naming convention.
+
+    THE FIX, three tiers now instead of two:
+
+      1. TIER 1 (exact) and TIER 2 (containment) are back to the RAW,
+         UNSTRIPPED strings -- containment must be a containment relationship
+         that genuinely exists in the names as written. The round-3
+         non-empty-residue guard STAYS ahead of tier 2 (not folded into the
+         containment test itself): an all-digit target/candidate still blocks
+         it outright, because ITS residue is empty regardless of what the raw
+         strings happen to contain (round 2's hole stays closed).
+      2. TIER 2.5, NEW -- DIGIT-SIBLING. Reached only once tier 1 and tier 2
+         have BOTH failed on the raw strings. If the DIGIT-STRIPPED strings
+         satisfy containment (or are outright equal, a special case of
+         containment) with a non-empty residue on both sides, the two names
+         differ ONLY in digit content -- e.g. "신흥들3" vs "신흥들4", or a
+         digit embedded mid-name ("가상3거리" vs "가상거리"). That is real
+         information for a HUMAN reviewer (worth ranking above pure noise,
+         with its own honest reason) but it is explicitly NOT a name match:
+         `real_signal` is False, so a screen full of digit siblings can never
+         activate the truncation cap the way a screen full of genuine
+         containment matches would.
+      3. TIER 3 (fallback) is unchanged in spirit -- stripped character
+         overlap, never real signal -- and MUST still rank BELOW tier 2.5 for
+         the same pair: stripped CONTAINMENT (every character of the shorter
+         name appears, in order, inside the longer) is strictly more
+         information than stripped SET overlap (the same characters merely
+         both appear somewhere). Tier 2.5's score formula is the SAME
+         char-overlap-ratio shape tier 3 uses -- `common / max(distinct
+         counts)` -- but at a HIGHER coefficient (0.6 vs 0.4). Because
+         containment guarantees the shorter stripped string's ENTIRE
+         character set is a subset of the longer's, tier 2.5's ratio for a
+         given pair is EXACTLY what tier 3's ratio would be for that same
+         pair -- so the higher coefficient alone is what must, and provably
+         does, rank it above (1.5x, structurally, not just empirically).
+
+    DECISION, recorded (the refuter asked for one): an ALL-DIGIT EXACT match
+    (tier 1) still counts as real signal -- e.g. target "18" == candidate
+    "18". Both strings committed to their FULL name and it happened to be
+    entirely digits; unlike containment, digit-sibling, or the fallback's
+    partial overlap, there is no shorter fragment doing the work that could
+    be "just a shared osmid fragment" -- an exact string match is the
+    strongest signal this function can produce regardless of alphabet, and a
+    real 교차로명 that happens to be a bare route/교차로번호 is unusual but
+    not invalid.
+
+    The tier-1/2/3 reason STRINGS are unchanged -- they are user-facing
+    (`match_reason` on the wire). Tier 2.5 is a genuinely NEW reason, because
+    it is a genuinely new fact: not a name match, not pure noise, a sibling.
+    """
     if not target or not candidate:
-        return 0.0, "이름 없음 — 이름으로는 비교할 수 없습니다."
+        return 0.0, "이름 없음 — 이름으로는 비교할 수 없습니다.", False
     if target == candidate:
-        return 1.0, "이름이 정확히 일치합니다."
-    if target in candidate or candidate in target:
+        # DECISION (see docstring): an all-digit exact match still counts.
+        return 1.0, "이름이 정확히 일치합니다.", True
+    digits = set("0123456789")
+    target_stripped = "".join(ch for ch in target if ch not in digits)
+    candidate_stripped = "".join(ch for ch in candidate if ch not in digits)
+    # TIER 2 -- containment on the RAW strings (round 4: reverted from round
+    # 3's stripped version, which promoted digit siblings into full matches).
+    # The residue guard stays: an all-digit side blocks this outright, no
+    # matter what the raw strings contain -- this is what keeps round 2's
+    # hole (target "18" "containing" an osmid) closed without needing to
+    # strip the containment test itself.
+    if target_stripped and candidate_stripped and (target in candidate or candidate in target):
         shorter, longer = sorted((len(target), len(candidate)))
-        return 0.8 * shorter / longer, "한쪽 이름이 다른 쪽에 포함됩니다."
-    common = set(target) & set(candidate)
+        return 0.8 * shorter / longer, "한쪽 이름이 다른 쪽에 포함됩니다.", True
+    # TIER 2.5 -- DIGIT-SIBLING (new, round 4). Raw containment/exact just
+    # failed, but the digit-stripped strings satisfy containment (equality
+    # counts: "X in X" is trivially true). The names differ ONLY in digits.
+    if (
+        target_stripped
+        and candidate_stripped
+        and (target_stripped in candidate_stripped or candidate_stripped in target_stripped)
+    ):
+        common = set(target_stripped) & set(candidate_stripped)
+        return (
+            # SAME ratio shape as tier 3 below (common / max distinct count),
+            # at a higher coefficient -- see the docstring's proof that this
+            # is provably, not just empirically, above tier 3 for this pair.
+            0.6 * len(common) / max(len(set(target_stripped)), len(set(candidate_stripped))),
+            "숫자만 다른 이름입니다 — 같은 계열의 다른 번호일 수 있습니다.",
+            False,
+        )
+    common = set(target_stripped) & set(candidate_stripped)
     if not common:
-        return 0.0, "공통 글자가 없습니다."
-    return 0.4 * len(common) / max(len(set(target)), len(set(candidate))), (
-        f"공통 글자 {len(common)}자."
+        return 0.0, "공통 글자가 없습니다.", False
+    return (
+        0.4 * len(common) / max(len(set(target_stripped)), len(set(candidate_stripped))),
+        f"공통 글자 {len(common)}자.",
+        False,
     )
 
 

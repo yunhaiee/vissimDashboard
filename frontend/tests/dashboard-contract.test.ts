@@ -5602,10 +5602,310 @@ contractTest("unit #58: the binding map's named absences are reachable, not deco
   pin.match(map, /if \(loading\) \{/, "expected the loading branch to be reached by the resolved loading flag");
   pin.match(map, /if \(error \|\| !data\) \{/, "expected the failed-read branch to cover BOTH a refusal and a missing census");
   pin.match(map, /if \(data\.links\.length === 0\) \{/, "expected the nothing-to-draw branch to be reached by the census's own emptiness");
+  // unit #62 RE-ANCHOR: this line used to be the OUTER condition (`{nodes.length
+  // === 0`) -- it is now the inner branch of a three-state ternary, reached
+  // only once `candidatesStatus === "fetched"`. Still anchored on the exact
+  // `nodes.length === 0 ? t(` shape, so the pin cannot be kept green by a flag
+  // that never flips.
   pin.match(
     map,
-    /\{nodes\.length === 0\s*\n?\s*\? t\(/,
-    "expected the no-candidate line to be chosen by the measured node count, not by a flag somebody can leave true",
+    /: nodes\.length === 0\s*\n?\s*\? t\(/,
+    "expected the no-candidate line (once a fetch has actually run) to be chosen by the measured node count, not by a flag somebody can leave true",
+  );
+  // unit #62 FINDING 3 RE-ANCHOR: the ladder grew a fourth rung (`failed`),
+  // so the outer condition is no longer a single `!== "fetched"` check --
+  // each state now tests its own literal, `loading` first.
+  pin.match(
+    withoutComments(map),
+    /\{candidatesStatus === "loading"\s*\n\s*\? t\(/,
+    "expected the four-state ladder (loading/failed/idle/fetched) to lead with the loading check, gated structurally ahead of every other branch",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #62 — the node cap cannot silently hide a node, and the map cannot
+// claim a search ran before one did.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #62: candidates auto-load on jobId, a stale response cannot win a race, and a failed search cannot claim it found nothing", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const pageNoComments = withoutComments(page);
+  const map = withoutComments(read("components/genesis/DraftNodePickMap.tsx"));
+
+  // (1) THE AUTO-LOAD EFFECT. MEASURED DEFECT: the old page fetched
+  // candidates ONLY from a button's onClick, so the map rendered its
+  // zero-candidate absence sentence for every reader who had not yet clicked
+  // it -- a claim about a search that had never run. `node_candidates` never
+  // writes anything, so running it the moment a 생성 작업 is picked needs no
+  // deliberate click first.
+  pin.match(
+    pageNoComments,
+    /useEffect\(\(\) => \{\s*\n\s*if \(!jobId\) \{[\s\S]{0,700}?\n\s*\}\s*\n\s*void loadCandidates\(\);\s*\n\s*\}, \[jobId, loadCandidates\]\);/,
+    "expected an effect that auto-runs loadCandidates when jobId changes, resetting to idle when it is cleared",
+  );
+  // loadCandidates' own deps still cover selectedId, so switching the
+  // intersection re-fetches too (the effect above depends on the callback
+  // identity, not on selectedId directly).
+  pin.match(
+    pageNoComments,
+    /const loadCandidates = useCallback\(async \(\) => \{[\s\S]*?\}, \[selectedId, jobId\]\);/,
+    "expected loadCandidates to still depend on [selectedId, jobId] -- the auto-load effect rides on THIS identity changing",
+  );
+
+  // (2) FINDING 2 (refuter, HIGH) -- THE REQUEST-GENERATION TOKEN. MEASURED:
+  // switching reviews/jobs quickly left two fetches in flight with no guard,
+  // and the LAST TO RESOLVE won regardless of which was requested most
+  // recently -- a slow review A's candidates could land after a fast review
+  // B's and leave B's screen showing A's ranking, which a person could bind
+  // against the wrong intersection. Anchored on the ref's declaration, its
+  // capture at call start, BOTH guarded return points (success and catch --
+  // a guard on only one still lets the other overwrite a newer request), the
+  // guarded busy-reset, and the jobId-cleared path bumping the token too
+  // (nothing else supersedes an abandoned request there to invalidate it).
+  pin.match(
+    pageNoComments,
+    /const candidatesRequestRef = useRef\(0\);/,
+    "expected a request-generation ref -- without one, two in-flight candidate fetches let the LAST TO RESOLVE win regardless of which was requested most recently",
+  );
+  pin.match(
+    pageNoComments,
+    /const requestId = \+\+candidatesRequestRef\.current;/,
+    "expected loadCandidates to capture its OWN request id at the start of every call, before the fetch",
+  );
+  const guardOccurrences = (pageNoComments.match(/candidatesRequestRef\.current !== requestId\) return;/g) ?? []).length;
+  pin.match(
+    `guardOccurrences=${guardOccurrences}`,
+    /^guardOccurrences=2$/,
+    "expected the stale-response guard on BOTH the success path and the catch path -- a guard on only one still lets a stale response overwrite a newer request's screen",
+  );
+  pin.match(
+    pageNoComments,
+    /if \(candidatesRequestRef\.current === requestId\) setBusy\(false\);/,
+    "expected the busy flag's own reset to be guarded too -- an unguarded reset would clear busy while a NEWER request is still in flight",
+  );
+  pin.match(
+    pageNoComments,
+    /candidatesRequestRef\.current \+= 1;\s*\n\s*setCandidatesStatus\("idle"\);/,
+    "expected the jobId-cleared branch to bump the token too -- no NEW request follows a cleared jobId to invalidate an abandoned one on its own",
+  );
+
+  // (3) FINDING 3 (refuter, MEDIUM) -- FOUR STATES, four sentences, no two
+  // shared. Sliced on the ladder's own literal conditions (the state machine
+  // itself), so a mutation cannot pass by reusing one sentence across states.
+  const loadingBranch = sliceBetween(map, 'candidatesStatus === "loading"', ': candidatesStatus === "failed"');
+  const failedBranch = sliceBetween(map, ': candidatesStatus === "failed"', ': candidatesStatus === "idle"');
+  const idleBranch = sliceBetween(map, ': candidatesStatus === "idle"', ': nodes.length === 0');
+  const fetchedBranch = map.slice(map.indexOf(': nodes.length === 0'));
+  for (const [name, branch] of [
+    ["loading", loadingBranch],
+    ["failed", failedBranch],
+    ["idle", idleBranch],
+    ["fetched", fetchedBranch],
+  ] as const) {
+    pin.match(branch, /\S/, `expected to find the ${name} branch's own source (markers moved?)`);
+  }
+
+  pin.match(
+    failedBranch,
+    /탐색이 실패했습니다/,
+    "expected the FAILED branch to carry its own 실패 (failed) wording -- a search DID run and did not come back, a different fact from idle's 'not yet'",
+  );
+  pin.doesNotMatch(
+    failedBranch,
+    /찾지 못했습니다/,
+    "expected the FAILED branch never to reuse the fetched-zero 'not found' sentence -- a failure is not a completed empty search",
+  );
+  pin.doesNotMatch(
+    failedBranch,
+    /아직 노드 후보를 찾지 않았습니다/,
+    "expected the FAILED branch never to reuse the idle 'not yet searched' sentence -- a search DID run here, and failed",
+  );
+  pin.doesNotMatch(
+    idleBranch,
+    /실패했습니다/,
+    "expected the IDLE branch never to claim a search failed -- none has run yet",
+  );
+  pin.doesNotMatch(
+    idleBranch,
+    /찾지 못했습니다/,
+    "expected the IDLE branch to never contain the fetched-zero 'not found' sentence -- no search has run yet to report a result from",
+  );
+  pin.doesNotMatch(
+    loadingBranch,
+    /찾지 못했습니다|실패했습니다|아직 노드 후보를 찾지 않았습니다/,
+    "expected the LOADING branch to claim neither a failure, an empty result, nor 'not yet' -- it is its own, fourth, distinct state",
+  );
+  pin.match(
+    fetchedBranch,
+    /찾지 못했습니다/,
+    "expected the FETCHED branch to still carry the 찾지 못했습니다 sentence -- only fetched-and-zero may claim a search came back empty",
+  );
+  pin.doesNotMatch(
+    fetchedBranch,
+    /탐색이 실패했습니다|아직 노드 후보를 찾지 않았습니다/,
+    "expected the FETCHED branch never to also carry the failed or idle sentence",
+  );
+
+  // (4) FINDING 4 (refuter, LOW) -- THE DISCLOSURE GUARD ITSELF. MEASURED:
+  // removing `returnedNodes < totalNodes` (rendering a nonsense "8 of 8"
+  // every time a fetch succeeds, truncated or not) passed the entire 248-test
+  // suite before this pin existed -- gating on candidatesStatus alone is not
+  // enough, the ACTUAL comparison must be present.
+  pin.match(
+    map,
+    /candidatesStatus === "fetched" &&\s*\n\s*totalNodes != null &&\s*\n\s*returnedNodes != null &&\s*\n\s*returnedNodes < totalNodes && \(/,
+    "expected the disclosure paragraph to be gated on an ACTUAL truncation (returnedNodes < totalNodes), not merely on candidatesStatus -- the weaker guard renders a nonsense 'N of N' line every time a fetch succeeds without cutting anything",
+  );
+
+  // (5) THE BACKEND. FINDING 1's fix (refuter, BLOCKER) and the disclosure
+  // fields, read the same way the U-1-map test above reads backend source:
+  // raw file, no import needed.
+  const router = readFileSync(path.join(repoRoot, "backend", "routers", "genesis.py"), "utf-8");
+  const phaseDiagramService = readFileSync(
+    path.join(repoRoot, "backend", "services", "genesis", "phase_diagram.py"),
+    "utf-8",
+  );
+  pin.match(
+    router,
+    /"total_nodes": len\(getattr\(draft, "nodes", \[\]\)\),\s*\n\s*"returned_nodes": len\(candidates\),/,
+    "expected the candidates route to disclose total_nodes/returned_nodes -- additive fields a real truncation can be named through",
+  );
+  pin.match(
+    phaseDiagramService,
+    /discriminates = any\(real_signal for _score, real_signal, _entry in ranked\)/,
+    "expected `discriminates` to be driven by the REAL-SIGNAL flag, not by score alone -- FINDING 1: a shared DIGIT between a 교차로명 and an OSM 'Node <osmid>' name produced a positive score on the fallback tier, which flipped this flag on pure noise and dropped the correct node from the top 8",
+  );
+  // ROUND 5 (refuter, MEDIUM, round 4): tier 2.5's coefficient (0.6) can
+  // exceed a WEAK true containment match's score, so a SCORE-ONLY sort
+  // listed a wrong-intersection sibling above the genuine name match --
+  // cap safety was intact (real_signal still gated `discriminates`), but the
+  // visual scan order lied. Anchored on the whole three-part sort key, not
+  // just the presence of `real_signal` somewhere, so a revert to
+  // score-only sorting (dropping the leading `-int(item[1])` term) fails
+  // loud instead of passing because the identifier still appears elsewhere.
+  pin.match(
+    phaseDiagramService,
+    /ranked\.sort\(key=lambda item: \(-int\(item\[1\]\), -item\[0\], item\[2\]\["node_id"\]\)\)/,
+    "expected the ranking sort key to be (-real_signal, -score, node_id) -- real name signal must outrank every hint tier in the RETURNED ORDER regardless of either tier's own score formula, current or future",
+  );
+  pin.match(
+    phaseDiagramService,
+    /def _name_overlap\(target: str, candidate: str\) -> tuple\[float, str, bool\]:/,
+    "expected _name_overlap to report a THIRD value -- whether its score is a REAL name signal at all. Only exact-match and substring-containment are; the character-overlap fallback never is, however high its score",
+  );
+  // ROUND 3 FINDING A (refuter, HIGH -- CLASS CLOSURE): round 2's digit
+  // exclusion only reached the FALLBACK tier -- tier 2 (containment) was
+  // left completely unconditional, so an all-digit `intersection_name` like
+  // "18" was a literal substring of "node<osmid>" for most osmids (MEASURED:
+  // 25 nodes -> 8 returned). Round 3 closed that by running containment ON
+  // stripped strings.
+  //
+  // ROUND 4 (orchestrator-decided semantics, the round-3 refuter's ONE
+  // surviving HIGH): running containment ON stripped strings was ITSELF
+  // wrong -- it promotes digit SIBLINGS ("원신흥4" vs "원신흥네거리", four
+  // distinct "신흥들1/2/4/5" against target "신흥들3") into full name matches.
+  // RE-ANCHORED to the three-tier layout this produced: tier 2 (containment)
+  // is back on the RAW strings, with the round-3 residue guard kept AHEAD of
+  // it rather than folded into the containment test; a NEW tier 2.5
+  // (digit-sibling) catches exactly the promoted shape and reports it
+  // honestly (real_signal False, its own reason, ranked above fallback).
+  pin.match(
+    phaseDiagramService,
+    /target_stripped = "".join\(ch for ch in target if ch not in digits\)\s*\n\s*candidate_stripped = "".join\(ch for ch in candidate if ch not in digits\)/,
+    "expected digits to be stripped into strings ahead of tier 2's residue guard, tier 2.5's stripped-containment check, and tier 3's fallback -- one digit-exclusion mechanism feeding all three, not three separate ones that could drift apart",
+  );
+  // TIER 2 (round 4): containment on the RAW strings, gated by the
+  // non-empty-residue guard -- NOT folded into the containment test itself
+  // (that was round 3's mistake). An all-digit target/candidate still blocks
+  // this outright regardless of what the raw strings contain.
+  pin.match(
+    phaseDiagramService,
+    /if target_stripped and candidate_stripped and \(target in candidate or candidate in target\):/,
+    "expected tier 2 (containment) to run on the RAW, UNSTRIPPED strings -- running it on stripped strings (round 3) promoted digit siblings like \"원신흥4\"/\"원신흥네거리\" into full real_signal=True matches with no real containment behind them",
+  );
+  // TIER 2.5 (new, round 4): the STRIPPED containment check round 3 used to
+  // gate tier 2 itself now gates a SEPARATE, honestly-labelled tier instead.
+  pin.match(
+    phaseDiagramService,
+    /target_stripped\s*\n\s*and candidate_stripped\s*\n\s*and \(target_stripped in candidate_stripped or candidate_stripped in target_stripped\)/,
+    "expected a DIGIT-SIBLING tier gated by stripped containment with a non-empty residue on both sides -- reached only once tier 1 and tier 2 (both on raw strings) have failed",
+  );
+  pin.match(
+    phaseDiagramService,
+    /0\.6 \* len\(common\) \/ max\(len\(set\(target_stripped\)\), len\(set\(candidate_stripped\)\)\),\s*\n\s*"숫자만 다른 이름입니다 — 같은 계열의 다른 번호일 수 있습니다\.",\s*\n\s*False,/,
+    "expected the digit-sibling tier's own reason string and a real_signal of False -- a digit-only difference is information for a human, never a name match, so it must not be able to activate the truncation cap",
+  );
+  pin.match(
+    phaseDiagramService,
+    /common = set\(target_stripped\) & set\(candidate_stripped\)/,
+    "expected the digit-sibling AND fallback tiers to share the SAME stripped-character-overlap computation -- one digit-exclusion mechanism, not several that could drift apart",
+  );
+  // THE RECORDED DECISION (refuter asked for one): an all-digit EXACT match
+  // still counts as real signal -- both strings committed to their FULL
+  // name, so there is no shorter fragment doing the work. Pinned so the
+  // decision cannot silently flip along with a future refactor.
+  pin.match(
+    phaseDiagramService,
+    /if target == candidate:\s*\n\s*# DECISION[\s\S]{0,200}?\n\s*return 1\.0, "이름이 정확히 일치합니다\.", True/,
+    "expected the exact-match tier's all-digit decision to stay recorded in a comment directly above the return it documents",
+  );
+  pin.match(
+    phaseDiagramService,
+    /if not discriminates or len\(entries\) <= limit:\s*\n\s*return entries/,
+    "expected a non-discriminating ranking to return EVERY node, not just the top `limit`",
+  );
+  pin.doesNotMatch(
+    withoutComments(phaseDiagramService),
+    /return \[entry for _score, entry in ranked\[:limit\]\]/,
+    "expected the OLD unconditional ranked[:limit] truncation to be gone -- that line was the silent cap this unit measured (25-node draft, 17 unofferable)",
+  );
+
+  // (6) ROUND 3 FINDING B (refuter, HIGH) -- THE BUSY-FREEZE CLASS. MEASURED:
+  // the jobId-cleared branch bumped candidatesRequestRef but never reset
+  // `busy`, so the orphaned fetch's OWN guarded `setBusy(false)` in
+  // loadCandidates' `finally` was left permanently skipped (token mismatch,
+  // by design) -- `busy` never cleared, and canSubmit/확인 froze silently.
+  // CLASS CLOSURE, not a respelled fix: every `candidatesRequestRef.current
+  // += 1` OUTSIDE loadCandidates (the `++candidatesRequestRef.current`
+  // prefix form loadCandidates itself uses is a DIFFERENT literal pattern
+  // and is not counted here) must be immediately followed, in the SAME
+  // block, by `setBusy(false)`. Pinned as a COUNT EQUALITY (the act-count
+  // idiom unit #58 uses for confirmPhaseDiagram/amendPhaseDiagramTiming) so
+  // a future unpaired bump site fails on the count rather than needing its
+  // own new pin.
+  const bumpSites = (pageNoComments.match(/candidatesRequestRef\.current \+= 1;/g) ?? []).length;
+  const pairedBumpSites = [...pageNoComments.matchAll(/candidatesRequestRef\.current \+= 1;[\s\S]{0,300}?setBusy\(false\);/g)].length;
+  pin.match(
+    `candidatesRefBumpsOutsideLoadCandidates=${bumpSites} pairedWithBusyFalse=${pairedBumpSites}`,
+    /^candidatesRefBumpsOutsideLoadCandidates=([1-9]\d*) pairedWithBusyFalse=\1$/,
+    "expected EVERY candidatesRequestRef bump site outside loadCandidates to be immediately paired with setBusy(false) in the same block -- an unpaired bump orphans a fetch whose own guarded busy-reset will never fire, freezing canSubmit/확인 silently",
+  );
+
+  // (7) ROUND 3 FINDING C (refuter, HIGH) -- THE CATCH BLOCK, STRUCTURALLY.
+  // MEASURED (refuter): reverting the catch block to `setCandidatesStatus(
+  // "idle")` passed the entire 248-test suite, because the ladder pins in
+  // section (3) above only guard DraftNodePickMap's OWN rendering of each
+  // sentence -- nothing anchored page.tsx's error path actually REACHING
+  // "failed". Sliced to the catch block's own body (via loadCandidates'
+  // established boundary), not just a file-wide string search, so a mutation
+  // cannot pass by leaving "failed" somewhere else in the file.
+  const loadCandidatesBody = sliceBetween(
+    pageNoComments,
+    "const loadCandidates = useCallback(async () => {",
+    "}, [selectedId, jobId]);",
+  );
+  pin.match(loadCandidatesBody, /\S/, "expected to find loadCandidates' own body (boundary moved?)");
+  const catchBody = sliceBetween(loadCandidatesBody, "catch (caught) {", "} finally {");
+  pin.match(catchBody, /\S/, "expected to find the catch block's own body (boundary moved?)");
+  pin.match(
+    catchBody,
+    /setCandidatesStatus\("failed"\);/,
+    'expected the catch block to set candidatesStatus to "failed" -- a search DID run here and did not come back',
+  );
+  pin.doesNotMatch(
+    catchBody,
+    /setCandidatesStatus\("idle"\)/,
+    'expected the catch block never to fall back to "idle" -- that claims no search has run, which is false once one has failed',
   );
 });
 

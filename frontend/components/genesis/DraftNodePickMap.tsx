@@ -57,6 +57,9 @@ function MapAbsence({ children }: { children: React.ReactNode }) {
 export function DraftNodePickMap({
   jobId,
   candidateNodeIds,
+  candidatesStatus,
+  totalNodes,
+  returnedNodes,
   selectedNodeId,
   onSelectNode,
   t,
@@ -69,6 +72,21 @@ export function DraftNodePickMap({
    * sheet. Narrowing, never invention: every id here must exist in the census
    * or it simply does not draw. */
   candidateNodeIds: readonly number[];
+  /** unit #62 -- WHETHER a candidate search has actually run, and how.
+   * `"loading"` and `"idle"` both precede any server answer, so neither may
+   * render the "찾지 못했습니다" sentence: that sentence is a claim about a
+   * search's RESULT, and no search has produced one yet. `"failed"` is a
+   * DIFFERENT fact again (FINDING 3, refuter): a search DID run and did not
+   * come back -- folding that into `"idle"`'s "no search has run yet" would
+   * be its own false claim, just the opposite direction. Only `"fetched"`
+   * may render the found/not-found sentences. */
+  candidatesStatus: "idle" | "loading" | "fetched" | "failed";
+  /** The draft's own node count and how many the server actually returned,
+   * disclosed together so a real truncation (the name signal discriminated
+   * and `limit` cut the rest) can be named on screen instead of absorbed.
+   * `null` whenever `candidatesStatus !== "fetched"`. */
+  totalNodes: number | null;
+  returnedNodes: number | null;
   selectedNodeId: number | null;
   onSelectNode: (nodeId: number) => void;
   t: Translate;
@@ -147,18 +165,64 @@ export function DraftNodePickMap({
         t={t}
       />
       <p className="mt-1.5 text-[14px] leading-relaxed text-slate-500">
-        {nodes.length === 0
+        {/* unit #62 -- FOUR STATES, not two. A search that has not run yet
+          * (or is still in flight) is a DIFFERENT fact from a search that ran
+          * and found nothing, and this line used to conflate them: it fired
+          * on `nodes.length === 0` alone, which was also true the instant the
+          * page loaded and before anyone had ever clicked "노드 후보
+          * 불러오기". That told a reader a search had failed before one had
+          * even started. FINDING 3 (refuter) added the fourth: a search that
+          * ran and FAILED is not "no search has run yet" either -- one did,
+          * and it did not come back. Each of the four gets its own sentence,
+          * and no two may share one. */}
+        {candidatesStatus === "loading"
           ? t(
-              "이 초안에서 이 교차로의 후보 노드를 찾지 못했습니다 — 지도에 표시할 점이 없습니다.",
-              "No candidate node for this intersection was found in this draft — there is no dot to show.",
-              "この草案でこの交差点の候補ノードは見つかりませんでした — 地図に表示する点がありません。",
+              "노드 후보를 찾는 중입니다…",
+              "Searching for node candidates…",
+              "ノード候補を検索中…",
             )
-          : t(
-              `점 ${nodes.length}개는 이 초안이 가진 노드입니다. 점을 누르면 선택될 뿐이며, 기록되는 것은 아래 확인 단추뿐입니다.`,
-              `The ${nodes.length} dot(s) are nodes this draft holds. Clicking one only SELECTS it; the only act that records anything is the 확인 button below.`,
-              `${nodes.length}個の点はこの草案が持つノードです。点を押しても選択されるだけで、記録されるのは下の確認ボタンだけです。`,
-            )}
+          : candidatesStatus === "failed"
+            ? t(
+                "노드 후보 탐색이 실패했습니다 — 사유는 위 오류를 확인하십시오.",
+                "The node candidate search failed — see the error above for the reason.",
+                "ノード候補の検索に失敗しました — 理由は上のエラーをご確認ください。",
+              )
+            : candidatesStatus === "idle"
+              ? t(
+                  "아직 노드 후보를 찾지 않았습니다 — 생성 작업을 고르면 자동으로 찾습니다.",
+                  "No search for node candidates has run yet — picking a generation searches automatically.",
+                  "まだノード候補の検索は行われていません — 生成ジョブを選ぶと自動で検索します。",
+                )
+              : nodes.length === 0
+                ? t(
+                    "이 초안에서 이 교차로의 후보 노드를 찾지 못했습니다 — 지도에 표시할 점이 없습니다.",
+                    "No candidate node for this intersection was found in this draft — there is no dot to show.",
+                    "この草案でこの交差点の候補ノードは見つかりませんでした — 地図に表示する点がありません。",
+                  )
+                : t(
+                    `점 ${nodes.length}개는 이 초안이 가진 노드입니다. 점을 누르면 선택될 뿐이며, 기록되는 것은 아래 확인 단추뿐입니다.`,
+                    `The ${nodes.length} dot(s) are nodes this draft holds. Clicking one only SELECTS it; the only act that records anything is the 확인 button below.`,
+                    `${nodes.length}個の点はこの草案が持つノードです。点を押しても選択されるだけで、記録されるのは下の確認ボタンだけです。`,
+                  )}
       </p>
+      {/* unit #62 -- THE DISCLOSED CUT. `node_candidates` truncates only when
+        * its name ranking actually discriminates; when it does, this is the
+        * one place the truncation is nameable instead of eight dots quietly
+        * standing in for twenty-five. Absent whenever the server offered
+        * every node it has (`returnedNodes === totalNodes`), which is the
+        * common OSM-draft case this unit was measured against. */}
+      {candidatesStatus === "fetched" &&
+        totalNodes != null &&
+        returnedNodes != null &&
+        returnedNodes < totalNodes && (
+          <p className="mt-1 text-[13px] leading-relaxed text-slate-500">
+            {t(
+              `초안 노드 ${totalNodes}개 중 ${returnedNodes}개만 표시합니다 — 이름이 더 겹치는 노드가 우선했습니다.`,
+              `Showing ${returnedNodes} of the draft's ${totalNodes} nodes — the ones with more name overlap were prioritized.`,
+              `草案ノード${totalNodes}件中${returnedNodes}件のみ表示しています — 名前の重なりが多いノードを優先しました。`,
+            )}
+          </p>
+        )}
     </div>
   );
 }

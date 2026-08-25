@@ -5641,7 +5641,15 @@ export function phaseDiagramImageUrl(reviewId: string): string {
 export async function fetchPhaseDiagramCandidates(
   reviewId: string,
   jobId: string,
-): Promise<{ intersection_name: string | null; candidates: PhaseDiagramNodeCandidate[] }> {
+): Promise<{
+  intersection_name: string | null;
+  candidates: PhaseDiagramNodeCandidate[];
+  /** unit #62 -- ADDITIVE. The draft's own node count, so a truncation (the
+   * name signal discriminated and `limit` cut the list) can be told apart
+   * from the honest "every node offered" case where the two numbers match. */
+  total_nodes: number;
+  returned_nodes: number;
+}> {
   const r = await apiFetch(
     `/api/genesis/phase-diagrams/${reviewId}/network-candidates?job_id=${encodeURIComponent(jobId)}`,
     { cache: "no-store" },

@@ -2627,13 +2627,20 @@ def get_phase_diagram_candidates(
             status_code=409,
             detail=f"That generation's draft could not be read. [{type(exc).__name__}: {exc}]",
         ) from exc
+    candidates = phase_diagram.node_candidates(draft, intersection_name=sheet.intersection_name)
     return {
         "review_id": review_id,
         "job_id": job_id,
         "intersection_name": sheet.intersection_name,
-        "candidates": phase_diagram.node_candidates(
-            draft, intersection_name=sheet.intersection_name
-        ),
+        "candidates": candidates,
+        # unit #62 -- ADDITIVE disclosure fields. `node_candidates` truncates
+        # ONLY when its name ranking actually discriminates, but even then a
+        # silent cut is the thing this project refuses to ship: these two
+        # counts let the caller say "N개 중 M개" instead of just drawing M dots
+        # and letting the other N-M vanish unremarked. `total_nodes` is the
+        # draft's own node count, read the same way `node_candidates` reads it.
+        "total_nodes": len(getattr(draft, "nodes", [])),
+        "returned_nodes": len(candidates),
     }
 
 

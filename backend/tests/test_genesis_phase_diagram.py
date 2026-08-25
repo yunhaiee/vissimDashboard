@@ -45,6 +45,7 @@ from services import genesis_jobs, workspaces
 from services.agent import phase_diagram_vision as vision
 from services.genesis import phase_diagram as pd
 from services.genesis import signals_daejeon as dj
+from services.genesis.draft import DraftNetwork, DraftNode
 from services.genesis.emit import emit_inpx
 from services.genesis.gate import CheckState, run_gate
 from services.genesis.side_inputs import compose_from_documents, parse_side_input
@@ -844,6 +845,341 @@ def test_node_candidates_carry_their_approaches_and_why_they_ranked(crossroads):
     assert all(a["from_compass"] for a in candidates[0]["approaches"])
 
 
+def _osm_style_nodes(count: int, *, start_id: int = 1) -> list[DraftNode]:
+    """``count`` nodes named the way an OSM draft actually names one -- "Node
+    <osmid>" -- so every one of them scores 0.0 against ANY Korean 교차로명:
+    `_name_overlap` has no character in common between an ASCII label and a
+    Korean one to weigh."""
+    return [
+        DraftNode(
+            id=start_id + i,
+            name=f"Node {900000 + start_id + i}",
+            osm_id=900000 + start_id + i,
+            x=float(i),
+            y=0.0,
+            polygon=[],
+        )
+        for i in range(count)
+    ]
+
+
+def test_node_candidates_offers_every_node_when_the_name_signal_discriminates_nothing():
+    """MEASURED DEFECT (unit #62): an OSM draft names every node "Node
+    <osmid>", so every candidate scores 0.0 against the sheet's 교차로명 and the
+    OLD ``ranked[:limit]`` offered only the 8 lowest-node-id nodes -- on the
+    field draft this was measured against (25 nodes / 82 links), 17 nodes were
+    simply never reachable, with nothing on screen naming the cut. A ranking
+    that cannot discriminate has no basis for saying which 8 are "better", so
+    it must not truncate at all.
+    """
+    nodes = _osm_style_nodes(25)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    candidates = pd.node_candidates(draft, intersection_name="가상감응네거리")
+    assert len(candidates) == 25, "a non-discriminating ranking must return every node, not just the top `limit`"
+    assert {c["node_id"] for c in candidates} == {n.id for n in nodes}
+    assert all(c["match_score"] == 0.0 for c in candidates)
+
+
+def test_node_candidates_offers_every_node_when_no_intersection_name_is_known():
+    """The other half of the same defect: a blank review has no 교차로명 to
+    compare against at all, so every score is 0.0 for a different reason --
+    and with 0 nodes discriminated, `limit` must still not silently cut."""
+    nodes = _osm_style_nodes(10)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    assert len(pd.node_candidates(draft, intersection_name=None)) == 10
+    assert len(pd.node_candidates(draft, intersection_name="")) == 10
+
+
+def test_node_candidates_still_truncates_to_the_limit_once_the_ranking_discriminates():
+    """Some names DO overlap the sheet's 교차로명 -- the ranking discriminates --
+    so `limit` is a real answer again and must still be obeyed. What changed
+    from the old behaviour is that every discriminating node survives the cut
+    (it outranks every 0.0 node by construction) and the caller can now see the
+    cut happened at all -- covered by the HTTP-level disclosure test below.
+    """
+    # UNIT #62 FINDING 1: these three must land on a REAL signal tier (exact
+    # match or substring containment) -- the fallback tier's character
+    # overlap no longer counts toward `discriminates` at all, so a fixture
+    # built on it (the pre-fix version of this test used "가상삼거리" etc.,
+    # fallback-tier matches) would wrongly assert a truncation that could no
+    # longer happen.
+    discriminating = [
+        DraftNode(id=1, name="가상감응네거리", osm_id=1, x=0.0, y=0.0, polygon=[]),  # exact match
+        DraftNode(id=2, name="가상감응", osm_id=2, x=0.0, y=0.0, polygon=[]),  # target contains this
+        DraftNode(id=3, name="가상감응네거리앞", osm_id=3, x=0.0, y=0.0, polygon=[]),  # this contains target
+    ]
+    flat = _osm_style_nodes(8, start_id=10)
+    draft = DraftNetwork(name="mixed", source_osm="mixed.osm", nodes=discriminating + flat)
+    candidates = pd.node_candidates(draft, intersection_name="가상감응네거리", limit=8)
+    assert len(candidates) == 8, "a ranking that DOES discriminate still obeys the limit"
+    kept_ids = {c["node_id"] for c in candidates}
+    # the three discriminating nodes always survive; the cut falls on the
+    # lowest-node-id zero-score nodes, node_id 10-14 of 10-17.
+    assert kept_ids == {1, 2, 3, 10, 11, 12, 13, 14}
+    for candidate in candidates:
+        if candidate["node_id"] in {1, 2, 3}:
+            assert candidate["match_score"] > 0.0
+
+
+def test_name_overlap_reasons_stay_intact_and_a_shared_digit_alone_is_not_signal():
+    """`_name_overlap`'s reason STRINGS are user-facing (`match_reason` on the
+    wire) and must not move; this pins all five branches byte-for-byte while
+    also pinning the NEW third value (`real_signal`) FINDING 1's fix added.
+    The digit case is the regression itself: "3번국도교차로" and "Node
+    318918018" share only the digit "3" -- before the fix that produced a
+    positive score AND (via the old `score > 0.0` rule) counted as a
+    discriminating signal; after the fix it is still reported as "no common
+    characters", because a digit is not one for this purpose.
+    """
+    assert pd._name_overlap("", "아무거나") == (0.0, "이름 없음 — 이름으로는 비교할 수 없습니다.", False)
+    assert pd._name_overlap("가상감응네거리", "가상감응네거리") == (1.0, "이름이 정확히 일치합니다.", True)
+    score, reason, real_signal = pd._name_overlap("가상", "가상감응네거리")
+    assert reason == "한쪽 이름이 다른 쪽에 포함됩니다." and real_signal is True and score > 0.0
+    score, reason, real_signal = pd._name_overlap("가상감응네거리", "가상삼거리")
+    assert reason == "공통 글자 4자." and real_signal is False and score > 0.0
+    # THE REGRESSION: a shared digit, and nothing else, must fall through to
+    # the "no common characters" branch -- both the message AND real_signal.
+    assert pd._name_overlap("3번국도교차로", "node 318918018") == (
+        0.0,
+        "공통 글자가 없습니다.",
+        False,
+    )
+
+
+def test_node_candidates_ignores_a_shared_digit_as_name_signal():
+    """MEASURED DEFECT (refuter, unit #62 FINDING 1 -- BLOCKER): a 교차로명
+    carrying a route number, e.g. "3번국도교차로", shares the digit "3" with
+    an OSM draft's "Node 318918018" (and several of its 25 siblings -- OSM
+    ids in the 900000s routinely contain a "3"). The character-overlap
+    fallback tier scored that positive, `discriminates` flipped true on pure
+    digit noise, the silent 8-node cap re-activated, and the CORRECT node --
+    which legitimately scores 0.0, having no real OSM name overlap at all --
+    was excluded from the top 8 by garbage matches that merely happened to
+    share a digit. Reproduced here with the exact `_osm_style_nodes` fixture
+    every other test in this file uses.
+    """
+    nodes = _osm_style_nodes(25)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    candidates = pd.node_candidates(draft, intersection_name="3번국도교차로")
+    assert len(candidates) == 25, "a shared digit alone must not count as a discriminating name signal"
+    assert all(c["match_score"] == 0.0 for c in candidates), "digits are excluded from the fallback comparison entirely"
+    assert {c["node_id"] for c in candidates} == {n.id for n in nodes}
+
+
+def test_name_overlap_tier_matrix_across_digit_bearing_all_digit_and_clean_targets():
+    """ROUND 3 FINDING A's own regression shape, EXTENDED in round 4 with the
+    digit-sibling tier: a full matrix over {exact, containment, fallback} x
+    {digit-bearing, all-digit, clean} targets, plus the new sibling rows,
+    asserting exactly which cells count as REAL signal.
+
+    THE RULE this matrix pins: digits are excluded from tiers 1.5 (removed --
+    see below), 2 and 3 at EVERY combination -- an all-digit residue on
+    EITHER side of a containment check blocks tier 2 outright (Python's
+    `"" in anything` is always True, so an unstripped guard would make an
+    all-digit string trivially "contain" everything), and the fallback tier
+    is never real signal regardless of alphabet. Tier 1 (exact match) is the
+    one DELIBERATE exception -- see `_name_overlap`'s own docstring for the
+    recorded decision -- so it counts even when both names are bare digits.
+
+    ROUND 4: tier 2 (containment) is back to the RAW, unstripped strings --
+    round 3 ran it on stripped strings, which PROMOTED digit siblings
+    ("원신흥4" vs "원신흥네거리", a containment relationship that does not
+    exist on the real strings) into full real_signal=True matches. The new
+    TIER 2.5 (digit-sibling) catches exactly that shape and reports it
+    honestly instead: real signal is False, but the score still ranks above
+    pure noise (tier 3) and the reason names what is actually true.
+    """
+    cases = [
+        # (label, target, candidate, expect_real_signal, expect_positive_score)
+        ("exact / digit-bearing", "3번국도교차로", "3번국도교차로", True, True),
+        ("exact / all-digit", "18", "18", True, True),
+        ("exact / clean", "가상삼거리", "가상삼거리", True, True),
+        ("containment / digit-bearing", "3번국도교차로", "3번국도교차로앞", True, True),
+        # THE ROUND 3 REGRESSION: an all-digit target is a literal substring
+        # of an OSM draft's "node<osmid>" name for most osmids -- still
+        # blocked (tier 2's residue guard), even with containment back to
+        # raw strings.
+        ("containment / all-digit target", "18", "node18foo", False, False),
+        ("containment / clean", "가상삼거리", "가상삼거리앞", True, True),
+        # ROUND 4 -- DIGIT-SIBLING, the class this round closes. None of
+        # these satisfy RAW containment (asserted explicitly below, so the
+        # test fixture cannot silently drift into tier 2 instead); all three
+        # satisfy STRIPPED containment/equality with a real non-digit
+        # residue, so they land in tier 2.5: real signal False, score
+        # positive (ranked above pure noise, never a truncation trigger).
+        ("digit-sibling / embedded digit", "가상3거리", "가상거리", False, True),
+        ("digit-sibling / distinct suffix digits", "신흥들3", "신흥들4", False, True),
+        ("digit-sibling / not a real containment", "원신흥4", "원신흥네거리", False, True),
+        ("fallback / digit-bearing", "가상감응네거리", "9가상삼거리", False, True),
+        ("fallback / all-digit", "18", "81", False, False),
+        ("fallback / clean", "가상감응네거리", "가상삼거리", False, True),
+    ]
+    for label, target, candidate, expect_real_signal, expect_positive_score in cases:
+        score, _reason, real_signal = pd._name_overlap(target, candidate)
+        assert real_signal is expect_real_signal, f"{label}: expected real_signal={expect_real_signal}, got {real_signal}"
+        assert (score > 0.0) is expect_positive_score, f"{label}: expected score>0 == {expect_positive_score}, got score={score}"
+
+    # THE SIBLING REASON, verbatim, and NOT the containment tier's reason --
+    # a mutation that left the OLD tier-2 reason on a sibling pair (the exact
+    # round-3 defect, just with the label swapped) would fail here.
+    for target, candidate in [("가상3거리", "가상거리"), ("신흥들3", "신흥들4"), ("원신흥4", "원신흥네거리")]:
+        _score, reason, _real_signal = pd._name_overlap(target, candidate)
+        assert reason == "숫자만 다른 이름입니다 — 같은 계열의 다른 번호일 수 있습니다.", (target, candidate, reason)
+        # SANITY, self-documenting: none of these pairs may satisfy RAW
+        # containment, or the fixture itself would be testing the wrong tier.
+        assert target not in candidate and candidate not in target, (target, candidate)
+
+    # THE ORDERING REQUIREMENT (round 4, orchestrator): digit-sibling must
+    # rank ABOVE the fallback tier for the SAME pair -- stripped CONTAINMENT
+    # (every character of the shorter name appears, in order, inside the
+    # longer) is strictly more information than stripped SET overlap (the
+    # same characters merely both appear somewhere). Verified structurally,
+    # not just for one number: tier 2.5's ratio for "원신흥4"/"원신흥네거리"
+    # is mathematically identical to what tier 3's ratio WOULD be for the
+    # same pair (containment guarantees the shorter's whole character set is
+    # a subset of the longer's), so the higher coefficient (0.6 vs 0.4) alone
+    # determines the ordering -- exactly 1.5x, not a coincidence of this one
+    # example.
+    target, candidate = "원신흥4", "원신흥네거리"
+    sibling_score, _reason, sibling_real_signal = pd._name_overlap(target, candidate)
+    assert sibling_real_signal is False
+    target_stripped, candidate_stripped = "원신흥", "원신흥네거리"
+    would_be_fallback_common = set(target_stripped) & set(candidate_stripped)
+    would_be_fallback_score = 0.4 * len(would_be_fallback_common) / max(
+        len(set(target_stripped)), len(set(candidate_stripped))
+    )
+    assert sibling_score > would_be_fallback_score, (
+        "digit-sibling must outrank the fallback tier for the same pair -- "
+        "stripped containment is more information than shared characters"
+    )
+    assert sibling_score == pytest.approx(1.5 * would_be_fallback_score), (
+        "expected the 0.6-vs-0.4 coefficient gap to be the ENTIRE reason for the ordering, exactly 1.5x"
+    )
+
+
+def test_node_candidates_digit_siblings_never_flip_discriminates_the_round3_repro():
+    """ROUND 4 (orchestrator-decided semantics): the round-3 refuter's ONE
+    surviving HIGH, reproduced directly. Round 3's stripped-containment tier
+    2 scored FOUR DISTINCT physical intersections -- "신흥들1"/"2"/"4"/"5" --
+    as identical 0.8 "포함됩니다" ties against target "신흥들3", erasing the
+    exact digit that disambiguates separate intersections in this product's
+    own Daejeon naming convention, and treated "원신흥4" as if it were
+    genuinely CONTAINED in "원신흥네거리" (real_signal=True, score 0.533) when
+    no such containment exists on the real strings at all.
+
+    A digit-only difference is real information for a human reviewer -- worth
+    ranking above pure noise, with its own honest reason -- but it is NOT a
+    name match, so a screen full of digit siblings must never activate the
+    truncation cap.
+    """
+    siblings = [
+        DraftNode(id=1, name="신흥들1", osm_id=1, x=0.0, y=0.0, polygon=[]),
+        DraftNode(id=2, name="신흥들2", osm_id=2, x=0.0, y=0.0, polygon=[]),
+        DraftNode(id=3, name="신흥들4", osm_id=3, x=0.0, y=0.0, polygon=[]),
+        DraftNode(id=4, name="신흥들5", osm_id=4, x=0.0, y=0.0, polygon=[]),
+    ]
+    flat = _osm_style_nodes(21, start_id=5)
+    draft = DraftNetwork(name="siblings", source_osm="region.osm", nodes=siblings + flat)
+    candidates = pd.node_candidates(draft, intersection_name="신흥들3")
+    sibling_candidates = [c for c in candidates if c["node_id"] in {1, 2, 3, 4}]
+    assert len(sibling_candidates) == 4, "sanity: all four siblings must still be OFFERED, just not as a name match"
+    assert all(c["match_score"] > 0.0 for c in sibling_candidates), "a digit-sibling still ranks above pure noise"
+    assert len(candidates) == 25, "a digit-only difference among candidates must NOT activate the truncation cap"
+
+
+def test_node_candidates_ranks_real_signal_before_score_the_round4_repro():
+    """ROUND 5 (refuter, MEDIUM, round 4): tier 2.5's coefficient (0.6) can
+    exceed a WEAK true containment match's score -- `0.8 * shorter / longer`
+    is small when the two names are very different lengths. MEASURED: target
+    "가상거리" vs true containment "가상거리앞쪽" scores 0.533 (real_signal
+    True) while sibling "가상3거리" scores 0.6 (real_signal False), so a
+    SCORE-ONLY sort listed the wrong node first -- the truncation cap was
+    never unsafe (real_signal alone still governs `discriminates`), but the
+    visual scan order lied about which node was the genuine name match.
+    """
+    nodes = [
+        DraftNode(id=1, name="가상거리앞쪽", osm_id=1, x=0.0, y=0.0, polygon=[]),  # true containment, ~0.533, real True
+        DraftNode(id=2, name="가상3거리", osm_id=2, x=0.0, y=0.0, polygon=[]),  # digit-sibling, 0.6, real False
+    ]
+    draft = DraftNetwork(name="round5-repro", source_osm="region.osm", nodes=nodes)
+    candidates = pd.node_candidates(draft, intersection_name="가상거리")
+    assert candidates[0]["match_score"] < candidates[1]["match_score"], (
+        "sanity: the score-only bug would have been invisible if the scores agreed"
+    )
+    assert [c["node_id"] for c in candidates] == [1, 2], (
+        "expected the true containment match (node 1) to rank FIRST despite its lower raw score -- "
+        "real name signal must outrank every hint tier regardless of either tier's own formula"
+    )
+
+
+def test_node_candidates_full_order_groups_by_real_signal_then_score():
+    """The five-tier scan order, all at once: exact, containment, and
+    digit-sibling scores do NOT sort by magnitude alone -- the order groups
+    by `real_signal` FIRST (exact and containment together, both real;
+    sibling, fallback and zero together, all hints), and only within each
+    group does score break the tie. Node ids are deliberately scrambled and
+    out of both scan order and insertion order, so a bug that fell back to
+    node_id (or to source order) is caught here too.
+    """
+    nodes = [
+        DraftNode(id=5, name="가상3거리", osm_id=5, x=0.0, y=0.0, polygon=[]),  # sibling, 0.6, hint
+        DraftNode(id=1, name="가상거리앞쪽", osm_id=1, x=0.0, y=0.0, polygon=[]),  # containment, ~0.533, real
+        DraftNode(id=4, name="Node 999999", osm_id=999999, x=0.0, y=0.0, polygon=[]),  # zero, 0.0, hint
+        DraftNode(id=3, name="가상거리", osm_id=3, x=0.0, y=0.0, polygon=[]),  # exact, 1.0, real
+        DraftNode(id=2, name="상거마을", osm_id=2, x=0.0, y=0.0, polygon=[]),  # fallback, 0.2, hint
+    ]
+    draft = DraftNetwork(name="round5-mixed", source_osm="region.osm", nodes=nodes)
+    candidates = pd.node_candidates(draft, intersection_name="가상거리")
+    assert [c["node_id"] for c in candidates] == [3, 1, 5, 2, 4], (
+        "expected exact(1.0,real) > containment(0.533,real) > sibling(0.6,hint) > fallback(0.2,hint) > zero(0.0,hint) -- "
+        "the two REAL entries first regardless of score, then score breaks ties WITHIN each group"
+    )
+
+
+def test_node_candidates_ignores_an_all_digit_target_at_the_containment_tier():
+    """ROUND 3 FINDING A (refuter, HIGH -- CLASS CLOSURE): round 2's digit
+    exclusion covered only the FALLBACK tier. Tier 2 (substring containment)
+    was left completely UNCONDITIONAL, so an all-digit `intersection_name`
+    such as "18" -- entered through the manual blank-review or excel_upload
+    doors, not just read off an OSM draft's own node names -- is a literal
+    substring of "node<osmid>" for MOST osmids in a real draft (this
+    fixture's own node id 18, "Node 900018", contains "18" outright).
+    MEASURED (refuter): a 25-node draft returned only 8.
+    """
+    nodes = _osm_style_nodes(25)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    candidates = pd.node_candidates(draft, intersection_name="18")
+    assert len(candidates) == 25, "an all-digit target must not discriminate via substring containment either"
+    assert all(c["match_score"] == 0.0 for c in candidates)
+
+
+def test_node_candidates_a_fallback_only_match_does_not_flip_discriminates():
+    """ROUND 3 FINDING D (refuter, coverage gap): `discriminates = any(
+    real_signal for ...)` was defended only by a STRING pin in the frontend
+    contract suite -- mutating it back to `any(score > 0.0 for ...)` passed
+    all of THIS file's tests too, because no fixture made `real_signal` and
+    `score > 0` actually DIVERGE. This one does, deliberately: a fallback-tier
+    -only match (shared non-digit Korean characters, no substring or exact
+    hit) scores POSITIVE but is NOT a real signal, so `discriminates` must
+    stay False and every node must still be returned. (Mutation-verified by
+    hand per the refuter's instruction -- see the round-3 handoff notes.)
+    """
+    nodes = [
+        # fallback-tier match against "가상감응네거리": shares 가,상,거,리,
+        # but is neither equal nor a substring either way -- see the tier
+        # matrix test above for the same pair, asserted at the _name_overlap
+        # level.
+        DraftNode(id=1, name="가상삼거리", osm_id=1, x=0.0, y=0.0, polygon=[]),
+    ] + _osm_style_nodes(24, start_id=2)
+    draft = DraftNetwork(name="fallback-only", source_osm="region.osm", nodes=nodes)
+    candidates = pd.node_candidates(draft, intersection_name="가상감응네거리")
+    fallback_candidate = next(c for c in candidates if c["node_id"] == 1)
+    assert fallback_candidate["match_score"] > 0.0, "sanity: the fallback tier really did score this one positive"
+    assert len(candidates) == 25, (
+        "a fallback-tier-only positive score must NOT flip discriminates -- it is not a real name signal"
+    )
+
+
 def test_an_approach_bearing_names_the_side_the_traffic_comes_from(crossroads):
     """The link whose geometry runs from +y down to the node is the NORTH leg —
     the heading is southbound and the leg lies opposite it."""
@@ -925,6 +1261,82 @@ def test_an_unknown_review_is_a_404_with_a_code(client, headers):
     response = client.get("/api/genesis/phase-diagrams/" + "0" * 16, headers=headers)
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "phase_diagram_unknown_review"
+
+
+def test_the_candidate_route_discloses_a_real_truncation(
+    client, headers, seeded, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Unit #62's HTTP half: the route's disclosure fields, over the wire.
+
+    ``genesis_jobs.artifact_path`` is monkeypatched to a hand-built census
+    rather than run through the real OSM generator -- the truncation this test
+    proves needs more than 8 nodes with a mix of scores, which a synthetic OSM
+    fixture is the wrong tool to grow just for this. The seeded review's own
+    교차로명 (``actuated_variant.txt``'s "가상감응네거리") is the discriminating
+    target, unchanged from the fixture every other test in this file already
+    uses.
+    """
+    # UNIT #62 FINDING 1: these three must land on a REAL signal tier (exact
+    # match or substring containment) -- the fallback tier's character
+    # overlap no longer counts toward `discriminates` at all, so a fixture
+    # built on it (the pre-fix version of this test used "가상삼거리" etc.,
+    # fallback-tier matches) would wrongly assert a truncation that could no
+    # longer happen.
+    discriminating = [
+        DraftNode(id=1, name="가상감응네거리", osm_id=1, x=0.0, y=0.0, polygon=[]),  # exact match
+        DraftNode(id=2, name="가상감응", osm_id=2, x=0.0, y=0.0, polygon=[]),  # target contains this
+        DraftNode(id=3, name="가상감응네거리앞", osm_id=3, x=0.0, y=0.0, polygon=[]),  # this contains target
+    ]
+    flat = _osm_style_nodes(8, start_id=10)
+    draft = DraftNetwork(name="mixed", source_osm="mixed.osm", nodes=discriminating + flat)
+    census_path = tmp_path / "mixed.genesis.json"
+    census_path.write_text(draft.model_dump_json(), encoding="utf-8")
+
+    def fake_artifact_path(job_id: str, kind: str) -> Path:
+        assert kind == "genesis_json"
+        return census_path
+
+    monkeypatch.setattr(genesis_jobs, "artifact_path", fake_artifact_path)
+
+    response = client.get(
+        f"/api/genesis/phase-diagrams/{seeded}/network-candidates",
+        headers=headers,
+        params={"job_id": "does-not-need-to-exist"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["total_nodes"] == 11, "the draft's own node count, not the truncated one"
+    assert payload["returned_nodes"] == 8
+    assert len(payload["candidates"]) == 8, "the payload's own list must agree with returned_nodes"
+
+
+def test_the_candidate_route_discloses_no_truncation_when_the_signal_cannot_discriminate(
+    client, headers, seeded, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Same route, the OTHER measured shape: an OSM draft whose every node name
+    is "Node <osmid>" gets total==returned -- every node offered, nothing to
+    disclose as cut, matching `node_candidates`'s own zero-signal behaviour."""
+    nodes = _osm_style_nodes(25)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    census_path = tmp_path / "osm.genesis.json"
+    census_path.write_text(draft.model_dump_json(), encoding="utf-8")
+
+    def fake_artifact_path(job_id: str, kind: str) -> Path:
+        assert kind == "genesis_json"
+        return census_path
+
+    monkeypatch.setattr(genesis_jobs, "artifact_path", fake_artifact_path)
+
+    response = client.get(
+        f"/api/genesis/phase-diagrams/{seeded}/network-candidates",
+        headers=headers,
+        params={"job_id": "does-not-need-to-exist"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["total_nodes"] == 25
+    assert payload["returned_nodes"] == 25
+    assert len(payload["candidates"]) == 25
 
 
 def _confirmation_body(record: pd.DiagramRender, **overrides: Any) -> dict[str, Any]:
