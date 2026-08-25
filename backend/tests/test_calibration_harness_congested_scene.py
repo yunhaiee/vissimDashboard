@@ -27,14 +27,29 @@ What this file proves, all of it offline:
    labels as before #49 — asserted against the arithmetic they are defined by,
    not against a golden file (the workbook embeds a generation timestamp, so
    its bytes are not stable by construction).
+5. **Unit #61a — the congested workbook joins enough nodes for the holdout
+   gate.** MEASURED 2026-08-25: the congested scene's baseline run only ever
+   produced a TWO-node workbook (the demand node's designed shortfall + the
+   control node's exact match), and ``parameter_search.MIN_NODES_FOR_HOLDOUT``
+   is 4 -- two nodes can never split. ``--observed-nodes all`` adds one
+   exact-match (GEH ~ 0) control row per OTHER node the baseline run carries
+   movement volumes for, so the workbook can join >= 4. The default
+   (``--observed-nodes designed``) is unchanged: section 4's byte-identical
+   promise is re-verified here as a CANONICAL HASH pin (raw xlsx bytes are not
+   stable across calls -- openpyxl stamps its own real-clock docProps
+   timestamp on every save regardless of this module's own ``_now()`` -- so
+   the pin hashes the Counts/DEMO_NOTES cell VALUES a loaded workbook reports,
+   which is exactly what the loader and every test above already reads).
 
 No COM, no HTTP, no ``runtime/`` writes: every function exercised here is pure,
 which is why they were factored out of the stage bodies in the first place.
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import io
+import json
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -80,6 +95,29 @@ _DEMAND_ROWS = {**_ENTRANCE_ROWS, **_OTHER_ROWS}
 _REFUSAL_ROWS = {
     "5-501-10.0-600-20.0": 210.0,
     "5-503-10.0-600-20.0": 190.0,
+}
+
+#: Unit #61a -- the OTHER nodes the real congested run (job fe342b88,
+#: workspace 87c51893caa2) carries movement volumes for, measured 2026-08-25.
+#: Node ids and movement counts mirror that run's shape (1: 12, 2: 12, 3: 6,
+#: 4: 10); the OBJECT_IDs here are synthetic but the same
+#: "<node>-<from link>-<pos>-<to link>-<pos>" shape every other fixture in this
+#: file uses.
+_ADDITIONAL_NODE_ROWS = {
+    "1": {
+        "1-101-1.0-201-1.0": 900.0,
+        "1-101-1.0-202-1.0": 450.0,
+    },
+    "2": {
+        "2-301-1.0-401-1.0": 512.0,
+    },
+    "3": {
+        "3-501-1.0-601-1.0": 430.0,
+        "3-501-1.0-602-1.0": 128.0,
+    },
+    "4": {
+        "4-701-1.0-801-1.0": 275.0,
+    },
 }
 
 #: The scene's parameters. 2063.4 veh/h is the as-built volume of vehicle input
@@ -631,6 +669,20 @@ def test_cli_defaults_to_the_as_built_scene() -> None:
     args = harness.build_parser().parse_args([])
     assert args.scene == harness.SCENE_AS_BUILT
     assert args.demand_factor is None
+    # Unit #61a: the node-coverage flag defaults to #49's original two rows.
+    assert args.observed_nodes == harness.OBSERVED_NODES_DESIGNED
+
+
+def test_cli_observed_nodes_all_requires_the_congested_scene() -> None:
+    # Same discipline as --demand-factor: a flag that would be silently
+    # ignored on the wrong scene refuses instead of pretending to apply.
+    parser = harness.build_parser()
+    with pytest.raises(SystemExit):
+        harness.validate_args(parser, parser.parse_args(["--observed-nodes", "all"]))
+    # ...and is accepted paired with the scene it means something on.
+    harness.validate_args(
+        parser, parser.parse_args(["--scene", "congested", "--observed-nodes", "all"])
+    )
 
 
 @pytest.mark.parametrize(
@@ -645,3 +697,223 @@ def test_cli_refuses_a_demand_factor_that_designs_no_scene(argv: list[str]) -> N
     parser = harness.build_parser()
     with pytest.raises(SystemExit):
         harness.validate_args(parser, parser.parse_args(argv))
+
+
+# ===========================================================================
+# 7. UNIT #61a -- NODE COVERAGE FOR THE HOLDOUT GATE
+# ===========================================================================
+#
+# MEASURED 2026-08-25: the congested workbook's baseline run (job fe342b88,
+# workspace 87c51893caa2) carries movement volumes for six nodes -- 1, 2, 3,
+# 4, 5, 8 -- but the workbook only ever wrote two of them. Two graded nodes
+# cannot split (parameter_search.MIN_NODES_FOR_HOLDOUT is 4), so the holdout
+# gate refused HOLDOUT_NOT_AVAILABLE no matter how much evidence piled up.
+# ``--observed-nodes all`` adds one exact-match (GEH ~ 0) control row per
+# OTHER node the run carries volumes for.
+
+
+def _run_result_with_additional_nodes() -> dict[str, Any]:
+    """A synthetic ``run_result`` whose ``movement_volumes`` carry the demand
+    node, the refusal node, AND #61a's additional nodes -- the shape
+    ``_all_node_ids`` and ``--observed-nodes all`` read from a real run."""
+    rows: dict[str, float] = {**_DEMAND_ROWS, **_REFUSAL_ROWS}
+    for node_rows in _ADDITIONAL_NODE_ROWS.values():
+        rows.update(node_rows)
+    volumes: dict[str, Any] = {}
+    for object_id, vehs in rows.items():
+        if object_id in _DEMAND_ROWS:
+            node = _DEMAND_NODE
+        elif object_id in _REFUSAL_ROWS:
+            node = _REFUSAL_NODE
+        else:
+            node = object_id.split("-", 1)[0]
+        volumes[object_id] = {"vehs": vehs, "node": node}
+    return {geh_ladder.VOLUMES_KEY: volumes}
+
+
+def test_all_node_ids_reads_every_node_the_run_carries_movement_volumes_for() -> None:
+    run_result = _run_result_with_additional_nodes()
+    assert harness._all_node_ids(run_result) == sorted(
+        [_DEMAND_NODE, _REFUSAL_NODE, *_ADDITIONAL_NODE_ROWS], key=lambda n: (len(n), n)
+    )
+    assert harness._all_node_ids({}) == []
+    assert harness._all_node_ids({"movement_volumes": "not a dict"}) == []
+
+    # A node-level AGGREGATE row (OBJECT_ID == node id) must not be read as a
+    # movement -- the same exclusion _movement_rows already applies for the
+    # demand/refusal nodes, re-checked here for an ADDITIONAL node.
+    run_result[geh_ladder.VOLUMES_KEY]["1"] = {"vehs": 9999.0, "node": "1"}
+    assert harness._all_node_ids(run_result) == sorted(
+        [_DEMAND_NODE, _REFUSAL_NODE, *_ADDITIONAL_NODE_ROWS], key=lambda n: (len(n), n)
+    )
+    assert harness._movement_rows(run_result, "1") == _ADDITIONAL_NODE_ROWS["1"]
+
+
+def _additional_design_and_content(
+    *, additional_node_rows: dict[str, dict[str, float]] | None
+) -> tuple[dict[str, Any], bytes]:
+    design_block = _design()
+    design: dict[str, Any] = {
+        "time_int": f"0-{_DURATION_S}",
+        "scene": harness.SCENE_CONGESTED,
+        "demand_factor": harness.DEFAULT_DEMAND_FACTOR,
+        "duration_s": _DURATION_S,
+        "congested": design_block,
+        "source_job_id": "offline-test",
+        "source_db": None,
+    }
+    content = harness._build_demo_workbook(
+        _DEMAND_ROWS,
+        _REFUSAL_ROWS,
+        1.0,
+        design,
+        scene=harness.SCENE_CONGESTED,
+        demand_observed=design_block["observed_by_id"],
+        additional_node_rows=additional_node_rows,
+    )
+    return design, content
+
+
+def test_observed_nodes_all_joins_every_additional_node_by_object_id_as_an_exact_match() -> None:
+    design, content = _additional_design_and_content(additional_node_rows=_ADDITIONAL_NODE_ROWS)
+
+    # The REAL loader accepts it -- no warnings, so POST /api/validation/base-
+    # workbook would persist it (the same standard section 3's whole-path test
+    # holds the two-node workbook to).
+    loaded = validation.load_base_workbook_bytes("DEMO_congested_61a.xlsx", content)
+    assert not loaded.get("warnings"), loaded.get("warnings")
+
+    assert set(design["additional_nodes"]) == set(_ADDITIONAL_NODE_ROWS)
+    for node_id, rows in _ADDITIONAL_NODE_ROWS.items():
+        block = design["additional_nodes"][node_id]
+        # Exact-match control: observed IS modelled, rounded -- GEH ~ 0. Not
+        # the demand node's designed shortfall, and not any other scale.
+        assert block["per_movement"] == {
+            object_id: {"modelled": modelled, "observed": int(round(modelled))}
+            for object_id, modelled in rows.items()
+        }
+        assert block["observed_total"] == round(sum(rows.values()))
+
+    # The Counts sheet joins by Direction == the run's own OBJECT_ID, for
+    # every additional node's every movement -- the same join discipline the
+    # module docstring states for the designed pair.
+    joined = {
+        row[4]: (row[7], row[8])
+        for row in _counts_rows(content)[1:]
+        if row[4] and row[4] != "Total"
+    }
+    for node_rows in _ADDITIONAL_NODE_ROWS.values():
+        for object_id, modelled in node_rows.items():
+            assert joined[object_id] == (modelled, int(round(modelled)))
+
+
+def test_observed_nodes_all_never_touches_the_designed_demand_or_control_rows() -> None:
+    # REGRESSION GUARD (mutation target): if additional-node emission ever
+    # reused the demand node's OWN designed observed_by_id instead of the
+    # exact-match rule, the demand node's rows would drift the moment
+    # additional_node_rows is non-empty -- so pin them identical either way.
+    design_designed, content_designed = _additional_design_and_content(additional_node_rows=None)
+    design_all, content_all = _additional_design_and_content(
+        additional_node_rows=_ADDITIONAL_NODE_ROWS
+    )
+    assert design_designed["demand"]["per_movement"] == design_all["demand"]["per_movement"]
+    assert design_designed["refusal"]["per_movement"] == design_all["refusal"]["per_movement"]
+    assert "additional_nodes" not in design_designed
+    assert "additional_nodes" in design_all
+
+    demand_label = f"{_DEMAND_NODE}: DEMO 합성 혼잡장면 노드{_DEMAND_NODE}"
+    refusal_label = f"{_REFUSAL_NODE}: DEMO 합성 혼잡장면 노드{_REFUSAL_NODE}"
+    labels_designed = {row[3] for row in _counts_rows(content_designed)[1:] if row[3]}
+    labels_all = {row[3] for row in _counts_rows(content_all)[1:] if row[3]}
+    assert labels_designed == {demand_label, refusal_label}
+    assert labels_all == {demand_label, refusal_label} | {
+        f"{node_id}: DEMO 합성 혼잡장면 대조노드{node_id}" for node_id in _ADDITIONAL_NODE_ROWS
+    }
+
+
+def test_demo_notes_names_which_nodes_are_designed_and_which_are_additional_controls() -> None:
+    _, content = _additional_design_and_content(additional_node_rows=_ADDITIONAL_NODE_ROWS)
+    wb = openpyxl.load_workbook(io.BytesIO(content))
+    notes = "\n".join(
+        str(cell) for row in wb["DEMO_NOTES"].iter_rows(values_only=True) for cell in row if cell
+    )
+    assert "node coverage" in notes
+    assert "join-only" in notes
+    for node_id in _ADDITIONAL_NODE_ROWS:
+        assert f"노드 {node_id} (추가 대조" in notes
+
+    # The DEFAULT invocation must say NOTHING about a split that was never
+    # designed -- a reader of a --observed-nodes designed workbook must not
+    # see additional-control language for a mode it did not run.
+    _, default_content = _additional_design_and_content(additional_node_rows=None)
+    default_notes = "\n".join(
+        str(cell)
+        for row in openpyxl.load_workbook(io.BytesIO(default_content))["DEMO_NOTES"].iter_rows(
+            values_only=True
+        )
+        for cell in row
+        if cell
+    )
+    assert "join-only" not in default_notes
+
+
+def _canonical_workbook_repr(content: bytes) -> str:
+    """A hash of what the workbook SAYS, not its raw zip bytes.
+
+    openpyxl stamps ``docProps/core.xml`` with the REAL wall clock on every
+    ``Workbook.save()`` regardless of this module's own ``_now()`` (MEASURED
+    2026-08-25: two calls with identical inputs, made a few seconds apart,
+    produce DIFFERENT zip bytes even with ``_now`` frozen). Every cell value
+    on the two sheets this function's own output lands on -- Counts and
+    DEMO_NOTES -- is exactly what the loader, the reality check and every
+    other test in this file already read, so hashing those values is the
+    meaningful "byte-identical" here, not a weaker substitute for it.
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(content))
+    payload = json.dumps(
+        {
+            "counts": [list(row) for row in wb["Counts"].iter_rows(values_only=True)],
+            "notes": [list(row) for row in wb["DEMO_NOTES"].iter_rows(values_only=True)],
+        },
+        sort_keys=True,
+        default=str,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: Captured 2026-08-25 from this exact fixture (_DEMAND_ROWS / _REFUSAL_ROWS /
+#: _design(), with _now() frozen to the literal below) through the harness AS
+#: IT WAS immediately before unit #61a -- i.e. before ``additional_node_rows``
+#: existed as a parameter of ``_build_demo_workbook`` at all. Unit #61a's
+#: whole promise is that OMITTING it (the default) reproduces this exactly;
+#: see ``_build_demo_workbook``'s docstring.
+_PRE_61A_FROZEN_NOW = "2026-08-25T00:00:00+00:00"
+_PRE_61A_CANONICAL_HASH = "cb94007d27620cffd4af62417d801ba7315440fa505c846667af79d381593e2f"
+
+
+def test_default_observed_nodes_is_canonically_byte_identical_to_before_61a(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(harness, "_now", lambda: _PRE_61A_FROZEN_NOW)
+    content = _workbook_bytes(_design())
+    assert _canonical_workbook_repr(content) == _PRE_61A_CANONICAL_HASH
+
+
+def test_default_is_also_stable_when_additional_node_rows_is_passed_none_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Passing the keyword explicitly as None must be indistinguishable from
+    # omitting it entirely -- the seam is additive, not a second code path.
+    monkeypatch.setattr(harness, "_now", lambda: _PRE_61A_FROZEN_NOW)
+    _, content = _additional_design_and_content(additional_node_rows=None)
+    assert _canonical_workbook_repr(content) == _PRE_61A_CANONICAL_HASH
+
+
+def test_observed_nodes_all_changes_the_canonical_hash() -> None:
+    # The inverse of the two tests above: a MUTATION that made --observed-
+    # nodes all a silent no-op (or made the default secretly include the
+    # additional rows) would leave this hash equal to the frozen one -- so
+    # pin that it must NOT be.
+    _, content = _additional_design_and_content(additional_node_rows=_ADDITIONAL_NODE_ROWS)
+    assert _canonical_workbook_repr(content) != _PRE_61A_CANONICAL_HASH

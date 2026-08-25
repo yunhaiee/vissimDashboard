@@ -329,6 +329,30 @@ REFUSAL_NODE = "5"
 #: The GEH the designed deviation aims the demand node's TOTAL at.
 TARGET_BEFORE_GEH = 7.5
 
+# ---------------------------------------------------------------------------
+# Unit #61a -- the congested workbook's node-coverage seam
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-08-25: the congested scene's baseline run (job fe342b88,
+# workspace 87c51893caa2) carries movement volumes for SIX nodes -- 1, 2, 3,
+# 4, 5, 8 -- the same family ``parameter_search_live_check.py``'s six-node
+# workbook already covers for the as-built scene. The congested workbook only
+# ever wrote two of them (DEMAND_NODE + REFUSAL_NODE), so it joins 2 nodes --
+# below ``parameter_search.MIN_NODES_FOR_HOLDOUT`` (4) -- and the holdout gate
+# refuses HOLDOUT_NOT_AVAILABLE no matter how much evidence piles up.
+#
+# 'designed' (default): #49's original two rows only -- the demand node's
+# designed shortfall (the CAPACITY_LIMIT physics) and the control node's exact
+# match. Byte-for-byte what #49 wrote; see _build_demo_workbook's docstring.
+# 'all': additionally emits one exact-match (GEH ~ 0) control row PER OTHER
+# node the baseline run carries movement volumes for, so the workbook joins
+# every node the run can prove and the holdout split has enough to work with.
+# Exact-match rows design NO deviation, so they cannot change the demand
+# node's CAPACITY_LIMIT story -- they only add join-able controls beside it.
+OBSERVED_NODES_DESIGNED = "designed"
+OBSERVED_NODES_ALL = "all"
+OBSERVED_NODE_MODES = (OBSERVED_NODES_DESIGNED, OBSERVED_NODES_ALL)
+
 #: A clearly-named demo account in the real app DB (runtime/db/app.db).
 #:
 #: NO password constant, on purpose. This account lives in the REAL app DB, so
@@ -835,6 +859,30 @@ def _movement_rows(run_result: dict[str, Any], node_id: str) -> dict[str, float]
             continue
         out[str(object_id)] = float(vehs)
     return out
+
+
+def _all_node_ids(run_result: dict[str, Any]) -> list[str]:
+    """Every node id the run's ``movement_volumes`` carries a row for.
+
+    Sorted ``(len, id)`` -- the same ordering
+    ``parameter_search_live_check.WORKBOOK_NODES`` is walked in -- so a
+    numeric-looking id like ``"8"`` does not sort after ``"12"``. Unit #61a's
+    node-coverage seam: this is how the congested workbook's ``--observed-nodes
+    all`` mode discovers which OTHER nodes it can add exact-match control rows
+    for, without hard-coding a node list that could drift from the run.
+    """
+    volumes = run_result.get("movement_volumes") or {}
+    if not isinstance(volumes, dict):
+        return []
+    ids: set[str] = set()
+    for row in volumes.values():
+        if not isinstance(row, dict):
+            continue
+        node = row.get("node")
+        if node is None:
+            continue
+        ids.add(str(node))
+    return sorted(ids, key=lambda n: (len(n), n))
 
 
 def _db_table_census(db_path: Path) -> dict[str, Any]:
@@ -1422,6 +1470,7 @@ def _build_demo_workbook(
     *,
     scene: str = SCENE_AS_BUILT,
     demand_observed: dict[str, int] | None = None,
+    additional_node_rows: dict[str, dict[str, float]] | None = None,
 ) -> bytes:
     """The observed side, in the exact layout ``load_base_workbook`` accepts.
 
@@ -1431,6 +1480,18 @@ def _build_demo_workbook(
     scaled by one factor here, and the notes sheet says which scene it is. With
     the default arguments every row this function writes is the row it wrote
     before #49.
+
+    ``additional_node_rows`` is unit #61a's seam, and it is additive only:
+    omitted (the default, ``None``), every row this function writes is STILL
+    the row it wrote before #61a -- no new sheet content, no new key on
+    ``design``. Given a mapping of ``{node_id: {OBJECT_ID: modelled VEHS}}`` it
+    writes one MORE row block per node, each an EXACT-MATCH control (observed =
+    round(modelled), the same GEH ~ 0 rule the refusal node already uses) --
+    never the demand node's designed values, and never a scaled row. These
+    nodes exist so the workbook JOINS enough nodes for
+    ``parameter_search.MIN_NODES_FOR_HOLDOUT`` to split; they carry no designed
+    deviation of their own and cannot change the demand node's CAPACITY_LIMIT
+    story.
 
     Counts columns are the shipped template's own
     (``validation.create_base_workbook_template``): SimRun / TimeInt / Period /
@@ -1510,6 +1571,24 @@ def _build_demo_workbook(
         DEMAND_NODE, demand_label, demand_rows, factor, demand_observed
     )
     design["refusal"] = _emit(REFUSAL_NODE, refusal_label, refusal_rows, 1.0)
+
+    # Unit #61a: additional exact-match (GEH ~ 0) control nodes, so the
+    # workbook joins enough nodes for the holdout split. Nothing here runs
+    # when additional_node_rows is omitted -- design gets no new key and the
+    # Counts sheet gets no new rows, which is the #61a half of the
+    # byte-identical-by-default promise the docstring states above.
+    additional_blocks: dict[str, Any] = {}
+    if additional_node_rows:
+        for node_id in sorted(additional_node_rows, key=lambda n: (len(n), n)):
+            rows = additional_node_rows[node_id]
+            if not rows:
+                continue
+            label = f"{node_id}: DEMO 합성 혼잡장면 대조노드{node_id}"
+            block = _emit(node_id, label, rows, 1.0)
+            block["role"] = "additional exact-match control (join-only, GEH ~ 0)"
+            additional_blocks[node_id] = block
+    if additional_blocks:
+        design["additional_nodes"] = additional_blocks
 
     # TravelTimes: relabel the template's sample measurement names so nobody
     # can read them as field data.
@@ -1598,6 +1677,30 @@ def _build_demo_workbook(
             ],
         ]
 
+    if additional_blocks:
+        node_lines.append([])
+        node_lines.append(
+            [
+                "노드 커버리지 / node coverage (unit #61a): 설계 노드는 위 2개뿐이고 "
+                f"({DEMAND_NODE}=수요/용량, {REFUSAL_NODE}=대조) 아래는 조인 전용 추가 대조 노드입니다."
+            ]
+        )
+        node_lines.append(
+            [
+                "node coverage: only the two nodes above are DESIGNED "
+                f"({DEMAND_NODE}=demand/capacity, {REFUSAL_NODE}=control); the nodes below are "
+                "ADDITIONAL join-only exact-match controls, added so the holdout split has enough "
+                "nodes -- none of them carries a designed deviation."
+            ]
+        )
+        for node_id, block in additional_blocks.items():
+            node_lines.append(
+                [
+                    f"  노드 {node_id} (추가 대조 / additional control): 관측 {block['observed_total']} = "
+                    f"모델 {block['modelled_total']} (반올림) -> GEH ~ 0, 이동류 {block['movement_n']}건"
+                ]
+            )
+
     notes = wb.create_sheet("DEMO_NOTES")
     for line in [
         ["이 워크북은 합성 데모 데이터입니다 / THIS WORKBOOK IS SYNTHETIC DEMO DATA"],
@@ -1630,6 +1733,7 @@ def stage_2_workbook(
     inject_path: Path | None = None,
     scene: str = SCENE_AS_BUILT,
     demand_factor: float | None = None,
+    observed_nodes: str = OBSERVED_NODES_DESIGNED,
 ) -> None:
     _banner("[STAGE 2] The observed side -- designed synthetic, honestly labelled")
     entry = _stage("2_workbook")
@@ -1668,7 +1772,16 @@ def stage_2_workbook(
         )
 
     if scene == SCENE_CONGESTED:
-        _stage_2_congested(client, entry, demand_rows, refusal_rows, demand_factor, started)
+        _stage_2_congested(
+            client,
+            entry,
+            demand_rows,
+            refusal_rows,
+            demand_factor,
+            started,
+            run_result=run_result,
+            observed_nodes=observed_nodes,
+        )
         return
 
     demand_modelled = sum(demand_rows.values())
@@ -1711,6 +1824,9 @@ def _stage_2_congested(
     refusal_rows: dict[str, float],
     demand_factor: float | None,
     started: float,
+    *,
+    run_result: dict[str, Any] | None = None,
+    observed_nodes: str = OBSERVED_NODES_DESIGNED,
 ) -> None:
     """Unit #49's observed side: the entrance count IS the raised demand.
 
@@ -1720,6 +1836,12 @@ def _stage_2_congested(
     demand-node movement volumes), states the design targets it must meet, and
     REFUSES with the arithmetic printed if it does not meet them -- a scene that
     cannot fire the rung must not be shipped to the live lane as if it could.
+
+    ``observed_nodes`` is unit #61a's seam. ``OBSERVED_NODES_DESIGNED``
+    (default): unchanged, two nodes only. ``OBSERVED_NODES_ALL``: every other
+    node ``run_result`` carries movement volumes for gets an additional
+    exact-match control row (see ``_build_demo_workbook``'s docstring) so the
+    workbook joins enough nodes for the holdout split.
     """
     from services import validation
     from services.agent import fixes
@@ -1796,12 +1918,44 @@ def _stage_2_congested(
             + "\n  - ".join(problems)
         )
 
+    # Unit #61a: additional exact-match control nodes, opt-in only. The
+    # designed pair above never changes shape because of this -- see
+    # _build_demo_workbook's docstring for the byte-identical-by-default
+    # promise this preserves.
+    additional_node_rows: dict[str, dict[str, float]] = {}
+    if observed_nodes == OBSERVED_NODES_ALL:
+        if run_result is None:
+            entry["ok"] = False
+            _save_state()
+            raise SystemExit(
+                "STAGE 2 REFUSAL: --observed-nodes all needs the baseline run's own movement "
+                "volumes to discover which other nodes to add, and none were handed to "
+                "_stage_2_congested."
+            )
+        other_ids = [
+            node_id
+            for node_id in _all_node_ids(run_result)
+            if node_id not in (DEMAND_NODE, REFUSAL_NODE)
+        ]
+        _log(f"[2.3b] --observed-nodes all: {len(other_ids)} additional node(s) in this run's "
+             f"movement volumes beyond {{{DEMAND_NODE}, {REFUSAL_NODE}}}: {other_ids}")
+        for node_id in other_ids:
+            rows = _movement_rows(run_result, node_id)
+            if not rows:
+                _log(f"       node {node_id}: 0 movement rows -- skipped, nothing to join")
+                continue
+            additional_node_rows[node_id] = rows
+            _log(f"       node {node_id}: {len(rows)} movements, modelled total "
+                 f"{sum(rows.values()):.2f} veh -- observed = modelled (rounded), exact-match "
+                 "control (GEH ~ 0), no deviation designed")
+
     design: dict[str, Any] = {
         "time_int": f"0-{duration_s}",
         "scene": SCENE_CONGESTED,
         "demand_factor": factor,
         "duration_s": duration_s,
         "congested": congested,
+        "observed_nodes_mode": observed_nodes,
         "source_job_id": baseline.get("job_id"),
         "source_db": (baseline.get("result_db_paths") or [None])[0],
     }
@@ -1812,11 +1966,22 @@ def _stage_2_congested(
         design,
         scene=SCENE_CONGESTED,
         demand_observed=congested["observed_by_id"],
+        additional_node_rows=additional_node_rows or None,
     )
     for key in ("demand", "refusal"):
         block = design[key]
         block["geh_designed"] = _geh(block["modelled_total"], block["observed_total"])
+    for node_id, block in (design.get("additional_nodes") or {}).items():
+        block["geh_designed"] = _geh(block["modelled_total"], block["observed_total"])
+        _log(f"[2.4b] node {node_id} (additional control) designed: observed "
+             f"{block['observed_total']} vs modelled {block['modelled_total']} -> GEH "
+             f"{block['geh_designed']}")
     entry["design"] = design
+    if design.get("additional_nodes"):
+        joinable = 2 + len(design["additional_nodes"])
+        _log(f"[2.4c] workbook now joins {joinable} node(s) total "
+             f"({{{DEMAND_NODE}, {REFUSAL_NODE}}} designed + {sorted(design['additional_nodes'])} "
+             "additional).")
     _log(f"[2.4] workbook designed: node {DEMAND_NODE} GEH {design['demand']['geh_designed']} "
          f">= {validation.GEH_GOOD_LT}, node {REFUSAL_NODE} GEH "
          f"{design['refusal']['geh_designed']}")
@@ -3280,6 +3445,17 @@ def build_parser() -> argparse.ArgumentParser:
         f"volumes. Default {DEFAULT_DEMAND_FACTOR} -- see DEFAULT_DEMAND_FACTOR for the "
         "measurement it is chosen from. Must be > 1.0 (a factor of 1 designs nothing).",
     )
+    parser.add_argument(
+        "--observed-nodes",
+        choices=OBSERVED_NODE_MODES,
+        default=OBSERVED_NODES_DESIGNED,
+        help="--scene congested: node coverage of the observed workbook (unit #61a). "
+        f"{OBSERVED_NODES_DESIGNED!r} (default): #49's original two rows only -- byte-identical "
+        f"to every run before #61a. {OBSERVED_NODES_ALL!r}: adds one exact-match (GEH ~ 0) "
+        "control row per OTHER node the baseline run carries movement volumes for, so the "
+        "workbook joins enough nodes for parameter_search.MIN_NODES_FOR_HOLDOUT to split. Only "
+        "means anything with --scene congested.",
+    )
     return parser
 
 
@@ -3303,6 +3479,12 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                 "exists to put the model PAST its capacity; a factor of 1 or less designs no "
                 "scene at all and would ship an as-built run under a congested name."
             )
+    if args.observed_nodes == OBSERVED_NODES_ALL and args.scene != SCENE_CONGESTED:
+        parser.error(
+            f"--observed-nodes {OBSERVED_NODES_ALL!r} only means anything with --scene "
+            f"{SCENE_CONGESTED}; the {SCENE_AS_BUILT} scene's workbook already emits its own "
+            "node set and would silently ignore this flag."
+        )
 
 
 def main() -> int:
@@ -3337,7 +3519,7 @@ def main() -> int:
     _log(f"# label={label!r} skip_numruns_prep={args.skip_numruns_prep} "
          f"workspace_name={DEMO_WORKSPACE_NAME!r}")
     _log(f"# expect={args.expect!r} workbook={str(inject_workbook) if inject_workbook else 'generated'}")
-    _log(f"# scene={args.scene!r} demand_factor={demand_factor}")
+    _log(f"# scene={args.scene!r} demand_factor={demand_factor} observed_nodes={args.observed_nodes!r}")
     if args.scene == SCENE_CONGESTED:
         _log("# The congested scene RAISES the demo model's entrance demand. That is a MODEL")
         _log("# DESIGN, not a calibration: no observed number is rewritten, and the observed")
@@ -3389,6 +3571,7 @@ def main() -> int:
     _state["expect"] = args.expect
     _state["scene"] = args.scene
     _state["demand_factor"] = demand_factor
+    _state["observed_nodes"] = args.observed_nodes
     _state["workbook_injected"] = str(inject_workbook) if inject_workbook else None
     # Unit #44's measurement, carried on the state so it lands in the saved
     # artifact alongside the proposals it produced -- a run whose numbers cannot
@@ -3436,6 +3619,7 @@ def main() -> int:
                     inject_path=inject_workbook,
                     scene=args.scene,
                     demand_factor=demand_factor,
+                    observed_nodes=args.observed_nodes,
                 )
             if 3 in stages:
                 with workspaces.bind_workspace(_state["workspace_id"]):
