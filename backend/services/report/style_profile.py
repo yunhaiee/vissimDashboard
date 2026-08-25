@@ -1597,6 +1597,40 @@ def get_profile(profile_id: str) -> dict[str, Any]:
     return record
 
 
+def profile_logo_bytes(profile_id: str) -> bytes | None:
+    """The stored header-logo image for one profile, or ``None``.
+
+    The profile DICT never carries the image: :func:`public_profile` strips
+    ``header.logo["_bytes"]`` out of everything that is persisted or returned
+    over HTTP, and :func:`store_profile` writes the bytes to ``logo.<ext>``
+    beside the record instead. A caller that has to actually re-embed the logo
+    — ``services.report.style_apply.apply_profile`` is the only one today —
+    reads them here rather than reaching into this module's private path
+    helpers.
+
+    ``None`` (never an exception) for a profile that has no logo, a record
+    whose ``logo`` descriptor names a file that is gone, or an unreadable
+    file: the applier turns that into a NAMED fallback ("the profile declares a
+    logo but no bytes arrived"), which is a better answer than a 500 and a
+    strictly better one than a silently logo-less header.
+    """
+    try:
+        record = get_profile(profile_id)
+    except StyleProfileError:
+        return None
+    descriptor = record.get("logo")
+    if not isinstance(descriptor, Mapping):
+        return None
+    filename = str(descriptor.get("filename") or "")
+    if not filename:
+        return None
+    path = _record_dir(profile_id) / filename
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
 def resolved_profile(record: Mapping[str, Any]) -> dict[str, Any]:
     """``original_profile`` with every correction's ``fields`` deep-merged on
     top, in order — "the profile as corrected today"."""
@@ -1904,6 +1938,7 @@ __all__ = [
     "extract_style_profile",
     "get_profile",
     "list_profiles",
+    "profile_logo_bytes",
     "profiles_dir",
     "public_profile",
     "registry_health_status",

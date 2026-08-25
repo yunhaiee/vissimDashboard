@@ -12,6 +12,14 @@ per-workspace store — see ``services/report/style_profile.py``'s module
 docstring for the extraction/storage doctrine. This file only adds the HTTP
 boundary over it.
 
+``POST /compose`` and ``POST /compose/artifacts`` (Track R unit R-5a) are the
+STYLED TYPESETTER: R-1's spine + R-2/R-3's figures + R-4's style, as one .docx
+and one SVG-originals zip. ``services/report/typeset.py`` owns that assembly,
+including the reason it reads none of ``services/report_exports.py``'s data
+functions (the stale-workbook GEH path R-2 excluded by name). The legacy
+``POST /build`` + ``GET /data/{block_type}`` surface above is untouched by it
+and stays supported.
+
 **Auth decision for ``POST /style-profiles`` (and ``PATCH .../{id}``), and the
 precedent it was measured against.** This backend does not apply one uniform
 auth rule to every upload route — two real, differently-decided precedents
@@ -61,6 +69,7 @@ from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversi
 from services.report import figures as report_figures
 from services.report import graphics as report_graphics
 from services.report import style_profile
+from services.report import typeset as report_typeset
 from services.report.spine import spine_payload
 from services.report_builder import build_report, geh_validation_csv_rows
 from services.report_exports import flow_geh_csv_rows, los_summary_csv_rows, travel_chart_specs
@@ -458,6 +467,172 @@ def get_style_profile(profile_id: str):
         return style_profile.get_profile(profile_id)
     except style_profile.StyleProfileRefused as exc:
         raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+
+
+# --- compose (R-5a: the styled typesetter) -----------------------------------
+
+
+class ComposeSelection(BaseModel):
+    """Which spine sections the report includes. ``sections=None`` means all.
+
+    ``extra="forbid"`` for the same reason every other request body on this
+    router sets it: a misspelled key (``section``, ``include``) must be a 422 at
+    the door, not a field that silently does nothing while the caller believes
+    it excluded something.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: list[str] | None = Field(
+        default=None,
+        description="Spine section ids to include. Omit/null for every section.",
+    )
+
+
+class ComposeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selection: ComposeSelection | None = None
+    style_profile_id: str | None = Field(
+        default=None, description="Stored style profile to typeset in. Omit for the Prism default."
+    )
+    language: str = Field(default="ko", description="ko (default) / en / ja")
+    title: str | None = None
+    filename: str | None = None
+    # The figure inputs, identical to GET /figures and GET /graphics'.
+    scenario_id: str | None = None
+    period: str | None = None
+    observation_set_id: str | None = None
+    observation_period: str | None = None
+    session_id: str | None = None
+    before_scenario_id: str | None = None
+    after_scenario_id: str | None = None
+
+
+def _compose_kwargs(body: ComposeRequest) -> dict[str, Any]:
+    """Resolve the request into ``services.report.typeset.compose_*`` kwargs.
+
+    Loading the profile is the only step that can fail before composition, and
+    it fails the way every other style-profile route fails: the store's own
+    named refusal (404 for an unknown id), never a bare exception.
+    """
+    profile: dict[str, Any] | None = None
+    logo_bytes: bytes | None = None
+    profile_name: str | None = None
+    if body.style_profile_id:
+        try:
+            record = style_profile.get_profile(body.style_profile_id)
+        except style_profile.StyleProfileRefused as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+        profile = record.get("resolved_profile") or record.get("original_profile") or {}
+        profile_name = record.get("name")
+        logo_bytes = style_profile.profile_logo_bytes(body.style_profile_id)
+
+    return {
+        "selection": body.selection.model_dump() if body.selection is not None else None,
+        "style_profile": profile,
+        "logo_bytes": logo_bytes,
+        "language": body.language,
+        "title": body.title,
+        "profile_id": body.style_profile_id,
+        "profile_name": profile_name,
+        "scenario_id": body.scenario_id,
+        "period": body.period,
+        "observation_set_id": body.observation_set_id,
+        "observation_period": body.observation_period,
+        "session_id": body.session_id,
+        "before_scenario_id": body.before_scenario_id,
+        "after_scenario_id": body.after_scenario_id,
+    }
+
+
+def _compose_filename(raw: str | None, *, default: str, suffix: str) -> str:
+    name = (raw or "").strip() or default
+    return name if name.lower().endswith(suffix) else f"{name}{suffix}"
+
+
+@router.post("/compose")
+def compose(body: ComposeRequest):
+    """Track R unit R-5a — the styled report, as one .docx.
+
+    R-1's section spine, filled with R-2's table figures and R-3's graphic
+    figures, typeset in the style R-4 extracted from a client's own report (or
+    the Prism default). ``services/report/typeset.py`` owns the assembly and
+    its module docstring owns the doctrine — most importantly that this path
+    reads NONE of ``services/report_exports.py``'s data functions, so one node
+    can never print two different GEH numbers.
+
+    Deliberately UNAUTHENTICATED. This file's module docstring states the rule
+    that reconciles this backend's two upload precedents: **auth tracks whether
+    the call durably creates a named, provenance-bearing record, not whether
+    the call is spelled "POST".** ``POST /api/observations/upload`` is
+    unauthenticated because it creates nothing durable; ``POST
+    /api/genesis/phase-diagrams/upload`` and ``POST /style-profiles`` above
+    take ``current_user`` because each writes a persisted, named record in the
+    same request. Composing a report writes NOTHING — no registry entry, no
+    file, no id — it reads existing records and returns bytes, which puts it
+    squarely on the observations side of that rule and in parity with
+    ``GET /figures`` / ``GET /graphics``, whose data this document is built
+    out of. (``main.WorkspaceScopeMiddleware``'s membership boundary still
+    applies, as it does to every route.)
+
+    Every refusal is named: an unknown section id, an empty selection, an
+    unsupported language and an unknown style-profile id each return their own
+    4xx code, and an evidence gap is never a 4xx at all — it is a named
+    absence typeset into the document.
+    """
+    try:
+        content, manifest = report_typeset.compose_report(**_compose_kwargs(body))
+    except report_typeset.TypesetRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+
+    filename = _compose_filename(body.filename, default="prism-report", suffix=".docx")
+    from fastapi import Response
+
+    return Response(
+        content=content,
+        media_type=_DOCX_MEDIA,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"report.docx\"; filename*=UTF-8''{quote(filename)}"
+            ),
+            # The manifest's headline counts, so a caller that only ever sees
+            # the download still learns the document carries named gaps.
+            "X-Prism-Report-Sections": str(len(manifest.get("sections") or [])),
+            "X-Prism-Report-Limitations": str(len(manifest.get("limitations") or [])),
+        },
+    )
+
+
+@router.post("/compose/artifacts")
+def compose_artifacts(body: ComposeRequest):
+    """The sibling artifact bundle: every graphic figure's SVG ORIGINAL plus
+    ``manifest.json`` (the design doc's "생성 → DOCX (+ 도판 원본 zip 아티팩트)").
+
+    The SVGs are the ones ``GET /graphics`` serves, untouched. They ship here
+    rather than inside the .docx because python-docx cannot embed SVG and no
+    rasteriser is installed — a measured limitation, named in the manifest and
+    in the document's own text, never a silent downgrade. Same body, same
+    auth (open) and same named refusals as ``POST /compose``.
+    """
+    try:
+        content, manifest = report_typeset.compose_artifact_zip(**_compose_kwargs(body))
+    except report_typeset.TypesetRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc
+
+    filename = _compose_filename(body.filename, default="prism-report-artifacts", suffix=".zip")
+    from fastapi import Response
+
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"report-artifacts.zip\"; filename*=UTF-8''{quote(filename)}"
+            ),
+            "X-Prism-Report-Artifacts": str(len(manifest.get("artifacts") or [])),
+        },
+    )
 
 
 @router.patch("/style-profiles/{profile_id}")
