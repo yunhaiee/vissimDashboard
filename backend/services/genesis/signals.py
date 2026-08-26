@@ -234,14 +234,14 @@ from __future__ import annotations
 
 import base64
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..dataimport.base import ImportIssue, IssueSeverity
 from ..dataimport.fixed_time import FixedTimePlan
-from . import schema
+from . import schema, tod_schedule
 from .draft import (
     REASON_NO_SIGNAL_PLAN,
     REASON_OUTSIDE_EMITTED_SUBSET,
@@ -423,6 +423,16 @@ class SignalSettings(BaseModel):
             "swap has them, and every run says so."
         ),
     )
+    emit_tod_schedule_element: bool = Field(
+        default=True,
+        description=(
+            "S7, SETTLED 2026-08-26 (unit #70). Whether a time-of-day controller writes "
+            "the <dailyProgLists> CONTENT as well as its several <prog> elements. Live "
+            "Vissim returned that content byte-identical through SaveNetAs, so True is "
+            "correct today; False emits the programs alone and remains the fallback for a "
+            "future Vissim that stops accepting it — see _append_daily_prog_lists."
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -504,11 +514,57 @@ class DetectorPlan:
 
 
 @dataclass(frozen=True)
+class AlternateProgram:
+    """One ADDITIONAL signal program on a controller that switches by time of day.
+
+    ``groups`` carries the same signal-group NUMBERS as the controller's primary
+    program with this plan's own green windows. That sameness is a property of
+    ``generate_node_signals`` rather than something checked here: group numbers
+    come from the draft's approach order, not from the plan. See the note in
+    :func:`_build_tod_programs` for the measurement, and
+    ``test_genesis_tod_generation`` for the pins that would catch it changing.
+    """
+
+    prog_id: int
+    program_key: str
+    cycle_s: float
+    groups: tuple[SignalGroupPlan, ...]
+
+
+@dataclass(frozen=True)
+class TodPrograms:
+    """A controller's time-of-day switching: the alternates and the switch points.
+
+    ``entries`` is ``(start_s, prog_id)`` in ascending clock order, covering the
+    primary program too — the primary is always ``prog_id`` 1, so a Vissim that
+    ignored the schedule entirely would run the plan the human CONFIRMED, which
+    is byte-for-byte today's network. See :func:`build_vissig_document`.
+    """
+
+    entries: tuple[tuple[int, int], ...]
+    alternates: tuple[AlternateProgram, ...]
+    day_plan_no: int | None = None
+    #: :attr:`SignalSettings.emit_tod_schedule_element`, resolved at generation
+    #: time and carried here because the emitter takes a ``NodeSignals`` and
+    #: never sees the settings. One source of truth for S7's toggle.
+    emit_schedule_element: bool = True
+
+    @property
+    def program_count(self) -> int:
+        return 1 + len(self.alternates)
+
+
+@dataclass(frozen=True)
 class NodeSignals:
     """Everything one signalised node contributes to the emission.
 
     ``groups`` is empty exactly when a ``REFUSE`` issue is present — the module
     produces no partial controller, the same contract ``FixedTimePlan`` keeps.
+
+    ``tod`` is ``None`` for every controller that did not opt in to time-of-day
+    switching, and a ``None`` here makes the emitted bytes identical to what
+    this module wrote before unit #70 existed — pinned by
+    ``test_genesis_tod_emission.py``.
     """
 
     controller_no: int
@@ -520,6 +576,7 @@ class NodeSignals:
     detectors: tuple[DetectorPlan, ...]
     issues: tuple[ImportIssue, ...]
     compliance: tuple[ComplianceItem, ...]
+    tod: TodPrograms | None = None
 
     @property
     def refusals(self) -> tuple[ImportIssue, ...]:
@@ -1224,6 +1281,7 @@ def generate_signals(
     assignments: Mapping[int, tuple[FixedTimePlan, Mapping[int, str]]],
     *,
     settings: SignalSettings | None = None,
+    tod_plans: Mapping[int, "TodNodePlans"] | None = None,
 ) -> DraftSignals:
     """Every signalised node of a draft, numbered so the whole file is valid.
 
@@ -1231,6 +1289,12 @@ def generate_signals(
     Nodes are processed in ascending node id, and head and detector numbers are
     threaded across them, because ``no`` is unique per CONTAINER in Vissim, not
     per controller. Deterministic given the inputs.
+
+    ``tod_plans`` (unit #70) is the opt-in: a node named there gets several
+    programs and a switching schedule, a node absent from it is built exactly as
+    before. A node whose alternates all fail keeps its single confirmed program
+    and says why — never a refusal, because a 시간대 that could not be read must
+    not cost a reviewer the network they confirmed.
     """
     nodes_by_id = {node.id: node for node in draft.nodes}
     results: list[NodeSignals] = []
@@ -1281,8 +1345,205 @@ def generate_signals(
         )
         head_no += len(result.heads)
         detector_no += len(result.detectors)
+        tod_request = (tod_plans or {}).get(node_id)
+        if tod_request is not None and result.ok and result.groups:
+            programs, tod_issues = _build_tod_programs(
+                draft, node, result, tod_request, settings=settings
+            )
+            result = replace(
+                result, tod=programs, issues=result.issues + tuple(tod_issues)
+            )
         results.append(result)
     return DraftSignals(nodes=tuple(results))
+
+
+@dataclass(frozen=True)
+class TodNodePlans:
+    """One node's opt-in to time-of-day switching, as ``side_inputs`` assembled it.
+
+    ``plans`` is keyed by the same ``program_key`` the schedule's entries name
+    (``"L{수준}-P{계획 ID}"``), and CONTAINS the primary — so a caller can look up
+    every entry without special-casing the confirmed plan.
+    """
+
+    schedule: "tod_schedule.TodSchedule"
+    primary_program_key: str
+    plans: Mapping[str, FixedTimePlan]
+    approach_phases: Mapping[int, str]
+
+
+def _build_tod_programs(
+    draft: DraftNetwork,
+    node: DraftNode,
+    primary: NodeSignals,
+    request: "TodNodePlans",
+    *,
+    settings: SignalSettings | None,
+) -> tuple[TodPrograms | None, list[ImportIssue]]:
+    """The alternates for one controller, and every plan that did not make it.
+
+    Each alternate is built by the SAME :func:`generate_node_signals` the primary
+    went through — no second code path can drift from the first — and is then
+    held to one extra rule the single-program case never needed: its signal
+    groups must be numbered exactly like the primary's. The declaration ``<sgs>``
+    at ``<sc>`` level is written once from the primary, so a ``<prog>`` naming an
+    ``sg_id`` outside it would reference a group that does not exist. Vissim
+    would not say so.
+
+    A plan that refuses, or whose groups differ, is dropped from the schedule BY
+    NAME. If that leaves fewer than two programs there is nothing to switch
+    between, and the controller keeps its single confirmed program.
+    """
+    issues: list[ImportIssue] = []
+    subject = f"node {node.id} ({node.name}) / controller {node.id}"
+
+    # WHY THERE IS NO SIGNAL-GROUP EQUALITY CHECK HERE.
+    #
+    # An earlier draft of this unit compared each alternate's
+    # ``(group.no, group.approach_link_id)`` sequence against the primary's and
+    # dropped any that differed, on the stated grounds that the controller
+    # declares its groups once so a divergent program would reference an
+    # undeclared ``sg_id``. That guard was UNREACHABLE and the claim was false
+    # comfort. Measured on ``generate_node_signals``: groups come from
+    # ``for index, approach in enumerate(approaches, start=1)`` where
+    # ``approaches = node_approaches(draft, node)``, and the loop body contains
+    # no ``continue`` and exactly one ``groups.append`` — so either every
+    # approach yields a group numbered by DRAFT position, or the call bails
+    # entirely. Both fields are functions of ``(draft, node)`` alone; with the
+    # approach→phase mapping shared across a node's plans, no two plans on one
+    # node can produce different group numbering.
+    #
+    # A guard advertised as protecting against a silent failure, which cannot
+    # fire, is worse than no guard: it invites the next reader to trust it. The
+    # invariant is instead PINNED where it is observable —
+    # ``test_genesis_tod_generation.test_group_numbering_is_a_function_of_the_draft_alone``
+    # fails if group numbering ever becomes plan-dependent, and
+    # ``test_every_program_references_only_declared_signal_groups`` asserts the
+    # property that actually matters on the emitted document.
+    prog_ids: dict[str, int] = {request.primary_program_key: 1}
+    alternates: list[AlternateProgram] = []
+    next_prog_id = 2
+
+    for program_key in request.schedule.program_keys:
+        if program_key == request.primary_program_key:
+            continue
+        plan = request.plans.get(program_key)
+        if plan is None:
+            issues.append(
+                _issue(
+                    IssueSeverity.WARN,
+                    "signals_tod_plan_not_built",
+                    f"{program_key} is named by the schedule but no plan was built for it, so "
+                    "it is dropped from the switching schedule.",
+                    messages={
+                        "ko": f"{program_key}이(가) 전환 일정에 있으나 계획이 만들어지지 "
+                        "않아 일정에서 제외합니다.",
+                        "en": f"{program_key} is scheduled but no plan was built for it; it is "
+                        "dropped from the schedule.",
+                        "ja": f"{program_key} は日程にありますが計画が構築されていないため"
+                        "除外します。",
+                    },
+                    subject=subject,
+                    context={"program_key": program_key},
+                )
+            )
+            continue
+
+        built = generate_node_signals(
+            draft,
+            node,
+            plan,
+            approach_phases=request.approach_phases,
+            settings=settings,
+        )
+        if not built.ok or not built.groups:
+            issues.append(
+                _issue(
+                    IssueSeverity.WARN,
+                    "signals_tod_alternate_refused",
+                    f"{program_key} refused ({sorted(built.issue_codes(IssueSeverity.REFUSE))}), "
+                    "so it is dropped from the switching schedule while the plans that built "
+                    "keep theirs.",
+                    messages={
+                        "ko": f"{program_key}이(가) 거부되어"
+                        f"({sorted(built.issue_codes(IssueSeverity.REFUSE))}) 전환 일정에서 "
+                        "제외합니다. 나머지 계획의 일정은 그대로 유지됩니다.",
+                        "en": f"{program_key} refused "
+                        f"({sorted(built.issue_codes(IssueSeverity.REFUSE))}); it is dropped "
+                        "from the schedule and the plans that built keep theirs.",
+                        "ja": f"{program_key} が拒否されたため"
+                        f"({sorted(built.issue_codes(IssueSeverity.REFUSE))})日程から除外します。",
+                    },
+                    subject=subject,
+                    context={
+                        "program_key": program_key,
+                        "refusals": sorted(built.issue_codes(IssueSeverity.REFUSE)),
+                    },
+                )
+            )
+            continue
+
+        prog_ids[program_key] = next_prog_id
+        alternates.append(
+            AlternateProgram(
+                prog_id=next_prog_id,
+                program_key=program_key,
+                cycle_s=built.cycle_s,
+                groups=built.groups,
+            )
+        )
+        next_prog_id += 1
+
+    kept = [
+        (entry.start_s, prog_ids[entry.program_key])
+        for entry in request.schedule.entries
+        if entry.program_key in prog_ids
+    ]
+    # MIDNIGHT IS STATED, never left to a reader's convention. A sheet that
+    # switches at 07:00 and 17:00 says nothing about 00:00–07:00; the plan
+    # actually running then is the LAST one to start the previous evening,
+    # because the schedule is a cycle. Writing that as an explicit ``from="0"``
+    # entry means the artifact carries the fact rather than depending on Vissim
+    # (or a later reader of this file) resolving "before the first switch" the
+    # same way this module does. It also gives the S7 probe something concrete
+    # to check: an implementation that silently ran no program until 07:00 shows
+    # up as a dropped or rewritten first entry.
+    if kept and kept[0][0] != 0:
+        kept.insert(0, (0, kept[-1][1]))
+    entries = tuple(kept)
+    if not alternates or len({prog_id for _, prog_id in entries}) < 2:
+        issues.append(
+            _issue(
+                IssueSeverity.WARN,
+                "signals_tod_not_configured",
+                "After the drops above, fewer than two programs remain, so there is nothing to "
+                "switch between; the controller keeps the single confirmed program and the "
+                "network is exactly what it would have been without the opt-in.",
+                messages={
+                    "ko": "위의 제외 후 남은 프로그램이 둘 미만이라 전환할 대상이 없습니다. "
+                    "확인된 단일 계획만 두며, 결과 네트워크는 옵트인하지 않았을 때와 "
+                    "같습니다.",
+                    "en": "Fewer than two programs remain, so there is nothing to switch "
+                    "between; the single confirmed program is kept.",
+                    "ja": "残るプログラムが 2 つ未満のため切替対象がなく、確認済みの単一計画"
+                    "のみを保持します。",
+                },
+                subject=subject,
+                context={"programs_built": 1 + len(alternates)},
+            )
+        )
+        return None, issues
+
+    resolved = settings or SignalSettings()
+    return (
+        TodPrograms(
+            entries=entries,
+            alternates=tuple(alternates),
+            day_plan_no=request.schedule.day_plan_no,
+            emit_schedule_element=resolved.emit_tod_schedule_element,
+        ),
+        issues,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1581,6 +1842,14 @@ def build_vissig_document(node_signals: NodeSignals) -> str:
 
     Deterministic: groups are written in ascending number and each group's
     commands in ascending ``begin``, which is the order LHT's own blob uses.
+
+    A controller carrying ``node_signals.tod`` (unit #70) writes its several
+    ``<prog>`` elements and a trailing ``<dailyProgLists>``; one without it
+    writes neither, and the bytes are unchanged from before that unit.
+    Whether the schedule element carries CONTENT is
+    :attr:`TodPrograms.emit_schedule_element` — see
+    :func:`_append_daily_prog_lists` for S7 (settled 2026-08-26 by live COM
+    roundtrip) and the probe that settled it and re-verifies it.
     """
     controller = str(node_signals.controller_no)
     lines = ['<?xml version="1.0" encoding="UTF-8"?>']
@@ -1614,13 +1883,45 @@ def build_vissig_document(node_signals: NodeSignals) -> str:
     # The PROGRAM: one per controller, id 1, matching SIGNAL_CONTROLLER_ATTRS'
     # progNo="1" so the parser's "the program Vissim RUNS is the one progNo
     # selects" lookup finds it.
+    #
+    # Unit #70 adds ALTERNATES after it, still leaving id 1 as the plan the
+    # human confirmed. That ordering is the safety property of the whole
+    # feature: progNo stays "1", so a Vissim that ignored the schedule below
+    # would run the confirmed plan and produce exactly today's network, rather
+    # than whichever plan happened to sort first.
     lines.append("  <progs>")
+    _append_prog(lines, prog_id=1, cycle_s=node_signals.cycle_s, groups=node_signals.groups)
+    for alternate in node_signals.tod.alternates if node_signals.tod else ():
+        _append_prog(
+            lines,
+            prog_id=alternate.prog_id,
+            cycle_s=alternate.cycle_s,
+            groups=alternate.groups,
+        )
+    lines.append("  </progs>")
+    lines.append("  <stages />")
+    lines.append("  <interstageProgs />")
+    lines.append("  <stageProgs />")
+    _append_daily_prog_lists(lines, node_signals.tod)
+    lines.append("</sc>")
+    return "\r\n".join(lines)
+
+
+def _append_prog(
+    lines: list[str], *, prog_id: int, cycle_s: float, groups: tuple[SignalGroupPlan, ...]
+) -> None:
+    """One ``<prog>`` and its per-group command list.
+
+    Lifted out of :func:`build_vissig_document` unchanged when unit #70 made the
+    controller able to carry several. Every byte it writes for ``prog_id=1`` is
+    what the single-program path wrote before.
+    """
     lines.append(
-        f'    <prog id="1" cycletime="{_ms(node_signals.cycle_s)}" switchpoint="0" '
+        f'    <prog id="{prog_id}" cycletime="{_ms(cycle_s)}" switchpoint="0" '
         'offset="0" intergreens="0" name="Signal program">'
     )
     lines.append("      <sgs>")
-    for group in node_signals.groups:
+    for group in groups:
         lines.append(
             f'        <sg sg_id="{group.no}" '
             f'signal_sequence="{schema.SIGNAL_SEQUENCE_VEHICLE}">'
@@ -1651,12 +1952,103 @@ def build_vissig_document(node_signals: NodeSignals) -> str:
         lines.append("        </sg>")
     lines.append("      </sgs>")
     lines.append("    </prog>")
-    lines.append("  </progs>")
-    lines.append("  <stages />")
-    lines.append("  <interstageProgs />")
-    lines.append("  <stageProgs />")
-    lines.append("</sc>")
-    return "\r\n".join(lines)
+
+
+def _append_daily_prog_lists(lines: list[str], tod: "TodPrograms | None") -> None:
+    """The time-of-day switching schedule — **S7, SETTLED 2026-08-26**.
+
+    Writes nothing at all when ``tod`` is None, which is what keeps a
+    single-program controller byte-identical to its pre-#70 self.
+
+    **S7 해소 — 가정은 옳았다.** This element's names and values were an
+    ASSUMPTION when it was written, because every Vissim-authored controller on
+    disk carries ``<dailyProgLists>`` EMPTY and nothing showed what belongs
+    inside it. A live COM roundtrip settled it, exactly as ASSUMPTION S6 was
+    settled by the C2 run: the network was opened in a real PTV Vissim and
+    written back out with ``SaveNetAs``, and the decoded controller came back
+    ``KEPT_VERBATIM`` — every element name, attribute name and value identical
+    to what is written below, ``differences=[]``, both programs intact
+    (ids 1 and 2, cycletime 78000 ms each), no controller lost or added, and no
+    ``.err`` file. The explicit ``from="0"`` midnight entry came back verbatim
+    too, so the wrap the schedule states is a fact Vissim keeps rather than a
+    convention this module hoped for.
+
+    Nothing below is guesswork any more. It is kept described because the probe
+    that settled it — ``backend/tools/genesis_tod_live_check.py`` — is also what
+    RE-VERIFIES it after a Vissim upgrade, and a reader who cannot see what was
+    once uncertain cannot judge what an upgrade might break.
+
+    WHAT WAS MEASURED OFFLINE FROM THE START:
+
+    * The container ``<dailyProgLists>`` EXISTS and is the LAST child of
+      ``<sc>``, after ``<stageProgs>``. Measured on the consultant network's
+      decoded ``intSupplyData``: all 6 of its Vissim-authored controllers carry
+      it in that position. (LHT, Vissim's shipped left-hand example, is an OLDER
+      save and carries no such element — which is why the container is written
+      only for a TOD controller and never for a plain one.)
+    * A controller may carry SEVERAL ``<prog>`` in one ``<progs>``: measured on
+      the same network (one controller carries 2), and settled LIVE by
+      ``services.signal_parser``'s own note — Urban Intersection Beijing.CN runs
+      ``progNo="2"`` of programs ``{1, 2}``, confirmed against the
+      SimBreakAt/SigState oracle. Multi-program is not an assumption.
+    * Vissig states every duration in MILLISECONDS
+      (:data:`schema.VISSIG_MS_PER_S`), so a clock time is written as
+      milliseconds from midnight.
+
+    WHAT WAS ASSUMED UNTIL 2026-08-26, and is now CONFIRMED BY VISSIM ITSELF —
+    every controller on disk carries the container EMPTY, so no file in this
+    repo ever showed a populated one:
+
+    * the child element name ``<dailyProgList>`` and its ``id``/``name``;
+    * the grandchild ``<dailyProg>`` and its ``from`` / ``prog_id`` attributes.
+
+    The FORM of each name followed a measured rule rather than invention, which
+    is why the guess landed: Vissig pluralises containers over their content
+    (``sgs``/``sg``, ``progs``/``prog``, ``cmds``/``cmd``,
+    ``stageProgs``/``stageProg``), and it names cross-references with an ``_id``
+    suffix (``<sg sg_id="...">`` inside a program). Vissim's own save returned
+    every one of them unchanged.
+
+    The first entry is always ``from="0"`` (see ``_build_tod_programs``): the
+    schedule states which program runs at midnight rather than leaving "before
+    the first switch" to a reader's convention. The roundtrip returned that
+    entry verbatim along with the rest.
+
+    THE PROBE THAT SETTLED IT, and that re-verifies it —
+    ``backend/tools/genesis_tod_live_check.py``, written at the same time as the
+    assumption as its named acceptance follow-up (the C2/S6 precedent, where
+    recording an assumption honestly turned closing it into a RUN rather than an
+    investigation). It opens a generated TOD network over live COM, ``SaveNetAs``,
+    decodes ``intSupplyData`` again and compares STRUCTURALLY — element names,
+    attribute names and values, entry by entry. Its verdicts remain meaningful
+    after a Vissim upgrade: KEPT_VERBATIM (what 2026-08-26 returned), REWRITTEN
+    (Vissim's own names would then be the answer, verbatim), DROPPED (set
+    ``emit_tod_schedule_element=False`` and drive the switching through the COM
+    API instead), REFUSED_OR_UNPARSEABLE, or CONTROLLER_MISSING.
+    """
+    if tod is None:
+        return
+    if not tod.emit_schedule_element:
+        # The escape hatch S7 no longer needs, kept because it is what a FUTURE
+        # Vissim rejecting the schedule would fall back to: an empty container
+        # is exactly what every Vissim-authored controller on disk carries.
+        lines.append("  <dailyProgLists />")
+        return
+    lines.append("  <dailyProgLists>")
+    lines.append(
+        "    <!-- S7 SETTLED 2026-08-26 (unit #70): live Vissim SaveNetAs returned "
+        "this element with every name and value identical to what was written "
+        "(KEPT_VERBATIM), both programs intact. Re-verify with "
+        "backend/tools/genesis_tod_live_check.py after a Vissim upgrade. -->"
+    )
+    lines.append('    <dailyProgList id="1" name="TOD">')
+    for start_s, prog_id in tod.entries:
+        lines.append(
+            f'      <dailyProg from="{start_s * schema.VISSIG_MS_PER_S}" '
+            f'prog_id="{prog_id}" />'
+        )
+    lines.append("    </dailyProgList>")
+    lines.append("  </dailyProgLists>")
 
 
 def build_int_supply_data(node_signals: NodeSignals) -> str:

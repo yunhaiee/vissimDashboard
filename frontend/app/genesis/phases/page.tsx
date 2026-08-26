@@ -246,6 +246,15 @@ function PhaseDiagramReviewPageContent() {
   const [approachRows, setApproachRows] = useState<ApproachRow[]>([]);
   const [planChoice, setPlanChoice] = useState<string>("");
   const [stagedToken, setStagedToken] = useState<string | null>(null);
+  // Unit #70 -- 시간대 자동 전환. Default OFF: a staging that does not tick this
+  // sends the body it sent before the option existed, and the server builds the
+  // same single-program document. Whether any sheet actually carries a readable
+  // 시간대 is not knowable here (the phrases live inside sheet_text, which this
+  // page never parses -- parsing them client-side would be the second
+  // implementation `stagePhaseDiagramSignalsInput`'s own doctrine forbids), so
+  // the checkbox does not pretend to predict. The server names every plan it
+  // could not schedule, in the generation's own findings.
+  const [todSwitching, setTodSwitching] = useState(false);
   // Unit #69 -- the "재생성" CTA's own result pair, separate
   // from the page's shared `error` banner: the click's outcome (started, or
   // refused) has to render WHERE the click happened -- inside the token
@@ -622,7 +631,7 @@ function PhaseDiagramReviewPageContent() {
     if (confirmedIds.length === 0) return;
     setBusy(true);
     try {
-      const staged = await stagePhaseDiagramSignalsInput(confirmedIds);
+      const staged = await stagePhaseDiagramSignalsInput(confirmedIds, undefined, todSwitching);
       setStagedToken(staged.token);
       setError(null);
       // A freshly staged token invalidates whatever the PREVIOUS token's
@@ -636,7 +645,7 @@ function PhaseDiagramReviewPageContent() {
     } finally {
       setBusy(false);
     }
-  }, [rows]);
+  }, [rows, todSwitching]);
 
   // Unit #69 -- the CTA itself. An OFFER whose click is the execution: a
   // regeneration is a job, not a signing act (unlike `confirmPhaseDiagram`
@@ -965,6 +974,24 @@ function PhaseDiagramReviewPageContent() {
             density="console"
             title={t("signals 입력 만들기", "Stage the signals input", "signals入力の作成")}
           >
+            {/* Unit #70. Above the button on purpose: it changes what the
+              * button stages, so it has to be readable before the click. */}
+            <label className="mb-2.5 flex items-start gap-2 text-[15px] text-slate-600">
+              <input
+                type="checkbox"
+                checked={todSwitching}
+                onChange={(event) => setTodSwitching(event.target.checked)}
+                disabled={busy}
+                className="mt-0.5"
+              />
+              <span>
+                {t(
+                  "시간대 자동 전환 포함 (시트의 시간대 문구로 신호 프로그램 전환)",
+                  "Include time-of-day switching (signal programs switched by the sheet's own clock times)",
+                  "時間帯自動切替を含める（シートの時間帯表記で信号プログラムを切替）",
+                )}
+              </span>
+            </label>
             <button
               type="button"
               onClick={stageSignals}

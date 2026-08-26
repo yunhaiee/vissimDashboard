@@ -593,10 +593,38 @@ def test_the_signals_document_builder_takes_confirmations_and_nothing_else():
     signature = inspect.signature(pd.build_signals_document)
     assert list(signature.parameters) == [
         "confirmed", "conversion_settings", "signal_settings",
+        # Unit #70. Admitted here deliberately, and the two assertions below are
+        # what keep admitting it from being a loophole: it may not change WHICH
+        # mappings are used, only what the document says about the plans of the
+        # ones already confirmed.
+        "time_of_day_switching",
     ]
     source = inspect.getsource(pd.build_signals_document)
     for banned in ("proposal", "skip", "allow_unconfirmed", "force"):
         assert banned not in source.split('"""')[2], f"{banned!r} must not be on the emit path"
+
+
+def test_no_builder_parameter_can_change_which_confirmations_are_used(render):
+    """The guard above admits parameters by name; this one holds every admitted
+    parameter to the rule the name list cannot express — the set of assignments,
+    and every attested field in them, is identical whatever the flags say."""
+    _png, record = render
+    confirmed = [
+        pd.ConfirmedMapping(attestation=attestation_for(record), sheet_text=sheet_text())
+    ]
+
+    plain = pd.build_signals_document(confirmed)
+    for kwargs in (
+        {"time_of_day_switching": True},
+        {"time_of_day_switching": False},
+        {"conversion_settings": {}, "time_of_day_switching": True},
+    ):
+        other = pd.build_signals_document(confirmed, **kwargs)
+        assert len(other["assignments"]) == len(plain["assignments"])
+        for left, right in zip(plain["assignments"], other["assignments"]):
+            assert left["node_id"] == right["node_id"]
+            assert left["plan"] == right["plan"]
+            assert left["approach_phases"] == right["approach_phases"]
 
 
 def test_a_confirmed_mapping_cannot_be_built_without_an_attestation(render):

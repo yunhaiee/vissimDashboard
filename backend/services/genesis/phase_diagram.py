@@ -1454,6 +1454,7 @@ def build_signals_document(
     *,
     conversion_settings: dict[str, Any] | None = None,
     signal_settings: dict[str, Any] | None = None,
+    time_of_day_switching: bool = False,
 ) -> dict[str, Any]:
     """Confirmed mappings → exactly the ``genesis.signals.v1`` document.
 
@@ -1466,6 +1467,15 @@ def build_signals_document(
     Note the signature. There is no ``proposals=`` parameter, no
     ``allow_unconfirmed`` and no ``skip_confirmation``; adding one would be the
     edit this docstring exists to make visible in review.
+
+    ``time_of_day_switching`` (unit #70) is a STAGING choice, and the distinction
+    is the reason it lives here rather than on the attestation. What a human 확인
+    signs is unchanged by it: the attestation still binds one sheet to one node,
+    declares one amber and names one (수준, 계획 ID), and this flag cannot make a
+    past confirmation mean something it did not. It says only "when you build a
+    document out of these confirmations, let each controller carry the sibling
+    plans its own sheet schedules". Default False, and False produces a document
+    byte-for-byte identical to the one this function produced before #70.
     """
     if not confirmed:
         raise PhaseDiagramRefused(
@@ -1487,9 +1497,17 @@ def build_signals_document(
             ],
         )
 
+    assignments = [entry.to_assignment() for entry in confirmed]
+    if time_of_day_switching:
+        for assignment in assignments:
+            # No ``additional_plans``: every confirmation that can carry
+            # siblings carries them inside its own sheet, and the typed route
+            # has none to offer here — side_inputs names that absence rather
+            # than this function inventing plans a reviewer never typed.
+            assignment["tod"] = {"enabled": True}
     document: dict[str, Any] = {
         "kind": SIGNALS_DOC_KIND,
-        "assignments": [entry.to_assignment() for entry in confirmed],
+        "assignments": assignments,
     }
     if conversion_settings is not None:
         document["conversion_settings"] = conversion_settings

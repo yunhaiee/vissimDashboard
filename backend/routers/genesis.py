@@ -2299,6 +2299,15 @@ class BuildSignalsInputRequest(BaseModel):
         min_length=1, description="Confirmed reviews. An unconfirmed one is a 409, never a skip."
     )
     filename: str | None = Field(default=None, description="Name for the staged document.")
+    time_of_day_switching: bool = Field(
+        default=False,
+        description=(
+            "Unit #70. Let each controller carry the sibling plans its own sheet schedules, "
+            "switched by clock. Off by default, and off produces exactly the document this "
+            "door produced before. It changes only how the document is STAGED — a human's "
+            "확인 signs the same thing either way."
+        ),
+    )
 
 
 @router.get("/phase-diagrams")
@@ -2875,7 +2884,9 @@ def build_phase_diagram_signals_input(
         except phase_diagram.PhaseDiagramRefused as exc:
             raise _phase_diagram_refusal(exc) from exc
     try:
-        document = phase_diagram.build_signals_document(confirmed)
+        document = phase_diagram.build_signals_document(
+            confirmed, time_of_day_switching=payload.time_of_day_switching
+        )
     except phase_diagram.PhaseDiagramRefused as exc:
         raise _phase_diagram_refusal(exc) from exc
 

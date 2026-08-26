@@ -7156,3 +7156,15 @@ wrong-kind 토큰 무테스트, auto-navigate 부재 무핀.
 이미 side input을 가지면 **클릭 전에** 그 사실을 공개한다(사후 409가 아니라).
 계보 협착은 kind 값으로 근본 수정.
 
+## 2026-08-26 — 가정 S7 해소: TOD 스케줄 요소, Vissim이 축자 수락 (#70)
+
+오케스트레이터 라이브 COM 왕복(크로스로드 초안 + 2-프로그램 TOD, 명시적 from="0"
+자정 랩 엔트리 포함): LoadNet 수락, .err 없음, SaveNetAs 후 `<dailyProgList id="1"
+name="TOD"><dailyProg from=... prog_id=...>`가 **요소명·속성명·값 전부 동일**하게
+귀환(KEPT_VERBATIM, differences=[]), 프로그램 2개 각자 주기(78000ms)와 함께 생존.
+가정했던 이름들이 Vissim 자신의 이름이었다. 판정 계기는 반박 2라운드에서 이름
+변경·탈락·부분 손실을 전부 REWRITTEN으로 분류함이 실증된 강화 분류기. S7-c census는
+사장된 COM 메서드명 2건(open_net·AttributesHelp)이 발견돼 수정 + AST 자기-검사
+가드 신설. 정착 기록은 signals.py·발행 XML 마커·프로브 docstring·layers summary
+(`schedule_element_verified: true` + 일자·계기 증거)로 전환.
+

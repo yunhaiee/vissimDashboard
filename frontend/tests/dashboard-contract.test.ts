@@ -4404,7 +4404,11 @@ contractTest("the 현시도 review screen keeps confirmation the only road to si
   // inert" would become a client-side convention instead of a server refusal.
   pin.doesNotMatch(page, /kind:\s*"genesis\.signals/, "expected the page never to assemble a signals document itself");
   pin.doesNotMatch(page, /assignments:\s*\[/, "expected the page never to build the assignments array a signals document is made of");
-  pin.match(page, /stagePhaseDiagramSignalsInput\(confirmedIds\)/, "expected staging to send review ids to the server, not a document");
+  pin.match(
+    page,
+    /stagePhaseDiagramSignalsInput\(confirmedIds, undefined, todSwitching\)/,
+    "expected staging to send review ids (and unit #70's opt-in) to the server, not a document",
+  );
   pin.match(
     page,
     /rows\.filter\(\(row\) => row\.confirmed\)/,
@@ -4421,6 +4425,66 @@ contractTest("the 현시도 review screen keeps confirmation the only road to si
   pin.match(page, /image_sha256: review\.render\.image_sha256/, "expected the confirmation to be bound to the image the human looked at");
   pin.match(page, /source_sha256: review\.render\.source_sha256/, "expected the confirmation to be bound to the sheet file it was made against");
   pin.match(page, /changes\.push\(/, "expected what the human changed against the proposal to be recorded");
+});
+
+contractTest("unit #70: the 시간대 자동 전환 opt-in is off by default and only sent when ticked", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+
+  // DEFAULT OFF. The whole additivity claim of unit #70 is that a caller who
+  // does not opt in gets the network they got before it existed; a flipped
+  // default would silently turn switching on for every staging.
+  pin.match(
+    page,
+    /const \[todSwitching, setTodSwitching\] = useState\(false\);/,
+    "expected the time-of-day opt-in to start OFF",
+  );
+  pin.match(
+    page,
+    /checked=\{todSwitching\}/,
+    "expected the checkbox to be controlled by that state rather than uncontrolled",
+  );
+  pin.match(
+    page,
+    /onChange=\{\(event\) => setTodSwitching\(event\.target\.checked\)\}/,
+    "expected the checkbox to write back the browser's own checked value",
+  );
+
+  // SENT ONLY WHEN TICKED. The key is omitted rather than sent as false, so an
+  // un-ticked staging posts the byte-identical body it posted before #70.
+  const stage = sliceBetween(api, "export async function stagePhaseDiagramSignalsInput", "if (!r.ok) throw await genesisError(r);");
+  pin.match(
+    stage,
+    /if \(timeOfDaySwitching\) payload\.time_of_day_switching = true;/,
+    "expected the flag to be added only when the caller asked for it",
+  );
+  pin.doesNotMatch(
+    stage,
+    /time_of_day_switching: (false|timeOfDaySwitching)/,
+    "expected the flag never to be sent as a plain false -- omission is what keeps the old body byte-identical",
+  );
+
+  // The page still assembles no document, opt-in or not.
+  pin.doesNotMatch(page, /time_of_day_switching/, "expected the wire spelling to live in the api helper, not the page");
+});
+
+contractTest("unit #70: the 시간대 opt-in label is a ko/en/ja triple", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  pin.match(
+    page,
+    /"시간대 자동 전환 포함 \(시트의 시간대 문구로 신호 프로그램 전환\)"/,
+    "expected the ko label",
+  );
+  pin.match(
+    page,
+    /"Include time-of-day switching \(signal programs switched by the sheet's own clock times\)"/,
+    "expected the en label",
+  );
+  pin.match(
+    page,
+    /"時間帯自動切替を含める（シートの時間帯表記で信号プログラムを切替）"/,
+    "expected the ja label",
+  );
 });
 
 contractTest(

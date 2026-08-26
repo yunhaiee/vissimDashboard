@@ -5993,15 +5993,28 @@ export async function createBlankPhaseDiagram(
 
 /** Confirmed reviews to a staged `signals` side input, ready for
  * `startGenesisJob`. The document is assembled on the server; an unconfirmed or
- * stale review is a 409 naming it, never a silent skip. */
+ * stale review is a 409 naming it, never a silent skip.
+ *
+ * `timeOfDaySwitching` (unit #70) asks the server to let each controller carry
+ * the sibling plans its own sheet schedules. The key is OMITTED unless it is
+ * true, so a caller who does not opt in sends the byte-identical body this
+ * function sent before the option existed — the same additivity the server
+ * side keeps. It changes only how the document is staged; a human's 확인 signs
+ * the same thing either way. */
 export async function stagePhaseDiagramSignalsInput(
   reviewIds: string[],
   filename?: string,
+  timeOfDaySwitching?: boolean,
 ): Promise<{ token: string; kind: string; summary: Record<string, unknown> }> {
+  const payload: Record<string, unknown> = {
+    review_ids: reviewIds,
+    filename: filename ?? null,
+  };
+  if (timeOfDaySwitching) payload.time_of_day_switching = true;
   const r = await apiMutationFetch("/api/genesis/phase-diagrams/signals-input", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ review_ids: reviewIds, filename: filename ?? null }),
+    body: JSON.stringify(payload),
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();

@@ -117,7 +117,8 @@ from services.dataimport.fixed_time import FixedTimePlan
 from .demand import DemandSettings, DraftDemand, generate_demand
 from .draft import DraftNetwork
 from .fleet import DraftFleet, FleetSettings, build_fleet, observed_vehicle_classes
-from .signals import DraftSignals, SignalSettings, generate_signals
+from . import tod_schedule
+from .signals import DraftSignals, SignalSettings, TodNodePlans, generate_signals
 
 #: A demand layer that would emit while its fleet would not. See the module
 #: docstring: the compositions' ``vehType`` references would dangle, and Vissim
@@ -286,8 +287,67 @@ class ComposedLayers:
                 "refusals": self.signals.issue_codes(IssueSeverity.REFUSE),
                 "warnings": self.signals.issue_codes(IssueSeverity.WARN),
             }
+            # Unit #70. Written only when at least one controller actually
+            # switches, so a network without time-of-day carries no new key and
+            # its summary is unchanged.
+            #
+            # ``schedule_element_verified`` was False while S7 was an open
+            # assumption, on the rule that the summary must not let a reader
+            # believe Vissim had accepted the schedule when nothing had yet
+            # asked it to. On 2026-08-26 something did: a live SaveNetAs
+            # roundtrip returned the element byte-identical (KEPT_VERBATIM),
+            # both programs intact. The flag is now True and carries the
+            # evidence beside it, because a bare boolean claim is the thing it
+            # was False to avoid.
+            switching = [node for node in emitting if node.tod is not None]
+            if switching:
+                out["signals"]["tod"] = {
+                    "controllers": len(switching),
+                    "nodes": [node.node_id for node in switching],
+                    "programs": {
+                        str(node.node_id): node.tod.program_count for node in switching
+                    },
+                    "switch_points": {
+                        str(node.node_id): [
+                            tod_schedule.seconds_to_clock(start_s)
+                            for start_s, _ in node.tod.entries
+                        ]
+                        for node in switching
+                    },
+                    "schedule_element_emitted": all(
+                        node.tod.emit_schedule_element for node in switching
+                    ),
+                    "schedule_element_verified": True,
+                    "schedule_element_verified_on": "2026-08-26",
+                    "schedule_element_verified_by": (
+                        "live Vissim SaveNetAs roundtrip: schedule returned identical "
+                        "(KEPT_VERBATIM), both programs intact"
+                    ),
+                    "assumption": "S7",
+                }
         out["compose_refusals"] = [
             i.code for i in self.issues if i.severity is IssueSeverity.REFUSE
+        ]
+        # Unit #70. WARNINGS AUTHORED DURING COMPOSITION, WITH THEIR TEXT.
+        #
+        # The per-layer blocks above carry ``warnings`` as CODES, which is
+        # enough for a layer whose absences a reader can also see in its counts.
+        # Composition-level warnings had no channel at all: ``compose_refusals``
+        # was the only compose-level key, so a finding minted in
+        # ``side_inputs.build_signal_assignments`` — every ``tod_*`` code among
+        # them — reached ``layers.json`` and stopped there. A reviewer who ticked
+        # 시간대 자동 전환 and got no switching saw a job summary byte-identical to
+        # one where they had never asked, which is the failure this whole unit
+        # is supposed to make impossible.
+        #
+        # Text, not codes, because these are the findings whose whole content is
+        # WHY — "TOD2 names a plan but no clock time" is the answer; the code is
+        # only its filing label. ko to match ``_compose_side_layers``'s
+        # ``refusal_reasons("ko")``; every language is in ``layers.json``.
+        out["compose_warnings"] = [
+            {"code": i.code, "message": i.messages.get("ko") or i.message}
+            for i in self.issues
+            if i.severity is IssueSeverity.WARN
         ]
         return out
 
@@ -420,6 +480,7 @@ def compose_layers(
     fleet_settings: FleetSettings | None = None,
     signal_assignments: Mapping[int, tuple[FixedTimePlan, Mapping[int, str]]] | None = None,
     signal_settings: SignalSettings | None = None,
+    signal_tod_plans: Mapping[int, TodNodePlans] | None = None,
     job_id: str | None = None,
 ) -> ComposedLayers:
     """Build a draft's optional layers in the order that was proved to load.
@@ -514,7 +575,12 @@ def compose_layers(
     # -- 3. signals ---------------------------------------------------------
     if signal_assignments is not None:
         requested.append("signals")
-        signals = generate_signals(draft, signal_assignments, settings=signal_settings)
+        signals = generate_signals(
+            draft,
+            signal_assignments,
+            settings=signal_settings,
+            tod_plans=signal_tod_plans,
+        )
 
     # -- 4. a layer that was asked for and produced nothing ------------------
     for name, layer in (("fleet", fleet), ("demand", demand), ("signals", signals)):
