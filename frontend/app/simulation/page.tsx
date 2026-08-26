@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useLanguage } from "@/components/LanguageProvider";
+import { failed, ok, resolve, type Loaded } from "@/lib/asyncResource";
 import MapViewer, {
   type Incident as MapIncident,
   type LinkFeature,
@@ -62,11 +63,30 @@ type SpeedLimitRow = {
 
 const makeRowId = () => Math.random().toString(36).slice(2, 10);
 
+// #72: an INPX-only dataset has a structurally empty scenario list (no
+// project DB), which is a valid, common state -- not an error. Distinguishing
+// it from "the fetch itself failed" needs a resource that can tell "resolved
+// to nothing" apart from "never resolved", which a plain `useState([])`
+// cannot (both start and end at `[]`). Same `Loaded<T>` idiom app/calibration/
+// page.tsx already uses for its own scenario list (#65); see lib/asyncResource.ts.
+const SCENARIOS_KEY = "scenarios";
+const NO_SCENARIOS: ScenarioMeta[] = [];
+
 export default function SimulationPage() {
   const { t } = useLanguage();
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [dataset, setDataset] = useState<ActiveDataset | null>(null);
-  const [scenarios, setScenarios] = useState<ScenarioMeta[]>([]);
+  const [scenariosLoaded, setScenariosLoaded] = useState<Loaded<ScenarioMeta[]> | null>(null);
+  const {
+    data: scenariosData,
+    error: scenariosError,
+    loading: scenariosLoading,
+  } = resolve(scenariosLoaded, SCENARIOS_KEY);
+  const scenarios = scenariosData ?? NO_SCENARIOS;
+  // The one fact the picker needs: the fetch RESOLVED, it did not FAIL, and
+  // what came back was empty. Loading and error are both false here on
+  // purpose -- neither is evidence of "zero scenarios in this dataset".
+  const scenariosEmpty = !scenariosLoading && !scenariosError && scenarios.length === 0;
   const [signals, setSignals] = useState<SignalNodeInfo[]>([]);
   const [capabilities, setCapabilities] = useState<SimulationCapabilities | null>(null);
   const [jobs, setJobs] = useState<SimulationJob[]>([]);
@@ -105,8 +125,10 @@ export default function SimulationPage() {
     }
     if (scenarioResult.status === "fulfilled") {
       const items = scenarioResult.value;
-      setScenarios(items);
+      setScenariosLoaded(ok(SCENARIOS_KEY, items));
       setSelectedScenarioId((current) => (items.some((scenario) => scenario.id === current) ? current : items[0]?.id ?? ""));
+    } else {
+      setScenariosLoaded(failed(SCENARIOS_KEY, scenarioResult.reason));
     }
     if (signalResult.status === "fulfilled") {
       setSignals(signalResult.value);
@@ -174,7 +196,12 @@ export default function SimulationPage() {
   const running = activeStatus === "running";
   const canPrepareSimulation = capabilities?.can_prepare_simulation ?? capabilities?.can_run ?? false;
   const canUploadZip = canPrepareSimulation || isLocalApiBase(apiBase);
-  const canRunSimulation = datasetReady && runtimeReady && scenarios.length > 0 && !running;
+  // #72: a scenario is an optional override, not a requirement -- the default
+  // run (no scenario_id) never reads pdb/Scenarios at all (#68's verified
+  // trace; see the comment on `startSimulation`'s call below). An INPX-only
+  // dataset's scenario list is structurally empty (no project DB) and must
+  // not permanently lock the run door.
+  const canRunSimulation = datasetReady && runtimeReady && !running;
 
   const queuedCount = speedLimits.length + vehicleInputs.length + signalTimings.length;
   const latestJobs = useMemo(() => jobs.slice(0, 5), [jobs]);
@@ -384,7 +411,7 @@ export default function SimulationPage() {
     if (!canRunSimulation) {
       setActiveStatus("idle");
       setActiveProgress(0);
-      setError(buildRunDisabledMessage({ capabilities, datasetReady, scenarios, t }));
+      setError(buildRunDisabledMessage({ capabilities, datasetReady, t }));
       return;
     }
 
@@ -394,6 +421,10 @@ export default function SimulationPage() {
     try {
       const job = await startSimulation({
         name: runName.trim() || "Simulation run",
+        // #72: `|| undefined` (never `""`) so JSON.stringify OMITS the key
+        // entirely when nothing is selected -- SimParams.scenario_id is
+        // `str | None = None` (routers/simulations.py:63) and the default
+        // run reads it as "no scenario", never as an empty string.
         scenario_id: selectedScenarioId || undefined,
         sim_duration: duration,
         random_seed: seed,
@@ -456,6 +487,9 @@ export default function SimulationPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* #72: sibling of #67's calibration-page fix -- this label wraps
+                to two lines under the same conditions; same whitespace-nowrap
+                treatment. */}
             <StatusPill label={t("데이터", "Dataset")} value={dataset?.filename ?? "-"} tone={hasUploadedDataset ? "success" : "neutral"} />
             <StatusPill label={t("실행", "Runtime")} value={runtimeReady ? "Ready" : "Blocked"} tone={runtimeReady ? "success" : "warning"} />
             <StatusPill label={t("대기 조건", "Queued")} value={`${queuedCount}`} tone={queuedCount > 0 ? "info" : "neutral"} />
@@ -484,6 +518,19 @@ export default function SimulationPage() {
         />
         <RunPanel
           scenarios={scenarios}
+          emptyScenarioMessage={
+            scenariosLoading
+              ? t("시나리오 목록 불러오는 중...", "Loading scenario list...", "シナリオ一覧を読み込み中...")
+              : scenariosError
+                ? t("시나리오 목록을 불러오지 못했습니다", "Couldn't load the scenario list", "シナリオ一覧を読み込めませんでした")
+                : scenariosEmpty
+                  ? t(
+                      "시나리오 없음 — 기본 네트워크로 실행합니다",
+                      "No scenarios — runs against the default network",
+                      "シナリオなし — 既定のネットワークで実行します",
+                    )
+                  : ""
+          }
           selectedScenarioId={selectedScenarioId}
           onScenarioChange={setSelectedScenarioId}
           runName={runName}
@@ -497,7 +544,7 @@ export default function SimulationPage() {
           activeJobId={activeJobId}
           activeStatus={activeStatus}
           activeProgress={activeProgress}
-          disabledMessage={buildRunDisabledMessage({ capabilities, datasetReady, scenarios, t })}
+          disabledMessage={buildRunDisabledMessage({ capabilities, datasetReady, t })}
           onRun={() => void handleRun()}
           onClearDraft={clearDraft}
         />
@@ -818,6 +865,7 @@ function SelectionInspector({
 
 function RunPanel({
   scenarios,
+  emptyScenarioMessage,
   selectedScenarioId,
   onScenarioChange,
   runName,
@@ -836,6 +884,10 @@ function RunPanel({
   onClearDraft,
 }: {
   scenarios: ScenarioMeta[];
+  // #72: shown as the picker's own placeholder option when the list is
+  // empty -- distinct text for "the fetch failed" vs "this dataset genuinely
+  // has none", never a dead end (a scenario is optional; the run still works).
+  emptyScenarioMessage: string;
   selectedScenarioId: string;
   onScenarioChange: (value: string) => void;
   runName: string;
@@ -875,7 +927,7 @@ function RunPanel({
           <span className="text-[14px] font-semibold text-slate-600">{t("기준 시나리오", "Base Scenario")}</span>
           <select className="ui-select mt-1" value={selectedScenarioId} onChange={(event) => onScenarioChange(event.target.value)}>
             {scenarios.length === 0 ? (
-              <option value="">{t("시나리오 없음", "No scenarios")}</option>
+              <option value="">{emptyScenarioMessage}</option>
             ) : (
               scenarios.map((scenario) => (
                 <option key={scenario.id} value={scenario.id}>
@@ -1076,7 +1128,7 @@ function StatusPill({ label, value, tone = "neutral" }: { label: string; value: 
           : "border-slate-200 bg-surface text-slate-600";
   return (
     <span className={`inline-flex max-w-[260px] items-center gap-2 rounded-full border px-3 py-1 text-[14px] shadow-sm ${toneClass}`}>
-      <span className="font-semibold">{label}</span>
+      <span className="whitespace-nowrap font-semibold">{label}</span>
       <span className="truncate">{value}</span>
     </span>
   );
@@ -1234,12 +1286,10 @@ function normalizeProgress(value: number | undefined): number {
 function buildRunDisabledMessage({
   capabilities,
   datasetReady,
-  scenarios,
   t,
 }: {
   capabilities: SimulationCapabilities | null;
   datasetReady: boolean;
-  scenarios: ScenarioMeta[];
   t: (ko: string, en: string, ja?: string) => string;
 }) {
   // Unit #68: an uploaded inpx opens this door exactly like an uploaded zip
@@ -1252,9 +1302,10 @@ function buildRunDisabledMessage({
       "Upload a VISSIM dataset (an INPX file or a project ZIP) before running.",
     );
   }
-  if (scenarios.length === 0) {
-    return t("실행 가능한 시나리오 목록을 불러오지 못했습니다.", "No runnable scenarios are loaded.");
-  }
+  // #72: an empty (or unreadable) scenario list no longer disables the run --
+  // scenario_id is optional and the default run never reads pdb/Scenarios.
+  // The picker itself (RunPanel's `emptyScenarioMessage`) names that state
+  // honestly; this function only covers reasons the RUN itself is blocked.
   if (!capabilities?.can_run) {
     return t("실행 환경이 준비되지 않았습니다. VISSIM과 실행 서버 상태를 확인하세요.", "The runtime is not ready. Check VISSIM and the execution server.");
   }

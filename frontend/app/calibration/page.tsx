@@ -714,23 +714,29 @@ export default function CalibrationWorkspacePage() {
             )}
           </div>
         ) : scenariosEmpty ? (
-          // Unit #67 (2026-08-26 DECISIONS): a filled CTA, not the neutral
-          // outline the "choose a run" and "do this now" branches below keep
-          // -- this is the one branch where clicking is the actual fix for
-          // the absence just named, so it wears the same
-          // bg-accent/hover:bg-accent-deep/text-white idiom ConfirmDialog's
-          // primary action and the floating assistant's launcher use. A
-          // reader should not have to guess that a sentence is a button.
-          <Link
-            href="/simulation"
-            className="flex w-full items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-white shadow-sm transition hover:bg-accent-deep"
-          >
-            {t(
-              "이 데이터셋에는 완료된 실행이 없습니다 — ③ 시뮬레이션에서 먼저 실행하세요",
-              "No completed runs in this dataset — run one on ③ Simulation first",
-              "このデータセットには完了した実行がありません — まず③シミュレーションで実行してください",
-            )}
-          </Link>
+          // Unit #72 (user correction on #67, 2026-08-27): "i didnt mean you
+          // to make the whole sentence as cta. just put cta button at the end
+          // of sentence." -- the SENTENCE is plain banner text again (not a
+          // clickable surface); only the button at its end is the fix action.
+          // The button alone keeps #67's filled bg-accent/hover:bg-accent-
+          // deep/text-white idiom ConfirmDialog's primary action and the
+          // floating assistant's launcher use, so it still reads as a button
+          // on sight -- it just no longer swallows the whole sentence to do it.
+          <div className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-surface px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-slate-700">
+            <span>
+              {t(
+                "이 데이터셋에는 완료된 실행이 없습니다 —",
+                "No completed runs in this dataset —",
+                "このデータセットには完了した実行がありません —",
+              )}
+            </span>
+            <Link
+              href="/simulation"
+              className="shrink-0 rounded-lg bg-accent px-3 py-2 text-[14px] font-semibold text-white shadow-sm transition hover:bg-accent-deep"
+            >
+              {t("시뮬레이션으로", "Go to Simulation", "シミュレーションへ")}
+            </Link>
+          </div>
         ) : (
           <button
             type="button"

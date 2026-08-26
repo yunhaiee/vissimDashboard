@@ -629,6 +629,51 @@ contractTest("#68: an uploaded bare-inpx dataset opens the simulation run door l
   );
 });
 
+// Unit #72 (2026-08-27): a scenario is an optional override, never a
+// requirement to run -- the default run (no scenario_id) never reads
+// pdb/Scenarios at all, so an INPX-only dataset's structurally-empty
+// scenario list must not permanently lock the run door (#68's own trace).
+// Bundled with #72's other three measured fixes on the same page/layout.
+contractTest("unit #72: the simulation run gate is scenario-optional, and the fix's other three corrections hold", (pin) => {
+  const page = read("app/simulation/page.tsx");
+
+  // THE CORE FIX, anchored VERBATIM: a mutation that reintroduces
+  // `scenarios.length > 0` (or reinserts `scenarios` in ANY form) into this
+  // exact declaration must fail here directly, not by inference from some
+  // other pin -- this is the orchestrator's own measured gap (2026-08-27):
+  // the unit's core fix had no live pin at all before this one.
+  pin.match(
+    page,
+    /const canRunSimulation = datasetReady && runtimeReady && !running;/,
+    "expected the run gate to require ONLY dataset+runtime+not-running, verbatim -- no scenarios term",
+  );
+  pin.doesNotMatch(
+    page,
+    /const canRunSimulation = [^;]*scenarios[^;]*;/,
+    "expected the run gate declaration to contain no `scenarios` term at all -- an empty or unreadable scenario list must never block the run",
+  );
+
+  // THE #67-SIBLING FIX: the "데이터" StatusPill label wraps to two lines
+  // under the same conditions #67 fixed on the calibration page -- same
+  // whitespace-nowrap treatment, same element (label span, not the value span).
+  pin.match(
+    page,
+    /<span className="whitespace-nowrap font-semibold">\{label\}<\/span>/,
+    "expected the StatusPill label to wear whitespace-nowrap, mirroring #67's calibration-page fix",
+  );
+
+  // THE HYDRATION FIX: browser extensions (Grammarly, measured live
+  // 2026-08-27) inject data-gr-* attributes into <body> pre-hydration, which
+  // otherwise trips a false-positive mismatch warning on every page. <html>
+  // already carries this; <body> now does too.
+  const layout = read("app/layout.tsx");
+  pin.match(
+    layout,
+    /<body className="app-shell antialiased" suppressHydrationWarning>/,
+    "expected <body> to suppress the hydration warning browser extensions trigger, matching <html>'s own treatment",
+  );
+});
+
 // Unit #18 -- variant B of the approved flow mockup: the pipeline IS the
 // navigation. The pins below describe the SHAPE of that claim (which page sits
 // under which stage, and that the stepper cannot know anything the URL does not
@@ -17675,24 +17720,74 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
   const zeroBranch = banner.slice(zeroBranchStart, zeroBranchEnd);
   const neutralBranch = banner.slice(zeroBranchEnd);
 
-  // (a) THE ZERO-STATE SENTENCE -- states the absence AND where to fix it --
-  // byte-exact in all three languages, and present ONLY in the branch that
-  // fires once the fetch resolved to an empty list. Loading, a failed fetch,
-  // AND a real non-empty list must never carry it: none of those is evidence
-  // that the dataset has zero runs.
+  // (a) THE ZERO-STATE SENTENCE -- states the absence, byte-exact in all
+  // three languages, present ONLY in the branch that fires once the fetch
+  // resolved to an empty list. Loading, a failed fetch, AND a real non-empty
+  // list must never carry it: none of those is evidence that the dataset has
+  // zero runs. RE-PINNED, unit #72 (user correction on #67, 2026-08-27):
+  // "i didnt mean you to make the whole sentence as cta. just put cta button
+  // at the end of sentence." The sentence itself no longer names ③
+  // Simulation as the fix -- that moved into the button's own short label,
+  // pinned separately below -- so it now ends at the em dash.
   pin.match(
     zeroBranch,
     tripleArgs(
-      "이 데이터셋에는 완료된 실행이 없습니다 — ③ 시뮬레이션에서 먼저 실행하세요",
-      "No completed runs in this dataset — run one on ③ Simulation first",
-      "このデータセットには完了した実行がありません — まず③シミュレーションで実行してください",
+      "이 데이터셋에는 완료된 실행이 없습니다 —",
+      "No completed runs in this dataset —",
+      "このデータセットには完了した実行がありません —",
     ),
-    "expected the zero-runs branch to state the absence and name ③ Simulation as where to fix it, in all three languages",
+    "expected the zero-runs branch to state the absence as plain sentence text, in all three languages",
   );
   pin.doesNotMatch(
     errorBranch + neutralBranch,
     /완료된 실행이 없습니다|No completed runs in this dataset|完了した実行がありません/,
     "expected the loading/error/non-empty branches to NEVER claim absence -- that sentence belongs only to the resolved, empty-list case",
+  );
+
+  // (a2) THE SENTENCE IS NOT THE BUTTON, unit #72: the whole point of the
+  // user's correction is that clicking ANYWHERE on the sentence must no
+  // longer navigate -- only a small button at its end does. Structural, not
+  // just textual: the sentence's own t() call must be found BEFORE the
+  // <Link>, and the <Link>'s inner content must carry the short label ALONE,
+  // never the sentence.
+  const sentenceCallIdx = zeroBranch.search(
+    tripleArgs(
+      "이 데이터셋에는 완료된 실행이 없습니다 —",
+      "No completed runs in this dataset —",
+      "このデータセットには完了した実行がありません —",
+    ),
+  );
+  const buttonLinkOpenIdx = zeroBranch.indexOf("<Link");
+  const buttonLinkCloseIdx = zeroBranch.indexOf("</Link>", buttonLinkOpenIdx);
+  const sentenceBeforeButton =
+    sentenceCallIdx > -1 && buttonLinkOpenIdx > sentenceCallIdx && buttonLinkCloseIdx > buttonLinkOpenIdx;
+  pin.match(
+    `sentenceCallIdx=${sentenceCallIdx} buttonLinkOpenIdx=${buttonLinkOpenIdx} buttonLinkCloseIdx=${buttonLinkCloseIdx} sentenceBeforeButton=${sentenceBeforeButton}`,
+    /sentenceBeforeButton=true$/,
+    "expected the plain-text sentence to precede a distinct <Link> CTA button, matching 'button at the END of sentence' (#72)",
+  );
+  const buttonLinkInner = zeroBranch.slice(buttonLinkOpenIdx, buttonLinkCloseIdx);
+  pin.doesNotMatch(
+    buttonLinkInner,
+    /완료된 실행이 없습니다|No completed runs in this dataset|完了した実行がありません/,
+    "expected the zero-runs SENTENCE to live outside the <Link> -- only the short button label may sit inside it (#72)",
+  );
+  pin.match(
+    buttonLinkInner,
+    tripleArgs("시뮬레이션으로", "Go to Simulation", "シミュレーションへ"),
+    "expected the <Link> itself to carry only the short CTA button label, in all three languages",
+  );
+  // The accent fill belongs to the BUTTON's own opening tag, not the
+  // sentence's wrapping container -- otherwise the sentence could still be
+  // painted to look clickable even with the click target moved off of it.
+  const buttonLinkOpenTagEnd = zeroBranch.indexOf(">", buttonLinkOpenIdx);
+  const buttonLinkOpenTag = zeroBranch.slice(buttonLinkOpenIdx, buttonLinkOpenTagEnd + 1);
+  const sentenceContainer = zeroBranch.slice(0, buttonLinkOpenIdx);
+  pin.match(buttonLinkOpenTag, /bg-accent(?![-\w])/, "expected the accent fill class to sit on the <Link> button's own tag");
+  pin.doesNotMatch(
+    sentenceContainer,
+    /bg-accent(?![-\w])/,
+    "expected the sentence's own wrapping container to carry no accent fill -- only the trailing button may look clickable",
   );
 
   // (b) THE ZERO-STATE BANNER'S NAVIGATION TARGET IS /simulation -- where a
@@ -17712,13 +17807,15 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
     "expected the zero-runs banner to send the user to /simulation, not focus a selector it just said is empty",
   );
 
-  // (e) THE ZERO-STATE LINK IS A REAL CTA BUTTON (unit #67, 2026-08-26
-  // DECISIONS): a sentence that merely happens to be clickable is not
-  // obviously clickable, so this branch wears the same filled
+  // (e) THE ZERO-STATE BUTTON IS A REAL CTA (unit #67, 2026-08-26 DECISIONS;
+  // narrowed to the button alone by #72, 2026-08-27): the filled
   // bg-accent/hover:bg-accent-deep/text-white idiom ConfirmDialog's primary
-  // action button uses, instead of the neutral outline the "choose a run"
-  // and "do this now" prompts wear. It must NOT keep the old neutral-banner
-  // look, or a reader has no visual reason to believe this text is a button.
+  // action button uses now lives on the trailing <Link> button ONLY -- #72's
+  // structural pins above already confine it there -- so it must NOT keep
+  // the old neutral outline, or a reader has no visual reason to believe
+  // that small element is a button. The surrounding SENTENCE is allowed (and
+  // now expected) to look like plain banner text; only the button need read
+  // as clickable.
   // FIX (refuter round 2, M2): `\b` fires at a hyphen too (word char -> non-word
   // char), so `/bg-accent\b/` also matched INSIDE `hover:bg-accent-deep` --
   // a mutation that deleted the plain `bg-accent` fill and kept only the hover

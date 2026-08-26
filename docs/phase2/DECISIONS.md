@@ -7168,3 +7168,31 @@ name="TOD"><dailyProg from=... prog_id=...>`가 **요소명·속성명·값 전�
 가드 신설. 정착 기록은 signals.py·발행 XML 마커·프로브 docstring·layers summary
 (`schedule_element_verified: true` + 일자·계기 증거)로 전환.
 
+## 2026-08-27 — 사용자 3차 실사용 배치: #72 절단 + 정정 1건
+
+**#72 시뮬레이션 문을 UI에서 끝까지 (4건 묶음)**:
+① **시나리오-옵션 실행** (핵심): 사용자 "실행 가능한 시나리오 목록을 불러오지
+못했습니다 — is this scenario essential?" → 측정: 백엔드 `SimParams.scenario_id:
+str | None = None`, 기본 런은 pdb/Scenarios 무접촉(#68에서 트레이스 완료)인데
+프런트 `canRunSimulation`이 `scenarios.length > 0`을 요구(page.tsx:177) — INPX-only
+데이터셋은 시나리오 목록이 구조적으로 없으므로 영구 잠금. 수정: 시나리오 픽커를
+선택 사항으로(기본 실행 = 시나리오 없음 명시), 게이트에서 `scenarios.length` 제거,
+목록 fetch 실패/빈 것은 "기본 실행만 가능"으로 정직 표기.
+② 시뮬레이션 페이지의 "데이터" 라벨 두 줄 꺾임 — #67이 보정 페이지만 고침(스크린샷
+실측, 같은 결함 형제 지점). nowrap.
+③ /report 하이드레이션 경고: Grammarly 확장이 <body>에 data-gr-* 속성 주입 —
+layout.tsx <body>에 suppressHydrationWarning (html에는 이미 있음).
+④ **사용자 정정 (축자)**: "i didnt mean you to make the whole sentence as cta.
+just put cta button at the end of sentence." — #65/#67의 0건 배너를 문장(텍스트) +
+문장 끝 CTA 버튼으로 재작업. 보정 페이지의 해당 배너 구조 변경.
+
+**같은 턴 답변 기록**: 은하수네거리는 클라이언트 신호 zip(23장)에 부재 — 합성 샘플로
+데모 킷에서 제작 예정(명시 라벨). "census 없는 지역 초안" = 좌표 상자만 있고 생성이
+네트워크 census를 만든 적 없는 지역 기록. 재생성 거부 "진입 링크 [1341] 현시 없음" =
+확인된 노드의 접근로 하나가 현시에 결박되지 않음(설계된 거부 — 결박 표에서 그 행을
+채우고 재확인→재스테이징→재생성이 루프). #69 계보 라벨("signals 입력 추가 재생성")
+정상 작동 실증.
+
+**대형 후속(사용자 지시)**: 처음부터 끝까지(생성→수요→현시도→결박→재생성→실행→
+채점→보정→보고서) 비전문가가 UI만으로 완주하는 데모 대본 + 샘플 킷 — #72 랜딩 후 작성.
+
