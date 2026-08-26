@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
-import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline } from "../lib/roadWidth.ts";
+import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline, screenConstantSize } from "../lib/roadWidth.ts";
 import { messageWithoutSubject } from "../lib/findingMessage.ts";
 import { readReportManifest } from "../lib/reportManifest.ts";
 import {
@@ -7674,6 +7674,142 @@ test("unit #29 zoom fix: dividerOffsetCoord keeps a lane divider's on-screen off
       `expected dividerOffsetCoord(${offM}, ${projectionScale}, ${viewScale}) * ${viewScale} === ${offM * projectionScale}, got ${coord * viewScale}`,
     );
   }
+});
+
+test("unit #66: screenConstantSize keeps a node-pick dot's radius and label size constant on screen across zoom", () => {
+  // At viewScale 1 the helper must reduce to the plain base size -- the same
+  // "no zoom, no change" baseline dividerOffsetCoord's own value test above
+  // asserts for a lane divider's offset.
+  const baseViewUnits = 5.5; // NODE_R's own value
+  assert.equal(screenConstantSize(baseViewUnits, 1), baseViewUnits);
+
+  // THE INVARIANT: screenConstantSize(v, s) * s === v for any s -- the
+  // ambient scale(view.scale) transform the caller sits inside undoes the
+  // division exactly, at ANY zoom, low or high (MIN_SCALE 0.5 .. MAX_SCALE
+  // 24 is this component's own real range).
+  for (const viewScale of [0.5, 1, 1.18, 1.18 ** 3, 2, 24]) {
+    const size = screenConstantSize(baseViewUnits, viewScale);
+    assert.ok(
+      Math.abs(size * viewScale - baseViewUnits) < 1e-9,
+      `expected screenConstantSize(${baseViewUnits}, ${viewScale}) * ${viewScale} === ${baseViewUnits}, got ${size * viewScale}`,
+    );
+  }
+
+  // THE DEFECT THIS CLOSES, MEASURED: at MAX_SCALE=24 with NO compensation
+  // (the pre-#66 code rendered `r={NODE_R}` straight into the zoomed group),
+  // the on-screen radius would have been NODE_R * 24 = 132 view units -- the
+  // "100+ view units wide" the unit brief measured. The compensated radius
+  // must instead render the SAME 5.5 on screen at that zoom.
+  const atMaxZoom = screenConstantSize(baseViewUnits, 24);
+  assert.ok(
+    Math.abs(atMaxZoom * 24 - baseViewUnits) < 1e-9,
+    `expected the on-screen radius at MAX_SCALE=24 to stay ${baseViewUnits}, got ${atMaxZoom * 24}`,
+  );
+});
+
+contractTest("unit #66: node-pick dot radius and label size stay a constant on-screen size across zoom, and dense labels wait for it", (pin) => {
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  // ---- The compensation itself: r and fontSize are EXPRESSIONS, not bare
+  // constants -- structural, not merely "screenConstantSize appears
+  // somewhere in the file". ------------------------------------------------
+  pin.match(
+    localMap,
+    /const r = screenConstantSize\(NODE_R, viewScale\);/,
+    "expected the dot radius to be computed via screenConstantSize against the CURRENT viewScale, not rendered as the bare NODE_R constant",
+  );
+  pin.match(
+    localMap,
+    /const labelFontSize = screenConstantSize\(NODE_LABEL_FONT_SIZE, viewScale\);/,
+    "expected the label's font size to be computed via screenConstantSize against the CURRENT viewScale, not a bare numeric literal",
+  );
+  pin.match(
+    localMap,
+    /const labelGap = screenConstantSize\(NODE_LABEL_GAP, viewScale\);/,
+    "expected the label's dot-to-baseline gap to be compensated the same way as r and fontSize, so it cannot drift into the dot as the dot's own on-screen radius changes with zoom",
+  );
+  pin.match(localMap, /r=\{r\}/, "expected the circle to render the COMPENSATED radius");
+  pin.match(localMap, /fontSize=\{labelFontSize\}/, "expected the text to render the COMPENSATED font size");
+  pin.match(
+    localMap,
+    /y=\{cy - r - labelGap\}/,
+    "expected the label's y offset to be measured from the COMPENSATED radius and gap, not the raw fit-scale NODE_R/constant",
+  );
+
+  // ---- The ban: a bare NODE_R (or a raw fontSize={9}) rendered straight
+  // into the zoomed group must never come back -- that IS the pre-#66
+  // defect (a dot that grows 100+ view units wide at MAX_SCALE=24). ----------
+  pin.doesNotMatch(
+    withoutComments(localMap),
+    /r=\{NODE_R\}/,
+    "expected no bare r={NODE_R} inside the zoom group -- the radius must always be compensated by screenConstantSize, never the raw fit-scale constant",
+  );
+  pin.doesNotMatch(
+    withoutComments(localMap),
+    /fontSize=\{9\}|fontSize=\{NODE_LABEL_FONT_SIZE\}/,
+    "expected no raw, un-compensated font size on the node label",
+  );
+
+  // ---- Zoom threading: viewScale reaches NodePickLayer from the SAME
+  // view.scale state the rest of the map's pan/zoom already uses -- never a
+  // second, duplicated zoom value. ------------------------------------------
+  pin.match(
+    localMap,
+    /<NodePickLayer[\s\S]{0,200}viewScale=\{view\.scale\}/,
+    "expected NodePickLayer to receive the map's own view.scale, not a second copy of zoom state",
+  );
+
+  // ---- The density gate: labels hide below LABEL_MIN_ZOOM, EXCEPT the
+  // selected node's label, which must always render. -------------------------
+  pin.match(
+    localMap,
+    /const showLabel = selected \|\| viewScale >= LABEL_MIN_ZOOM;/,
+    "expected the label-visibility gate to exempt the selected node -- the user must always see what they picked, at any zoom",
+  );
+  pin.match(localMap, /\{showLabel && \(/, "expected the label element itself to be conditioned on the gate");
+
+  // ---- The <title> hover tooltip is UNCONDITIONAL -- it must render at
+  // every zoom regardless of the label-density gate, since it carries the
+  // SAME id -- name a hidden label would have shown. Sliced from the g-key
+  // marker up to <circle so the check is "nothing gates the title", not a
+  // guessed character span. -------------------------------------------------
+  const titleBlock = sliceBetween(localMap, "<g key={`node-${node.id}`}>", "<circle");
+  pin.doesNotMatch(titleBlock, /showLabel/, "expected the <title> tooltip to stay unconditional, never gated behind showLabel");
+  pin.match(
+    titleBlock,
+    /<title>\{`\$\{node\.id\} — \$\{node\.name\}`\}<\/title>/,
+    "expected the id -- name hover tooltip to remain, unconditionally, at every zoom",
+  );
+
+  // ---- The dot itself is NEVER gated by the density threshold -- only the
+  // label waits. The circle must sit outside any showLabel conditional. -----
+  const circleBlock = sliceBetween(localMap, "<circle", "/>");
+  pin.doesNotMatch(circleBlock, /LABEL_MIN_ZOOM|showLabel/, "expected the dot (the click target) to render at every zoom, never gated by the label-density threshold");
+
+  // ---- STRUCTURAL hardening (refuter finding on this unit): the two pins
+  // just above ban specific IDENTIFIERS (showLabel / LABEL_MIN_ZOOM) inside a
+  // slice that starts AT the element's own opening tag ("<title>" / "<circle").
+  // A mutation that wraps the WHOLE element -- opening tag included -- in an
+  // inline `{cond && (...)}` or `{cond ? (...) : null}` inserts that wrapper
+  // BEFORE the slice's own start marker, so it is invisible to a
+  // doesNotMatch over the slice, no matter which identifier the condition is
+  // spelled with (renaming `showLabel` or writing the raw comparison inline
+  // both slip past the two pins above). These two positional pins do not
+  // care what the wrapper is CALLED: they assert that <title> is the g
+  // element's IMMEDIATE child right after `<g key=...>` (nothing but
+  // whitespace between them) and that <circle is the IMMEDIATE sibling right
+  // after `</title>` (same) -- ANY conditional wrapper, `&&` or ternary,
+  // under any name, inserts non-whitespace there and breaks the match.
+  pin.match(
+    localMap,
+    /<g key=\{`node-\$\{node\.id\}`\}>\s*<title>/,
+    "expected <title> to be the g element's IMMEDIATE, unconditional child -- no {cond && (...)} or ternary wrapper may sit between <g> and <title>, under any name",
+  );
+  pin.match(
+    localMap,
+    /<\/title>\s*<circle/,
+    "expected <circle> (the click target) to be the IMMEDIATE, unconditional sibling right after </title> -- no {cond && (...)} or ternary wrapper may sit between them, under any name, at any zoom",
+  );
 });
 
 // ---------------------------------------------------------------------------

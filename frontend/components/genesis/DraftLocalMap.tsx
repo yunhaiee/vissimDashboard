@@ -50,6 +50,7 @@ import {
   MIN_ROAD_PX,
   dividerOffsetCoord,
   offsetPolyline,
+  screenConstantSize,
 } from "@/lib/roadWidth";
 
 const VIEW_W = 640;
@@ -74,8 +75,60 @@ const BACKGROUND_CLICK_TOLERANCE = 4;
  * every parent tick. */
 const NO_NODES: readonly GenesisDraftNode[] = Object.freeze([]);
 /** The node dot's radius, in VIEW units at fit scale. Big enough to be a real
- * click target on a 640x440 canvas, small enough not to swallow its junction. */
+ * click target on a 640x440 canvas, small enough not to swallow its junction.
+ * UNIT #66 -- this is the ON-SCREEN size the dot always renders at, once
+ * `screenConstantSize` (lib/roadWidth.ts) undoes the ancestor
+ * `<g scale(view.scale)>`'s own zoom multiplication in `NodePickLayer` below
+ * -- NOT a raw view-unit number rendered straight into the zoomed group any
+ * more (that was the defect: at MAX_SCALE=24 a 5.5-view-unit dot with no
+ * compensation rendered 100+ view units wide). */
 const NODE_R = 5.5;
+
+/** The node id label's font size, in the SAME fit-scale view units as
+ * NODE_R above, and compensated the same way. */
+const NODE_LABEL_FONT_SIZE = 9;
+
+/** Gap between a label's baseline and the top of its dot, in the SAME
+ * fit-scale view units as NODE_R/NODE_LABEL_FONT_SIZE and compensated the
+ * same way -- so the label never drifts into its own dot as the dot's
+ * on-screen radius (which this gap is measured FROM) changes with zoom. */
+const NODE_LABEL_GAP = 3;
+
+/** UNIT #66 -- the `view.scale` (zoom) below which node id labels are
+ * hidden. Dots stay visible at EVERY zoom (they are the click target); only
+ * the text label waits. The SELECTED node's label is the one exception
+ * (`NodePickLayer` below) -- the user must always see what they picked.
+ *
+ * Derived from this file's own layout constants and unit #66's own measured
+ * worst case, not a felt guess:
+ *
+ *   - the fit-scale draw area is (VIEW_W - 2*VIEW_MARGIN) x
+ *     (VIEW_H - 2*VIEW_MARGIN) = 608 x 408 view units;
+ *   - the densest draft this unit measured against carries 525 candidate
+ *     nodes (the 현시도 binding map's own count on a real generation, from
+ *     the user's screenshot);
+ *   - modelling that many nodes as a 2-D Poisson scatter over the fit canvas
+ *     gives a closed-form MEDIAN nearest-neighbour distance of
+ *     sqrt(ln(2) / (density * PI)), density = 525 / (608*408) ~= 0.002116
+ *     per view-unit^2 -> median NN ~= 10.2 view units at fit scale
+ *     (viewScale 1). This is an UPPER-BOUND estimate, not a tight one: a
+ *     real road network clusters nodes along streets far more than a
+ *     uniform-random scatter does, so a real draft's true median spacing
+ *     runs SMALLER than this, not larger -- rounding the resulting
+ *     threshold UP (below) leans into that bias instead of against it;
+ *   - a 3-digit id label at NODE_LABEL_FONT_SIZE=9, using a ~0.6x-advance-
+ *     width-per-character estimate typical of sans-serif digits, needs
+ *     roughly 3 * 0.6 * 9 ~= 16 view units of screen width, plus breathing
+ *     room between adjacent labels -> a ~20 view-unit clearance target;
+ *   - labels clear once on-screen nearest-neighbour spacing
+ *     (medianNN_fit * viewScale) reaches that target, i.e.
+ *     viewScale >= 20 / 10.2 ~= 1.96 -- rounded up to the clean value below.
+ *
+ * A sparser or smaller network clears this same threshold at the SAME zoom
+ * (its own median spacing is already above the 20-unit target at a lower
+ * viewScale, never a higher one) -- 525 is this unit's measured worst case,
+ * not a per-network recomputation the layer redoes on every render. */
+const LABEL_MIN_ZOOM = 2;
 
 type Bbox = { xMin: number; yMin: number; xMax: number; yMax: number };
 
@@ -390,6 +443,7 @@ export default function DraftLocalMap({
               nodes={nodes}
               selectedNodeId={selectedNodeId}
               projection={projection}
+              viewScale={view.scale}
               onSelectNode={onSelectNode}
             />
           </g>
@@ -419,33 +473,71 @@ export default function DraftLocalMap({
  * state that both this map and that section's list read (docs/phase2/
  * DECISIONS.md, "2026-08-24 — 사용자 결정: 현시도 카드 단순화 … (#58)").
  *
- * Memoized against `view` like its siblings: the parent's `<g transform>`
- * carries pan/zoom, so a drag tick does not re-render these dots. */
+ * Memoized against everything EXCEPT `view.tx`/`view.ty` (pan) -- the
+ * parent's `<g transform>` still carries pan on its own, so a drag tick does
+ * not re-render these dots. UNIT #66's zoom fix is the one exception to
+ * "memoized against `view` entirely" its siblings hold: `viewScale` (the
+ * `view.scale` half of `view`) IS a prop here now, the same deliberate
+ * exception `LaneDividersLayer` already makes and documents in its own
+ * top-of-component comment, and for the same reason -- a wheel-zoom tick
+ * must re-render this layer so NODE_R/NODE_LABEL_FONT_SIZE/NODE_LABEL_GAP
+ * can be recomputed by `screenConstantSize` (lib/roadWidth.ts) against the
+ * NEW zoom, keeping the dot radius and label font a constant ON-SCREEN size
+ * instead of growing with the ambient `scale(view.scale)` transform (the
+ * pre-#66 defect: a 100+ view-unit dot at MAX_SCALE=24). Bounded by the
+ * candidate node count the caller supplies (up to ~525 measured, unit #66's
+ * own worst case), not the ~5,000-element cost `NetworkLayer`'s own comment
+ * explains is the reason IT stays memoized against `view` entirely. */
 const NodePickLayer = memo(function NodePickLayer({
   nodes,
   selectedNodeId,
   projection,
+  viewScale,
   onSelectNode,
 }: {
   nodes: readonly GenesisDraftNode[];
   selectedNodeId: number | null;
   projection: { projX: (x: number) => number; projY: (y: number) => number; scale: number };
+  /** `view.scale` (zoom), threaded down ONLY so `screenConstantSize` can
+   * compensate this layer's own on-screen sizes -- never a second copy of
+   * zoom state (unit #66's brief: thread it cleanly, do not duplicate it).
+   * The parent's `<g transform="scale(view.scale)">` remains the ONE place
+   * pan/zoom is actually applied to this layer's coordinates; this prop only
+   * lets the layer undo that transform's effect on SIZE, the same role
+   * `LaneDividersLayer`'s own `viewScale` prop already plays for a divider's
+   * OFFSET. */
+  viewScale: number;
   onSelectNode?: (nodeId: number) => void;
 }) {
   if (nodes.length === 0) return null;
+  // UNIT #66 -- screen-constant sizing: dividing by viewScale here is undone
+  // by the ambient scale(view.scale) transform's own multiplication, so the
+  // rendered dot/label are the same on-screen size at any zoom -- the same
+  // reasoning dividerOffsetCoord (lib/roadWidth.ts) applies to a lane
+  // divider's offset, applied here to a dot's radius and a label's font/gap.
+  const r = screenConstantSize(NODE_R, viewScale);
+  const labelFontSize = screenConstantSize(NODE_LABEL_FONT_SIZE, viewScale);
+  const labelGap = screenConstantSize(NODE_LABEL_GAP, viewScale);
   return (
     <>
       {nodes.map((node) => {
         const selected = node.id === selectedNodeId;
         const cx = projection.projX(node.x);
         const cy = projection.projY(node.y);
+        // UNIT #66 -- density gate: below LABEL_MIN_ZOOM a dense draft's
+        // labels overlap into an unreadable blanket (see that constant's own
+        // derivation), so the label waits for the user to zoom in. The dot
+        // itself is NEVER gated -- it is the click target, at every zoom --
+        // and the SELECTED node's label is exempt from the gate: the user
+        // must always be able to see what they picked, regardless of zoom.
+        const showLabel = selected || viewScale >= LABEL_MIN_ZOOM;
         return (
           <g key={`node-${node.id}`}>
             <title>{`${node.id} — ${node.name}`}</title>
             <circle
               cx={cx}
               cy={cy}
-              r={NODE_R}
+              r={r}
               fill={selected ? SELECTED_COLOR : "#ffffff"}
               stroke={selected ? SELECTED_COLOR : "#475569"}
               strokeWidth={selected ? 3 : 2}
@@ -453,17 +545,19 @@ const NodePickLayer = memo(function NodePickLayer({
               className={onSelectNode ? "cursor-pointer" : undefined}
               onClick={onSelectNode ? () => onSelectNode(node.id) : undefined}
             />
-            <text
-              x={cx}
-              y={cy - NODE_R - 3}
-              textAnchor="middle"
-              fontSize={9}
-              fontWeight={600}
-              fill="#475569"
-              pointerEvents="none"
-            >
-              {node.id}
-            </text>
+            {showLabel && (
+              <text
+                x={cx}
+                y={cy - r - labelGap}
+                textAnchor="middle"
+                fontSize={labelFontSize}
+                fontWeight={600}
+                fill="#475569"
+                pointerEvents="none"
+              >
+                {node.id}
+              </text>
+            )}
           </g>
         );
       })}

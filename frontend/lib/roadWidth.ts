@@ -231,3 +231,31 @@ export function offsetPolyline(pts: Pt[], dist: number): Pt[] {
 export function dividerOffsetCoord(offM: number, projectionScale: number, viewScale: number): number {
   return (offM * projectionScale) / viewScale;
 }
+
+// ---------------------------------------------------------------------------
+// Unit #66 -- DraftLocalMap.tsx's node-pick dots and their id labels
+// (`NodePickLayer`) had the SAME class of defect the zoom fix above closes
+// for a lane divider's offset, for a different property: `NODE_R` and the id
+// label's `fontSize` were fixed VIEW-UNIT numbers rendered inside the SAME
+// `<g scale(view.scale)>` a lane divider's vertices sit inside, and neither a
+// circle's `r` nor a text's `fontSize` is a stroke, so
+// `vectorEffect="non-scaling-stroke"` (which fixes a ribbon's WIDTH, see
+// `NetworkLayer`'s own comment in DraftLocalMap.tsx) does nothing for
+// either. Un-compensated, a 5.5-view-unit dot rendered 100+ view units wide
+// at MAX_SCALE=24, and on a dense draft the fontSize=9 id labels blanketed
+// the map.
+// ---------------------------------------------------------------------------
+
+/** The layer-coordinate size to hand a node-pick dot's radius or its id
+ * label's font size so that, after the caller's own `scale(viewScale)`
+ * ancestor transform is applied, the ON-SCREEN size is the constant
+ * `baseViewUnits` at ANY `viewScale` -- the same reasoning
+ * `dividerOffsetCoord` above uses for a lane divider's lateral offset,
+ * without that function's extra `projectionScale` multiply (a dot radius or
+ * a font size is already expressed directly in fit-scale view units, never
+ * metres, so there is nothing else to convert).
+ * `screenConstantSize(v, s) * s === v` for any `s`, asserted by value in
+ * `dashboard-contract.test.ts`. */
+export function screenConstantSize(baseViewUnits: number, viewScale: number): number {
+  return baseViewUnits / viewScale;
+}
