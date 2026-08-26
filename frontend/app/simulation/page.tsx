@@ -162,9 +162,14 @@ export default function SimulationPage() {
     ? signalTimings.find((row) => row.nodeId === selectedNode.id || row.controllerId === selectedSignal?.sc_no) ?? null
     : null;
 
-  const hasUploadedZip = dataset?.source === "uploaded" && dataset?.kind === "zip";
-  const requiresUploadedZip = capabilities?.requires_uploaded_zip ?? true;
-  const datasetReady = !requiresUploadedZip || hasUploadedZip;
+  // Unit #68: an uploaded dataset opens the run door regardless of kind --
+  // a bare .inpx upload is runnable exactly like a zip (the runner's own
+  // default-run path never reads project.vissimpdb/Scenarios; see
+  // routers/simulations.py's _simulation_capabilities comment). Mirrors
+  // app/dashboard/page.tsx's own `hasUploadedDataset` gate.
+  const hasUploadedDataset = dataset?.source === "uploaded";
+  const requiresUploadedDataset = capabilities?.requires_uploaded_dataset ?? true;
+  const datasetReady = !requiresUploadedDataset || hasUploadedDataset;
   const runtimeReady = capabilities?.can_run ?? false;
   const running = activeStatus === "running";
   const canPrepareSimulation = capabilities?.can_prepare_simulation ?? capabilities?.can_run ?? false;
@@ -379,7 +384,7 @@ export default function SimulationPage() {
     if (!canRunSimulation) {
       setActiveStatus("idle");
       setActiveProgress(0);
-      setError(buildRunDisabledMessage({ capabilities, datasetReady, hasUploadedZip, datasetKind: dataset?.kind, scenarios, t }));
+      setError(buildRunDisabledMessage({ capabilities, datasetReady, scenarios, t }));
       return;
     }
 
@@ -451,7 +456,7 @@ export default function SimulationPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <StatusPill label={t("데이터", "Dataset")} value={dataset?.filename ?? "-"} tone={hasUploadedZip ? "success" : "neutral"} />
+            <StatusPill label={t("데이터", "Dataset")} value={dataset?.filename ?? "-"} tone={hasUploadedDataset ? "success" : "neutral"} />
             <StatusPill label={t("실행", "Runtime")} value={runtimeReady ? "Ready" : "Blocked"} tone={runtimeReady ? "success" : "warning"} />
             <StatusPill label={t("대기 조건", "Queued")} value={`${queuedCount}`} tone={queuedCount > 0 ? "info" : "neutral"} />
           </div>
@@ -468,7 +473,7 @@ export default function SimulationPage() {
           uploading={uploadingZip}
           uploadError={uploadError}
           canUploadZip={canUploadZip}
-          hasUploadedZip={hasUploadedZip}
+          hasUploadedDataset={hasUploadedDataset}
           onSelectZip={() => zipInputRef.current?.click()}
           onClearDataset={() => setConfirmClearDataset(true)}
           onApiBaseDraftChange={setApiBaseDraft}
@@ -492,7 +497,7 @@ export default function SimulationPage() {
           activeJobId={activeJobId}
           activeStatus={activeStatus}
           activeProgress={activeProgress}
-          disabledMessage={buildRunDisabledMessage({ capabilities, datasetReady, hasUploadedZip, datasetKind: dataset?.kind, scenarios, t })}
+          disabledMessage={buildRunDisabledMessage({ capabilities, datasetReady, scenarios, t })}
           onRun={() => void handleRun()}
           onClearDraft={clearDraft}
         />
@@ -619,7 +624,7 @@ function DataAndRuntimePanel({
   uploading,
   uploadError,
   canUploadZip,
-  hasUploadedZip,
+  hasUploadedDataset,
   onSelectZip,
   onClearDataset,
   onApiBaseDraftChange,
@@ -636,7 +641,7 @@ function DataAndRuntimePanel({
   uploading: boolean;
   uploadError: string | null;
   canUploadZip: boolean;
-  hasUploadedZip: boolean;
+  hasUploadedDataset: boolean;
   onSelectZip: () => void;
   onClearDataset: () => void;
   onApiBaseDraftChange: (value: string) => void;
@@ -651,8 +656,8 @@ function DataAndRuntimePanel({
         <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-[15px] font-bold text-slate-900">{t("데이터 패키지", "Dataset Package")}</h2>
-            <span className={`rounded-full px-2 py-0.5 text-[13px] font-bold ${hasUploadedZip ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
-              {hasUploadedZip ? t("업로드됨", "Uploaded") : t("기본", "Default")}
+            <span className={`rounded-full px-2 py-0.5 text-[13px] font-bold ${hasUploadedDataset ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+              {hasUploadedDataset ? t("업로드됨", "Uploaded") : t("기본", "Default")}
             </span>
           </div>
           <p className="mt-2 text-[15px] font-semibold text-slate-800">{dataset?.filename ?? "-"}</p>
@@ -666,7 +671,7 @@ function DataAndRuntimePanel({
             <button
               type="button"
               className="ui-button-danger px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={uploading || !hasUploadedZip}
+              disabled={uploading || !hasUploadedDataset}
               onClick={onClearDataset}
             >
               {t("기본값 복원", "Restore Default")}
@@ -1229,29 +1234,23 @@ function normalizeProgress(value: number | undefined): number {
 function buildRunDisabledMessage({
   capabilities,
   datasetReady,
-  hasUploadedZip,
-  datasetKind,
   scenarios,
   t,
 }: {
   capabilities: SimulationCapabilities | null;
   datasetReady: boolean;
-  hasUploadedZip: boolean;
-  datasetKind?: string;
   scenarios: ScenarioMeta[];
   t: (ko: string, en: string, ja?: string) => string;
 }) {
-  if (!datasetReady && !hasUploadedZip) {
-    // A bare .inpx uploaded on the dashboard satisfies THAT page but not
-    // this one — name the actual cause instead of implying nothing was
-    // uploaded at all.
-    if (datasetKind && datasetKind !== "zip") {
-      return t(
-        `현재 ${datasetKind.toUpperCase()} 파일만 업로드되어 있습니다. 시뮬레이션 실행에는 시나리오(.vissimpdb) 정보를 포함한 프로젝트 ZIP이 필요합니다.`,
-        `Only a ${datasetKind.toUpperCase()} file is currently uploaded. Running a simulation here needs a full project ZIP with scenario (.vissimpdb) data.`,
-      );
-    }
-    return t("실행하려면 VISSIM 프로젝트 ZIP을 먼저 업로드해야 합니다.", "Upload a VISSIM project ZIP before running.");
+  // Unit #68: an uploaded inpx opens this door exactly like an uploaded zip
+  // (datasetReady already covers both -- see hasUploadedDataset above), so
+  // reaching here means NOTHING has been uploaded yet at all. Never claims a
+  // .vissimpdb-bearing ZIP specifically -- the default run never reads one.
+  if (!datasetReady) {
+    return t(
+      "실행하려면 VISSIM 데이터셋(INPX 파일 또는 프로젝트 ZIP)을 먼저 업로드해야 합니다.",
+      "Upload a VISSIM dataset (an INPX file or a project ZIP) before running.",
+    );
   }
   if (scenarios.length === 0) {
     return t("실행 가능한 시나리오 목록을 불러오지 못했습니다.", "No runnable scenarios are loaded.");

@@ -545,6 +545,61 @@ contractTest("app shell exposes the merged dashboard routes", (pin) => {
   );
 });
 
+// Unit #68 (2026-08-26): a workspace whose active dataset was uploaded as a
+// bare .inpx (no project.vissimpdb / Scenarios/) used to be refused at the
+// simulation door with a message claiming a full project ZIP carrying
+// scenario (.vissimpdb) data was required. Measured false: the runner's
+// default (no scenario_id) run path never reads project.vissimpdb/Scenarios
+// at all (routers/simulations.py's `_simulation_capabilities`, traced through
+// `_run_simulation_locked` -> `build_simulation_network` ->
+// `services.scenario_project.build_scenario_tree`). The honest gate is "an
+// uploaded dataset, zip OR inpx, whose resolved source .inpx exists" -- these
+// pins hold that door open and keep the old zip-only, .vissimpdb-naming copy
+// from coming back.
+contractTest("#68: an uploaded bare-inpx dataset opens the simulation run door like a zip", (pin) => {
+  const page = read("app/simulation/page.tsx");
+
+  pin.match(
+    page,
+    /const hasUploadedDataset = dataset\?\.source === "uploaded";/,
+    "expected the simulation page's run-door gate to accept any uploaded dataset (zip or inpx), not just zip",
+  );
+  pin.match(
+    page,
+    /const requiresUploadedDataset = capabilities\?\.requires_uploaded_dataset \?\? true;/,
+    "expected the simulation page to read the renamed, truthful capabilities field",
+  );
+  // The combinator itself, not just its two inputs: hardcoding
+  // datasetReady=true still passed every OTHER pin in this file (the Run
+  // button stays correctly guarded by runtimeReady/can_run either way), but
+  // it silently breaks which troubleshooting message the reader sees --
+  // pinned directly per refuter finding 2026-08-26.
+  pin.match(
+    page,
+    /const datasetReady = !requiresUploadedDataset \|\| hasUploadedDataset;/,
+    "expected datasetReady to be satisfied by EITHER no dataset being required OR an uploaded dataset being present",
+  );
+  pin.doesNotMatch(
+    page,
+    /requires_uploaded_zip/,
+    "expected the retired, now-inaccurate `requires_uploaded_zip` capabilities field name to be gone from the simulation page",
+  );
+  pin.match(
+    page,
+    /실행하려면 VISSIM 데이터셋\(INPX 파일 또는 프로젝트 ZIP\)을 먼저 업로드해야 합니다\./,
+    "expected the truthful dataset-required refusal message naming both accepted kinds",
+  );
+  // Comment-stripped, matching this file's own withoutComments convention:
+  // the fix's explanatory comments legitimately NAME project.vissimpdb (to
+  // say the run path does NOT need it) -- only a live claim in code or
+  // user-facing copy should fail this pin, never the comment that explains it.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /vissimpdb/i,
+    "expected no live claim that .vissimpdb is required to run a simulation -- the default run path never reads it (unit #68)",
+  );
+});
+
 // Unit #18 -- variant B of the approved flow mockup: the pipeline IS the
 // navigation. The pins below describe the SHAPE of that claim (which page sits
 // under which stage, and that the stepper cannot know anything the URL does not

@@ -363,16 +363,25 @@ def _simulation_source_inpx() -> Path:
 
 def _simulation_capabilities() -> dict:
     dataset = get_active_dataset()
-    has_uploaded_zip = dataset.get("source") == "uploaded" and dataset.get("kind") == "zip"
+    # Unit #68: the runner only ever reads ONE artifact -- the resolved source
+    # .inpx (see _run_simulation_locked -> build_simulation_network ->
+    # build_scenario_tree, which parses base_inpx directly and touches
+    # project.vissimpdb/Scenarios ONLY when a scenario_id is given, gracefully
+    # via get_project_scenario -- never a hard requirement of the base run).
+    # So the honest gate is "an UPLOADED dataset, any kind" -- zip or bare
+    # inpx -- not "specifically a zip". A bare-.inpx upload used to be refused
+    # here with a message that named .vissimpdb, which nothing in this path
+    # ever reads for the default (no scenario_id) run.
+    has_uploaded_dataset = dataset.get("source") == "uploaded"
     pywin32_available, pywin32_error = _check_pywin32()
-    is_windows = os.name == "nt"
+    is_windows = _is_windows()
     can_prepare_simulation = is_windows and pywin32_available
     source_inpx = _simulation_source_inpx()
     source_exists = source_inpx.exists()
     reasons: list[str] = []
 
-    if not has_uploaded_zip:
-        reasons.append("Upload a VISSIM zip dataset before running simulation.")
+    if not has_uploaded_dataset:
+        reasons.append("Upload a VISSIM dataset (INPX file or project ZIP) before running simulation.")
     if not is_windows:
         reasons.append("VISSIM COM can run only on Windows with PTV Vissim installed.")
     if not pywin32_available:
@@ -392,9 +401,29 @@ def _simulation_capabilities() -> dict:
         "dataset_source": dataset.get("source"),
         "dataset_kind": dataset.get("kind"),
         "dataset_filename": dataset.get("filename"),
-        "requires_uploaded_zip": True,
+        # RENAMED from `requires_uploaded_zip` (unit #68): that field was
+        # always `True` no matter what, but its NAME asserted "must be a zip"
+        # specifically -- a lie once an uploaded bare inpx became runnable
+        # too. This field still just means "an uploaded dataset is required",
+        # true for both kinds; a client that wants to know WHICH kinds count
+        # reads `dataset_kind` / `dataset_source` above.
+        "requires_uploaded_dataset": True,
         "requires_local_windows_backend": True,
     }
+
+
+def _is_windows() -> bool:
+    """A dedicated seam for the "are we on Windows" capability check --
+    mirrors ``_check_pywin32`` right below (also its own overridable seam,
+    for the exact same reason: a test that needs to simulate "not Windows"
+    should monkeypatch THIS function, never flip the real ``os.name``. The
+    real ``os`` module is a process-wide singleton; on a live Windows box,
+    ``os.name = "posix"`` also flips what ``pathlib.Path(...)`` builds
+    everywhere else in the process (including inside pytest's own failure-
+    report rendering), which crashes with
+    ``NotImplementedError: cannot instantiate 'PosixPath'`` and obscures the
+    real assertion diff -- measured 2026-08-26 (unit #68 refuter pass)."""
+    return os.name == "nt"
 
 
 def _check_pywin32() -> tuple[bool, str | None]:

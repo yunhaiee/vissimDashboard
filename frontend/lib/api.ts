@@ -881,7 +881,7 @@ export interface SimulationCapabilities {
   dataset_source?: string | null;
   dataset_kind?: string | null;
   dataset_filename?: string | null;
-  requires_uploaded_zip?: boolean;
+  requires_uploaded_dataset?: boolean;
   requires_local_windows_backend?: boolean;
 }
 
