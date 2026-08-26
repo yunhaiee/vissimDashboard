@@ -127,6 +127,27 @@ function sliceBetween(source: string, startMarker: string, endMarker: string): s
 }
 
 /**
+ * ONE function's source — declaration through the `}` that closes it at column
+ * 0 — CRLF-safe, and `""` when either end is missing.
+ *
+ * `sliceBetween(source, declaration, "\n}\n")` is the idiom this replaces, and
+ * on a Windows checkout it is a trap: the file's line endings are `\r\n`, the
+ * end marker is not, and the slice comes back EMPTY. Measured 2026-08-26 on
+ * unit #59's own pins. An empty haystack makes every `pin.match` on it fail
+ * loudly (which is merely noisy) and every `pin.doesNotMatch` pass VACUOUSLY
+ * (which is the failure a contract pin may never have: green over a live
+ * violation). `topLevelFunction` above learned this in 2026-08-21; this is the
+ * same lesson for a function that is NOT exported, and for the `doesNotMatch`
+ * side, where the cost of getting it wrong is silence rather than noise.
+ */
+function functionSource(source: string, declaration: string): string {
+  const start = source.indexOf(declaration);
+  if (start === -1) return "";
+  const close = /\r?\n\}\r?\n/.exec(source.slice(start));
+  return close ? source.slice(start, start + close.index + close[0].length) : "";
+}
+
+/**
  * The source with its comments removed — and NOTHING else removed.
  *
  * For the one pin shape that cannot work on raw source: "this CSS class must
@@ -8061,8 +8082,12 @@ contractTest("unit #38: a finding the census cannot correct is treated by regene
     /regenerateGenesisJob\(jobId: string, reason\?: string\)/,
     "expected the helper to take only a job id and the requester's own sentence",
   );
+  // `functionSource`, not a "\n}\n" marker: on a Windows checkout that marker
+  // never matches, the slice comes back "", and a `doesNotMatch` over an empty
+  // string passes VACUOUSLY -- green over a live violation. Measured 2026-08-26:
+  // this pin was in exactly that state (unit #59, refuter round 3, R3-8).
   pin.doesNotMatch(
-    sliceBetween(api, "export async function regenerateGenesisJob", "\n}\n"),
+    functionSource(api, "export async function regenerateGenesisJob"),
     /requested_by|exclude_service|source/,
     "expected the regenerate body to carry no requester, no options and no source -- the server owns all three",
   );
@@ -9701,7 +9726,11 @@ contractTest("unit #42: a confirmed dead end excludes ONE way, and the scope is 
     /export async function confirmGenesisDeadEnd[\s\S]*?apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/dead-end-confirmation`/,
     "expected the confirmation to go through apiMutationFetch on its own route",
   );
-  const body = sliceBetween(api, "export async function confirmGenesisDeadEnd", "\n}\n");
+  // `functionSource` for the CRLF reason above (R3-8): a "\n}\n" marker slices
+  // to "" on a Windows checkout, and the `doesNotMatch` below would pass over
+  // nothing at all. (The `pin.match` that follows it would have failed loudly,
+  // which is how this one stayed honest -- but the ban is the load-bearing half.)
+  const body = functionSource(api, "export async function confirmGenesisDeadEnd");
   // STRUCTURAL, not conventional: there is nowhere in this body to name the way
   // to remove, so a client cannot widen an exclusion past the road the reader
   // actually looked at -- the server re-derives it from the finding's own
@@ -13424,29 +13453,64 @@ contractTest("unit #54: the demand-target picker offers the SERVER's candidates 
   // no filter, no sort, no client-side derivation from the shadow model. A
   // client-assembled list would show a modeller options the store then refuses,
   // which is the two-opinions failure in its most user-hostile form.
+  //
+  // UNIT #59 CHANGED WHAT IS OFFERED, and not who computes it. The user decided
+  // that a link's 승용차/버스/트럭 trio is adjusted together with its mix
+  // preserved, so the LINK is the unit of choice and the picker offers
+  // link-GROUPS — two choices on the demo's node 8, where six raw inputs used
+  // to be listed as six rivals. The folding is `reality_check_targets.
+  // link_groups`' and is checked against the same list when the choice is
+  // recorded; a group folded in this file would be exactly the second opinion
+  // these pins exist to prevent.
   pin.match(
     picker,
-    /const candidates = demandTarget\?\.candidates \?\? \[\];/,
-    "expected the candidate list to come from the server payload, never from anything this file computed",
+    /const groups = demandTarget\?\.candidate_groups \?\? \[\];/,
+    "expected the offered groups to come from the server payload, never from anything this file folded",
   );
   pin.match(
     picker,
-    /candidates\.map\(\(candidate\) => \{/,
-    "expected every offered candidate to be rendered from the server's own list",
+    /groups\.map\(\(group\) => \(/,
+    "expected every offered choice to be rendered from the server's own group list",
   );
   pin.match(
     picker,
-    /candidate\.vehicle_input_no/,
-    "expected the input NUMBER on each option -- a modeller recognises it from Vissim",
+    /group\.link_no/,
+    "expected the LINK on each option -- since #59 the link is what gets named",
   );
-  pin.match(picker, /candidate\.link_no/, "expected the LINK on each option: the triple is what gets recorded");
+  // AND ITS MEMBERS, under it. Choosing a link means moving every class on it,
+  // so the classes are shown with the choice rather than discovered afterwards.
+  pin.match(
+    picker,
+    /group\.members\.map\(\(member\) => \(/,
+    "expected each group's vehicle-class members to be listed under it -- naming a link moves all of them",
+  );
+  pin.match(
+    picker,
+    /member\.vehicle_input_no/,
+    "expected the input NUMBER on each member -- a modeller recognises it from Vissim",
+  );
   // ...and the volume, which is what makes the list decidable rather than a set
   // of bare numbers. `null` prints as a WORD, never as 0: a zero here would read
-  // as a measurement of no traffic.
+  // as a measurement of no traffic. Pinned on BOTH levels, because the group's
+  // total is `null` the moment any member's volume is unstated.
   pin.match(
     picker,
-    /typeof candidate\.current_volume === "number"[\s\S]{0,200}?t\("교통량 미기재"/,
-    "expected an unstated volume to print as a word, never as a fabricated 0",
+    /typeof group\.current_volume_total === "number"[\s\S]{0,200}?t\("교통량 미기재"/,
+    "expected an unstated group total to print as a word, never as a fabricated 0",
+  );
+  pin.match(
+    picker,
+    /typeof member\.current_volume === "number"[\s\S]{0,200}?t\("교통량 미기재"/,
+    "expected an unstated member volume to print as a word, never as a fabricated 0",
+  );
+  // THE FULL MEMBERSHIP IS SENT, exactly as it was shown. The server checks it
+  // for set equality and refuses by name when a class arrived or left since, so
+  // a trio nobody reviewed can never be adjusted under a signature given for a
+  // different one — which only works if the client sends what it displayed.
+  pin.match(
+    picker,
+    /vehicleInputNos: picked\.vehicle_input_nos,/,
+    "expected the POST to assert the membership the reviewer was shown, not just the link",
   );
 
   // (2) WHEN IT APPEARS is the server's answer. geh_ladder's own code, off
@@ -13468,7 +13532,7 @@ contractTest("unit #54: the demand-target picker offers the SERVER's candidates 
   // named assumption would have no way to be withdrawn.
   pin.match(
     picker,
-    /if \(candidates\.length === 0 \|\| \(!missingTarget && !mapping\)\) return null;/,
+    /if \(groups\.length === 0 \|\| \(!missingTarget && !mapping\)\) return null;/,
     "expected no picker without candidates, and the card to survive once a mapping stands so it can still be revoked",
   );
 
@@ -13488,8 +13552,17 @@ contractTest("unit #54: the demand-target picker offers the SERVER's candidates 
   const surface = withoutFolds(picker);
   pin.match(
     surface,
-    /이 인풋이 이 노드 총량을 좌우한다'는 가정이 로그인한 사용자의 이름·시각과 함께 기록됩니다/,
+    /이 링크가 이 노드 총량을 좌우한다'는 가정이 로그인한 사용자의 이름·시각과 함께 기록됩니다/,
     "expected the act statement to say that naming records an ASSUMPTION under the signed-in name",
+  );
+  // #59: and the SECOND thing this act now commits to — the classes move
+  // together at their current mix, and no single class is singled out. A
+  // reviewer signing a link is signing for all of it, so the sentence beside
+  // the button has to say so.
+  pin.match(
+    surface,
+    /현재 구성비를 유지한 채 함께 조정되며, 어느 한 차종만 따로 조정하지 않습니다/,
+    "expected the act statement to say the class trio moves together with its mix preserved",
   );
   pin.match(
     surface,
@@ -13498,8 +13571,8 @@ contractTest("unit #54: the demand-target picker offers the SERVER's candidates 
   );
   pin.match(
     surface,
-    /t\("차량 인풋 지정", "Name the vehicle input", "車両インプットを指定"\)/,
-    "expected the control to carry the user's own words for it (차량 인풋 지정)",
+    /t\("진입 링크 지정", "Name the approach link", "接近リンクを指定"\)/,
+    "expected the control to carry the user's own words for it (진입 링크 지정)",
   );
   // THE MAPPING THAT STANDS, on the surface: who and when, in their own words.
   pin.match(surface, /\{mapping\.named_by\}/, "expected the standing mapping to name its author on the surface");
@@ -13524,6 +13597,397 @@ contractTest("unit #54: the demand-target picker offers the SERVER's candidates 
     detail,
     /<DemandTargetPicker\s+node=\{node\}\s+demandTarget=\{demandTarget \?\? null\}/,
     "expected the picker to render inside the node detail, from the payload the page threaded in",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #59 — 비례 공동 조정: the per-class split the reviewer approves.
+//
+// AUTHORITY: the user, 2026-08-24 (docs/phase2/DECISIONS.md), choosing (a)
+// 셋을 비례로 함께 조정 — 승용차:버스:트럭 구성비 유지. Every approach link in
+// the real client model carries a three-class trio, so the demand target is
+// normally a COMPOSITE and an accepted proposal moves three vehicle inputs.
+//
+// The failure this unit is one character away from is a card that shows a
+// division other than the one the plan would apply — either by recomputing the
+// proportions client-side, or by hiding them behind the fold. Both make the
+// reviewer approve something they did not see, which is the exact condition the
+// user's rule was accepted under. Two pins, and they are opposite in sign:
+// the split IS rendered from the server's own array, and it is NOT divided here.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #59: the per-class split is the SERVER's array, on the surface", (pin) => {
+  const table = read("components/calibration/NodeScoreTable.tsx");
+  const pickerAt = table.indexOf("function DemandTargetPicker");
+  const detail = table.slice(table.indexOf("export function NodeScoreDetail"), pickerAt);
+
+  // THE SPLIT COMES OFF THE EVIDENCE the proposal already carries -- the same
+  // array `fixes` put in `evidence.target.group.split` and the same numbers its
+  // apply_edit_plan steps would write.
+  pin.match(
+    detail,
+    /const group = \(target\.group \?\? null\) as CalibrationDemandGroupTarget \| null;/,
+    "expected the grouping to be read off the proposal's own evidence block",
+  );
+  pin.match(
+    detail,
+    /const split = group\?\.split \?\? \[\];/,
+    "expected the per-member split to come from the server, never from a division computed here",
+  );
+  pin.match(
+    detail,
+    /split\.map\(\(row\) => \(/,
+    "expected every member of the split to be rendered from the server's own rows",
+  );
+  pin.match(
+    detail,
+    /\{fmt\(row\.current_volume, 0\)\} → \{fmt\(row\.proposed_volume, 0\)\} veh\/h/,
+    "expected each class to show what it carries now and what it would carry -- the change being approved",
+  );
+  pin.match(
+    detail,
+    /row\.current_share/,
+    "expected the mix being preserved to be shown as the number it is, not asserted in prose alone",
+  );
+
+  // ON THE SURFACE, NOT BEHIND THE FOLD. A division of demand one click away is
+  // a division nobody approved.
+  const surface = withoutFolds(detail);
+  pin.match(
+    surface,
+    /t\(\s*"차종별 배분 \(구성비 유지\)"/,
+    "expected the per-class split to sit on the reading surface, never inside the evidence fold",
+  );
+  pin.match(
+    surface,
+    /전부 적용되거나 전부 취소되며, 일부만 적용되지 않습니다/,
+    "expected the card to say the trio applies all-or-nothing -- a partial apply is a mix nobody chose",
+  );
+
+  // AND NO CLIENT-SIDE ARITHMETIC. No proportion, no scaling, no re-derivation
+  // of a member's share from the totals: the one thing that would let the card
+  // and the plan disagree.
+  //
+  // THREAT MODEL, NAMED (refuter round 1, F5). This pin catches drift at the
+  // RENDER POSITION -- an expression that recomputes a share where the row is
+  // drawn. It does NOT catch an in-place mutation earlier in the component
+  // (an `Object.assign` over the split array, say), because a static regex
+  // over source cannot follow a value through aliasing. That is the recorded
+  // contract-pin threat model working as designed, not a hole this pin should
+  // grow to cover: these pins defend honest drift and named classes, and
+  // catching a deliberate in-place recompute is a render-harness question
+  // (DECISIONS.md, 2026-08-24 — the threat-model boundary entry). Named here
+  // so the boundary is explicit rather than assumed.
+  pin.doesNotMatch(
+    withoutComments(detail),
+    /current_volume_total\s*\*|\*\s*observed|proposed_volume\s*=|reduce\(/,
+    "expected NO client-side split arithmetic -- the reviewer must see the numbers the plan applies",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #59 (refuter F2) — the AGENT approval card must show EVERY step.
+//
+// MEASURED DEFECT: the chat-driven approval wire carries only tool/params/
+// summary (no evidence block), `ApprovalCards.tsx` had no case for
+// `apply_edit_plan`, and the generic fallback runs every param object through
+// `formatParamValue`, which truncates at 80 characters. A three-class split's
+// steps 2..N were therefore invisible on the card, and the reviewer approved a
+// division of demand they could not see — the precise condition the user's
+// decided rule was accepted under.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #59: an edit plan's every step is on the approval card, never truncated", (pin) => {
+  const cards = read("components/agent/ApprovalCards.tsx");
+
+  // (1) THE DISPATCH REALLY REACHES THE BRANCH.
+  //
+  // Round 1's version of this pin asserted the branch appears somewhere above
+  // the fallback, and appearing above is NOT the same as being reached: the
+  // refuter (M13b) put an early `return` in front of it, turning the branch
+  // into dead code, and this test stayed green. So the prefix before the branch
+  // is asserted to contain no `return` at all except the single-write case's
+  // own one -- a structural statement about control flow rather than a
+  // positional one about text.
+  const dispatch = withoutComments(functionSource(cards, "export function AgentActionDetail"));
+  pin.match(
+    dispatch,
+    /if \(action\.tool === "apply_edit_plan"\) \{\s*return <EditPlanActionDetail/,
+    "expected apply_edit_plan to have its own renderer in the action-detail dispatch",
+  );
+  const planBranchAt = dispatch.indexOf('if (action.tool === "apply_edit_plan")');
+  const beforePlanBranch = planBranchAt === -1 ? dispatch : dispatch.slice(0, planBranchAt);
+  const singleWriteReturn =
+    /return <VehicleInputActionDetail action=\{action\} focus=\{focus\} modelEdited=\{modelEdited\} \/>;/;
+  pin.match(
+    beforePlanBranch,
+    singleWriteReturn,
+    "expected the single-write case to be the one branch that precedes the plan case",
+  );
+  pin.doesNotMatch(
+    beforePlanBranch.replace(singleWriteReturn, ""),
+    /\breturn\b/,
+    "expected NOTHING ELSE to return before the apply_edit_plan branch -- an earlier return makes the branch dead code while every positional pin stays green (refuter M13b)",
+  );
+
+  const plan = functionSource(cards, "function EditPlanActionDetail");
+  const planBody = withoutComments(plan);
+  // A CRLF trap lived here: the old slice ended at a bare "\n}\n" marker, which
+  // a Windows checkout never contains, so `plan` was "" and the two
+  // `doesNotMatch` pins below passed over an empty string. See `functionSource`.
+  pin.match(planBody, /return \(/, "expected the plan renderer's body to be readable at all");
+
+  // (2) ONE ROW PER STEP, BY CONSTRUCTION.
+  //
+  // ROUND 2'S THEORY WAS WRONG, AND IT WAS MEASURED WRONG. That version pinned
+  // ADJACENCY -- "a truncation is one more statement on the path from params to
+  // rows, so require the statements to be consecutive". A truncation does not
+  // have to be a statement. Three mutations survived the whole suite:
+  //
+  //   M-R2-1  `.filter((_, i) => i < 2)` folded into the TAIL of a pinned line
+  //           (the old pin ended that line with `[^\n]*`, which is a hole).
+  //   M-R2-2  `if (index >= 2) return null;` as the row callback's first line.
+  //   M-R2-3  `if (steps.length > 2) return null;` inside the renderer itself.
+  //
+  // So the rule is now structural, and it is asserted over this ONE function's
+  // extracted body rather than over the file (a file-wide ban on `.filter`
+  // would be false -- narrowing is legitimate elsewhere in this card):
+  //
+  //   (a) `volumeSteps` is `steps.map(...)` and NOTHING else -- the whole line
+  //       is pinned, so nothing can be appended to it;
+  //   (b) the stated COUNT and the rendered ROWS read the SAME array, and each
+  //       row carries its own params, so no second array can drift from it;
+  //   (c) this body contains no array-shrinking call, no `return null`, no
+  //       inequality on a step count or a row index, and no indexing into a
+  //       step array. The one legitimate narrowing -- which baselines to fetch
+  //       -- lives OUTSIDE the body, in `baselineInputNos`, where the worst it
+  //       can cost a row is its "from" number.
+  //
+  // THE RESIDUAL LIMITS, MEASURED AND LISTED rather than papered over: a static
+  // pin defends honest drift and NAMED classes of defect. It does not defend
+  // against an arbitrary rewrite of this renderer (a hand-rolled loop that
+  // pushes fewer rows; a helper in another file that returns a shorter array).
+  // That boundary is the recorded decision in `docs/phase2/DECISIONS.md`
+  // (2026-08-24, landed with #55b): static pins defend honest drift plus named
+  // classes, and a render harness is a SEPARATE decision, not this test's to
+  // make. What is below closes the classes the refuter actually executed, and
+  // claims no more. Round 3's refuter measured what is still open, and it is
+  // written down here rather than discovered again later:
+  //
+  //   R-1 (OPEN, by decision) A truncation that uses NO banned token: the
+  //       measured one is `[0,1].includes(index)` in the row callback with an
+  //       empty fragment for the rest -- no `.filter`, no `return null`, no
+  //       inequality, no `steps[`. Sibling shapes (a `Set` of indices, a
+  //       modulo) reach the same door. No token ban closes this class; only
+  //       rendering the component and counting rows does, which is the
+  //       separate decision above. It is also not honest drift: nobody caps a
+  //       list by accident this way.
+  //   R-2 (OPEN, narrow) A plan step that is NOT `set_vehicle_input_volume`
+  //       renders through `agentActionDetail`, whose `formatParamValue`
+  //       elides an OBJECT-valued param past 80 characters (measured: scalars
+  //       pass through whole). The STEP still gets its own row -- which is
+  //       this unit's claim -- but one such param VALUE can be shortened.
+  //   R-3 (CLOSED THIS ROUND) The `showsCurrent` pin used to carry a `[^\n]*`
+  //       wildcard through its own middle, so the two conditions that gate the
+  //       arrow could be swapped for anything at all. The whole line is pinned
+  //       below now.
+  //   R-4 (CLOSED THIS ROUND) `baselineInputNos` was pinned by SIGNATURE only,
+  //       so the one legitimate narrowing in this card could quietly widen or
+  //       change which steps it claims a baseline for. Its body is pinned now.
+  pin.match(
+    planBody,
+    /const rawSteps = \(action\.params \?\? \{\}\)\.steps;\r?\n\s*const steps = Array\.isArray\(rawSteps\)/,
+    "expected the steps to come from the action's own params, with nothing in between -- the steps ARE the split",
+  );
+  pin.match(
+    planBody,
+    /const steps = Array\.isArray\(rawSteps\) \? \(rawSteps as \{ tool\?: unknown; params\?: unknown \}\[\]\) : \[\];\r?\n\s*const volumeSteps: PlanStepRow\[\] = steps\.map\(\(step\) => \{/,
+    "expected volumeSteps to be steps.map(...) and NOTHING else -- the WHOLE line is pinned because the old pin's trailing wildcard is where a `.filter((_, i) => i < 2)` hid in plain sight (refuter M-R2-1)",
+  );
+  pin.match(
+    planBody,
+    /\{volumeSteps\.map\(\(step, index\) => \{/,
+    "expected the list to be rendered from volumeSteps itself, never from something derived from it",
+  );
+  pin.doesNotMatch(
+    planBody,
+    /\.slice\(|\.shift\(|\.splice\(|\.pop\(|\.filter\(|\.findIndex\(|MAX_[A-Z_]*STEPS_SHOWN/,
+    "expected NO array-shrinking call anywhere in this renderer's body -- the one legitimate narrowing (which baselines to fetch) is `baselineInputNos`, outside it. DELIBERATELY OVER-BROAD: a `.filter(` that shrinks nothing on screen would fail here too (refuter M-D4). Kept strict because the two errors are not symmetric -- a false positive stops a green suite and is fixed by moving the call out of this body, as `baselineInputNos` already was; a false negative is a card that silently shows a reviewer fewer changes than they are approving",
+  );
+  pin.doesNotMatch(
+    planBody,
+    /return null/,
+    "expected NOTHING in this renderer to render nothing -- `if (index >= 2) return null` in the row callback, and `if (steps.length > 2) return null` in the body, both truncated the plan while every adjacency pin stayed green (refuter M-R2-2, M-R2-3)",
+  );
+  pin.doesNotMatch(
+    planBody,
+    /[sS]teps\.length\s*[<>]|\bindex\s*[<>]/,
+    "expected no inequality on a step count or a row index -- that comparison is what a cap is made of",
+  );
+  pin.doesNotMatch(
+    planBody,
+    /[sS]teps\[/,
+    "expected the rows to be the only array this renderer reads -- indexing back into the raw steps is a second array that can fall out of step with the first",
+  );
+  // (2b) THE COUNT AND THE ROWS ARE THE SAME ARRAY, IN ALL THREE LANGUAGES.
+  // Stated from `volumeSteps`, not from `steps`: if anything ever did shrink
+  // the rows, the card could no longer say "3 changes" above two of them -- it
+  // would have to contradict the plan out loud, where a reader catches it
+  // without this file's source.
+  //
+  // ROUND 3 PINNED THIS SENTENCE IN ko ALONE, and the refuter measured what
+  // that is worth (M-D2): the en count could be changed to `length - 1` and the
+  // en/ja all-or-nothing sentences could be swapped for each other's meaning,
+  // and every pin here stayed green. A ko-only pin on a ko/en/ja triple is a
+  // CLAUDE.md plumbing violation with a green test on top of it -- an en reader
+  // is shown a number that does not match the rows they are looking at.
+  //
+  // So this is the #50-d idiom instead: a CLOSED, PARSED SET. Every t() call in
+  // this renderer is inventoried below with all three of its languages, matched
+  // through `tripleArgs` (which anchors on the quote characters, so only the
+  // exact ko AND en AND ja text, in that order, satisfies one), and the NUMBER
+  // of t() calls in the body is pinned to the size of the inventory. Anchored
+  // both directions, like every other set-equality pin here: a sentence
+  // entering fails (it is not in the inventory), a sentence leaving fails (the
+  // count drops), and a reword in ANY of the three languages fails.
+  const PLAN_CARD_TRIPLES: [string, string, string, '"' | "`"][] = [
+    ["변경 단계가 없습니다.", "This plan lists no steps.", "変更ステップがありません。", '"'],
+    [
+      "${volumeSteps.length}개 변경을 한 번에 적용",
+      "${volumeSteps.length} changes applied as one",
+      "${volumeSteps.length}件の変更を一度に適用",
+      "`",
+    ],
+    ["차량 입력 ${step.inputNo}", "Vehicle input ${step.inputNo}", "車両入力 ${step.inputNo}", "`"],
+    ["시간 구간 ${step.intervalNo}", "interval ${step.intervalNo}", "期間${step.intervalNo}", "`"],
+    [
+      "전부 적용되거나 전부 취소됩니다 — 일부만 적용되는 상태는 없습니다.",
+      "All of it applies or none of it does — there is no partially applied state.",
+      "全て適用されるか全て取り消されるかで、一部だけが適用される状態はありません。",
+      '"',
+    ],
+    [
+      "현재값 미표시 · 이 대화에서 모델이 이미 편집되었습니다",
+      "Current values hidden · this conversation has already edited the model",
+      "現在値は非表示 · この会話で既にモデルを編集しています",
+      '"',
+    ],
+  ];
+  for (const [ko, en, ja, quote] of PLAN_CARD_TRIPLES) {
+    pin.match(planBody, tripleArgs(ko, en, ja, quote), `expected the plan card's exact ko/en/ja triple for ${ko}`);
+  }
+  // `[^A-Za-z0-9_$.]` in front so this counts CALLS to the translator and not
+  // the `t` at the end of some other identifier, nor `x.t(`.
+  const planCardTCalls = (planBody.match(/[^A-Za-z0-9_$.]t\(/g) ?? []).length;
+  pin.match(
+    `planCardTriples=${planCardTCalls}/pinned=${PLAN_CARD_TRIPLES.length}`,
+    /^planCardTriples=6\/pinned=6$/,
+    "expected this renderer's translated sentences to be EXACTLY the six inventoried above -- a seventh (unpinned in en/ja, the #50-d class) fails here, and so does one disappearing",
+  );
+  pin.match(
+    planBody,
+    /if \(volumeSteps\.length === 0\) \{/,
+    "expected the empty-plan case to test the rendered array too, so one array decides the count, the rows and the empty state",
+  );
+  // (2c) ...and the narrowing that IS legitimate is typed so it can never
+  // become the row source: it returns ids, not rows.
+  pin.match(
+    cards,
+    /function baselineInputNos\(rows: PlanStepRow\[\]\): string\[\] \{/,
+    "expected the baseline selection to live outside the renderer and to return IDS -- a string[] cannot be mistaken for the list of rows",
+  );
+  // ...and WHAT it narrows to is pinned too (R-4 above). The signature alone
+  // said "ids, not rows" and left the predicate free: widening it fetches a
+  // baseline for a step that has no comparable "current" value, and narrowing
+  // it drops a row's "from" number silently. Both are wrong in the same
+  // direction -- a number on screen that was never measured for that row.
+  pin.match(
+    functionSource(cards, "function baselineInputNos"),
+    /return rows\r?\n\s*\.filter\(\(row\) => row\.tool === "set_vehicle_input_volume" && row\.intervalNo === 1 && row\.inputNo !== ""\)\r?\n\s*\.map\(\(row\) => row\.inputNo\);/,
+    "expected the one legitimate narrowing to be exactly 'interval-1 vehicle-input writes that name an input', mapped to their ids and nothing else",
+  );
+  pin.match(
+    planBody,
+    /const baselines = useVehicleInputBaselines\(baselineTrusted \? baselineInputNos\(volumeSteps\) : \[\]\);/,
+    "expected the renderer to hand its rows to the baseline selection rather than narrowing them itself",
+  );
+  // (The all-or-nothing contract -- what makes N writes ONE act -- is the fifth
+  // entry of the inventory above. It used to have its own ko-fragment pin here,
+  // against the COMMENTED source, where this file's own explanation of the rule
+  // could have satisfied it; the inventory pins all three languages against the
+  // comment-stripped body instead.)
+
+  // (3) THE "FROM" SIDE IS FETCHED OR ABSENT -- never invented.
+  //
+  // `?? null` is one character from `?? 0`, and the refuter (M12) made that
+  // change and watched the suite pass. The difference on screen is a row
+  // reading "0 → 327.28 veh/h": a measurement of no traffic, printed beside a
+  // proposal, for an input whose baseline this card never managed to read. The
+  // absence has to stay an absence, and the flag that gates the arrow has to be
+  // the null test rather than anything derived from the number.
+  pin.match(
+    planBody,
+    /const current = baselines\[step\.inputNo\]\?\.volume \?\? null;/,
+    "expected an unfetched baseline to stay ABSENT -- `?? 0` prints a 'from 0 veh/h' this card never measured (refuter M12)",
+  );
+  // WHOLE LINE (R-3 above). The wildcard this replaces sat between the two ends
+  // of the pin, so both conditions that gate the arrow -- the verb, and the
+  // interval -- were free: a row for a LATER interval could show an interval-1
+  // baseline as its "from" number, which is a measurement of a different hour.
+  pin.match(
+    planBody,
+    /const showsCurrent = step\.tool === "set_vehicle_input_volume" && step\.intervalNo === 1 && current != null;/,
+    "expected the arrow's left side to be shown only for an interval-1 vehicle-input write whose baseline actually came back -- all three conditions, pinned whole",
+  );
+  pin.doesNotMatch(
+    planBody,
+    /\?\?\s*0\b/,
+    "expected no numeric fallback anywhere in this card -- 0 veh/h is a measurement, not an absence",
+  );
+  // ...AND THE SAME RULE ON THE PROPOSAL SIDE, which round 2 left unpinned.
+  // Every pin above guarded the fetched "from" number; the refuter (M-R2-9)
+  // changed the step's OWN volume fallback from `: null` to `: 0` and the whole
+  // suite passed. On screen that reads "→ 0 veh/h": a proposal to shut an input
+  // off, printed for a step whose params this card could not read as a number.
+  // Both sides of the arrow have to be able to be ABSENT.
+  pin.match(
+    planBody,
+    /volume: typeof params\.volume === "number" \? params\.volume : null,/,
+    "expected an unreadable step volume to stay ABSENT -- `: 0` renders a proposal to zero an input the plan never said to zero (refuter M-R2-9)",
+  );
+  pin.match(
+    planBody,
+    /step\.volume == null \? "\?" : formatVolume\(step\.volume\)/,
+    "expected the absent proposal volume to render as '?', never as a number",
+  );
+  pin.doesNotMatch(
+    planBody,
+    /\?[^?:\n]*:\s*0\b/,
+    "expected no ternary in this card to fall back to 0 -- zero is a measurement, on either side of the arrow",
+  );
+
+  // (4) NO CLIENT-SIDE SPLIT ARITHMETIC. The card renders what the plan states;
+  // a share recomputed on this side could disagree with what applies.
+  pin.doesNotMatch(
+    planBody,
+    /current_share|proposed_volume\s*=|\/\s*total|reduce\(/,
+    "expected the plan card to render the plan's own numbers, never a recomputed share",
+  );
+
+  // (5) AND THE 80-CHAR DUMP CAN NEVER BE THIS VERB'S RENDERER. `formatParamValue`
+  // truncating an object is fine for a scalar-param tool and fatal for a plan,
+  // so the generic switch must have no apply_edit_plan case to fall into.
+  const generic = functionSource(cards, "export function agentActionDetail");
+  pin.match(generic, /switch \(action\.tool\) \{/, "expected the one-line switch to be readable at all");
+  pin.doesNotMatch(
+    generic,
+    /case "apply_edit_plan"/,
+    "expected apply_edit_plan NOT to be rendered by the one-line string switch -- it needs rows",
+  );
+  pin.match(
+    cards,
+    /const PARAM_VALUE_MAX_CHARS = 80;/,
+    "expected the truncation constant to still exist -- this pin is about what it may NOT render",
   );
 });
 

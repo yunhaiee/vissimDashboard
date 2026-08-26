@@ -425,6 +425,11 @@ def _derived_targets_and_reasons(
         reasons[str(node_id)] = {
             "reason": demand.get("reason"),
             "candidate_count": len(demand.get("candidate_inputs") or []),
+            # #59: what the modeller is actually asked to choose between. The
+            # ladder's "several inputs feed this node" sentence would otherwise
+            # keep saying six where the picker now offers two, which is the
+            # instruction naming a choice the screen does not present.
+            "candidate_group_count": len(demand.get("candidate_groups") or []),
         }
     return targets or None, reasons
 
@@ -968,7 +973,19 @@ class DemandTargetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     node_id: str = Field(..., description="The counts-workbook node this input is said to drive")
-    vehicle_input_no: str = Field(..., description="One of that node's candidate vehicle inputs")
+    vehicle_input_no: str | None = Field(
+        None, description="One of that node's candidate vehicle inputs (the #54 shape)"
+    )
+    #: Unit #59's shape: the vehicle-class inputs of ONE candidate link-group.
+    #: The full membership is asserted by the caller and checked for SET
+    #: EQUALITY against the server's own groups, for the reason the link is
+    #: asserted rather than derived (above): the reviewer approves the classes
+    #: they SAW, and a group that gained one since must be refused rather than
+    #: quietly enrolled. Exactly one of this and ``vehicle_input_no`` is filled;
+    #: both is a named refusal, not a precedence rule.
+    vehicle_input_nos: list[str] | None = Field(
+        None, description="The member vehicle inputs of one candidate link-group"
+    )
     link_no: str = Field(..., description="The link that input feeds — checked, never assumed")
     reason: str = Field(
         ...,
@@ -1043,7 +1060,17 @@ def _demand_target_payload(period: str | None) -> dict[str, Any]:
             "approach_links": list((why or {}).get("approach_links") or []),
             "reason": demand.get("reason"),
             "chosen": demand.get("chosen"),
+            "chosen_group": demand.get("chosen_group"),
             "candidates": list(demand.get("candidate_inputs") or []),
+            # #59: what the picker actually offers. The raw inputs stay beside
+            # it — a reader has to be able to see WHICH classes a group holds,
+            # and the store still checks a #54 single-input naming against them.
+            "candidate_groups": list(demand.get("candidate_groups") or []),
+            # The grouping and the class rule for a node that RESOLVED to a
+            # group, so "why does this node have a target now when it refused
+            # before" is answered on the same payload that answers "which".
+            "group": demand.get("group"),
+            "class_rule": demand.get("class_rule"),
             "human_mapping_ignored": demand.get("human_mapping_ignored"),
             "mapping": standing.get(str(node_id)),
         }
@@ -1101,19 +1128,23 @@ def create_demand_target(
         human_mappings=_demand_target_index(),
     )
     node_why = ((derived or {}).get("nodes") or {}).get(str(body.node_id).strip())
-    candidates = (
-        None
-        if node_why is None
-        else list(((node_why or {}).get("vehicle_input") or {}).get("candidate_inputs") or [])
-    )
+    demand_why = (node_why or {}).get("vehicle_input") or {}
+    candidates = None if node_why is None else list(demand_why.get("candidate_inputs") or [])
+    # #59: the GROUPS come from the same derivation call and the same node, so
+    # the list a group naming is checked against is the list the picker offered.
+    # ``None`` when the node was never derived, which the store turns into its
+    # own named refusal rather than treating as "no constraints".
+    groups = None if node_why is None else list(demand_why.get("candidate_groups") or [])
     try:
         return demand_target_map.record_mapping(
             node_id=body.node_id,
             vehicle_input_no=body.vehicle_input_no,
+            vehicle_input_nos=body.vehicle_input_nos,
             link_no=body.link_no,
             reason=body.reason,
             named_by=str(user.get("username") or user.get("id") or "").strip(),
             candidates=candidates,
+            groups=groups,
         )
     except demand_target_map.DemandTargetRefused as exc:
         raise HTTPException(status_code=exc.status, detail=exc.to_dict()) from exc

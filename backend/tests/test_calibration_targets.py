@@ -33,6 +33,7 @@ redirects. No COM, no ``make_demo_data``.
 from __future__ import annotations
 
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,7 @@ from fastapi.testclient import TestClient
 import main
 from routers import calibration as calibration_endpoint
 from services import datasets, demand_target_map, validation, workspaces
-from services.agent import fixes, reality_check, reality_check_targets, tools_calibration, tools_metrics, tools_network
+from services.agent import batch, demand_class_split, fixes, reality_check, reality_check_targets, tools_calibration, tools_metrics, tools_network
 from services.agent.toolkit import default_registry, dispatch
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -302,12 +303,11 @@ def test_two_candidates_produce_no_target_and_no_dominance_pick(derived):
     assert sorted(why["candidates"]) == ["5", "6"], "both really were candidates"
 
 
-def test_several_inputs_on_ONE_link_are_the_same_refusal(observed, shadow):
-    """The real client model's shape: link 620 carries vehicle inputs 107/207/307,
-    one per vehicle class, all named the same (tools_network._parse_vehicle_inputs).
-    Sibling inputs on a single link are the same ambiguity as two approaches and
-    get the same answer."""
-    crowded = {
+def _crowded(shadow: dict[str, Any]) -> dict[str, Any]:
+    """The real client model's shape on node 1's single counted approach: link
+    101 carrying vehicle inputs 107/207/307, one per vehicle class, all named
+    the same (``tools_network._parse_vehicle_inputs``)."""
+    return {
         **shadow,
         "vehicle_inputs": [
             {"no": "107", "link": "101", "volume": 500.0},
@@ -315,11 +315,118 @@ def test_several_inputs_on_ONE_link_are_the_same_refusal(observed, shadow):
             {"no": "307", "link": "101", "volume": 200.0},
         ],
     }
-    derived = reality_check_targets.derive_targets(observed=observed, shadow_model=crowded)
-    assert [t for t in derived["targets"] if t.vehicle_input_no] == []
-    assert derived["nodes"]["1"]["vehicle_input"]["reason"] == (
-        reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES
+
+
+def _two_trios(shadow: dict[str, Any]) -> dict[str, Any]:
+    """The demo's node 8 in miniature: node 4's TWO counted approaches (links
+    203 and 205), each carrying its own three-class trio — six inputs, two
+    choices."""
+    return {
+        **shadow,
+        "vehicle_inputs": [
+            {"no": "109", "link": "203", "volume": 500.0},
+            {"no": "209", "link": "203", "volume": 300.0},
+            {"no": "309", "link": "203", "volume": 200.0},
+            {"no": "113", "link": "205", "volume": 400.0},
+            {"no": "213", "link": "205", "volume": 100.0},
+            {"no": "313", "link": "205", "volume": 50.0},
+        ],
+    }
+
+
+def test_several_class_inputs_on_ONE_link_fold_into_one_composite_target(observed, shadow):
+    """#59 INVERTS this case, and the inversion is the unit.
+
+    Until the user decided the class rule, a link's 승용차/버스/트럭 trio read as
+    the same ambiguity as two approaches and got the same refusal
+    (``MULTIPLE_VEHICLE_INPUT_CANDIDATES``) — which, since EVERY approach link in
+    the client model carries such a trio, refused the demand knob network-wide.
+
+    The user decided (DECISIONS.md 2026-08-24): the trio is adjusted together,
+    proportionally, mix preserved. So the LINK is the unit of choice, this node
+    has exactly ONE link-group, and it resolves. What the refusal was asking has
+    been answered; the refusal did not merely get weaker.
+    """
+    derived = reality_check_targets.derive_targets(
+        observed=observed, shadow_model=_crowded(shadow)
     )
+    why = derived["nodes"]["1"]["vehicle_input"]
+    assert why["reason"] == reality_check_targets.SINGLE_VEHICLE_INPUT_GROUP
+    assert why["chosen_group"] == "101"
+
+    # AND THE FOLD IS DISCLOSED, which is the condition on resolving at all. A
+    # reader must be able to see that three inputs stand behind this target;
+    # a silently-picked one would be the dominance pick this module refuses.
+    assert why["group"]["vehicle_input_nos"] == ["107", "207", "307"]
+    assert why["group"]["member_count"] == 3
+    assert why["group"]["current_volume_total"] == 1000.0
+    assert why["class_rule"] == fixes.ASSUME_CLASS_MIX_PRESERVED
+
+    # NO SINGLE CLASS WAS PICKED. ``chosen`` still means "the one input this
+    # node resolved to", and there is none — the composite is not one of the
+    # three wearing the other two's numbers.
+    assert why["chosen"] is None
+    target = _by_node(derived, "1")[0]
+    assert target.vehicle_input_no is None
+    assert [member.vehicle_input_no for member in target.vehicle_input_group_members] == [
+        "107",
+        "207",
+        "307",
+    ]
+    # The link is unchanged and singular — that is what makes a group a group,
+    # and it is what unit D4 still joins the observed rows against.
+    assert target.vehicle_input_link_no == "101"
+    assert target.vehicle_input_current_volume == 1000.0
+    # Nobody's name is on a derivation.
+    assert target.vehicle_input_named_by is None
+
+
+def test_two_links_of_class_trios_are_still_a_human_choice_of_TWO(observed, shadow):
+    """The demo's node 8 in miniature: six inputs over two approach links.
+
+    Folding answers the CLASS question and only that one. Two counted approaches
+    is still two, there is still no evidence saying which carries the shortfall,
+    and the honest refusal stands — but what the modeller is asked to choose
+    between is 2 things, not 6.
+    """
+    derived = reality_check_targets.derive_targets(
+        observed=observed, shadow_model=_two_trios(shadow)
+    )
+    why = derived["nodes"]["4"]["vehicle_input"]
+    assert why["reason"] == reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES
+    assert why["chosen"] is None and why["chosen_group"] is None
+    assert [t for t in _by_node(derived, "4") if t.vehicle_input_no] == []
+
+    # SIX raw candidates, TWO choices. Both stay on the audit: the picker offers
+    # the groups, and a reader still has to be able to see which classes each
+    # one holds.
+    assert len(why["candidate_inputs"]) == 6
+    groups = why["candidate_groups"]
+    assert [group["link_no"] for group in groups] == ["203", "205"]
+    assert [group["vehicle_input_nos"] for group in groups] == [
+        ["109", "209", "309"],
+        ["113", "213", "313"],
+    ]
+    assert [group["current_volume_total"] for group in groups] == [1000.0, 550.0]
+    # No group was resolved, so nothing claims a rule was applied.
+    assert "group" not in why and "class_rule" not in why
+
+
+def test_one_input_on_one_link_is_still_an_identity_not_a_rule(derived):
+    """A group of ONE is not a fold, and must not dress itself as one.
+
+    Node 1's real fixture has a single input on a single approach. The network
+    stated an identity; no class rule was applied; so the reason code is the one
+    it always was and no group block appears. "The network says so" and "a rule
+    the user chose folded three" are different claims and look different.
+    """
+    why = derived["nodes"]["1"]["vehicle_input"]
+    assert why["reason"] == reality_check_targets.SINGLE_VEHICLE_INPUT
+    assert why["chosen"] == "1"
+    assert "group" not in why and "class_rule" not in why
+    target = _by_node(derived, "1")[0]
+    assert target.vehicle_input_no == "1"
+    assert target.vehicle_input_group_members is None or target.vehicle_input_group_members == []
 
 
 def test_a_workbook_keyed_by_turn_tokens_is_structurally_excluded(derived):
@@ -793,6 +900,32 @@ def _name_input(
     )
 
 
+def _candidate_groups(derived: dict[str, Any], node_id: str) -> list[dict[str, Any]]:
+    return derived["nodes"][node_id]["vehicle_input"]["candidate_groups"]
+
+
+def _name_group(
+    derived: dict[str, Any],
+    node_id: str,
+    link_no: str,
+    vehicle_input_nos: list[str],
+    *,
+    by: str = "yunha",
+    reason: str = "이 접근로가 이 노드 유입의 대부분을 나릅니다 — 차종은 구성비를 유지해 함께 조정",
+    groups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Unit #59's naming through the REAL store, with the REAL group list."""
+    return demand_target_map.record_mapping(
+        node_id=node_id,
+        vehicle_input_nos=vehicle_input_nos,
+        link_no=link_no,
+        reason=reason,
+        named_by=by,
+        candidates=_candidate_rows(derived, node_id),
+        groups=_candidate_groups(derived, node_id) if groups is None else groups,
+    )
+
+
 def _derive_with_store(observed, shadow) -> dict[str, Any]:
     """The derivation as the ROUTER runs it: fresh, unrevoked mappings only."""
     return reality_check_targets.derive_targets(
@@ -858,6 +991,137 @@ def test_a_named_input_wins_over_the_refusal_for_its_node(wired, derived, observ
     assert why["assumption"] == fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL
     # ...and the alternatives are not erased by the choice.
     assert sorted(why["candidates"]) == ["5", "6"]
+
+
+def test_a_named_LINK_GROUP_wins_over_the_refusal_and_says_it_is_a_group(
+    wired, observed, shadow
+):
+    """#59's version of the unit above: what the person named was a LINK.
+
+    Node 4 has two counted approaches, each a class trio — six inputs, two
+    choices — so folding did NOT resolve it and a human still had to answer. The
+    answer is a group, and the target it produces says so: a distinct reason
+    code, the members on the target, and the class rule beside the name.
+    """
+    trios = _two_trios(shadow)
+    derived_trios = reality_check_targets.derive_targets(observed=observed, shadow_model=trios)
+    _name_group(derived_trios, "4", "203", ["109", "209", "309"])
+    with_human = _derive_with_store(observed, trios)
+
+    demand = _by_node(with_human, "4")
+    assert len(demand) == 1
+    # No single class was chosen — the whole trio is the target.
+    assert demand[0].vehicle_input_no is None
+    assert demand[0].vehicle_input_link_no == "203"
+    assert demand[0].vehicle_input_current_volume == 1000.0
+    assert [m.vehicle_input_no for m in demand[0].vehicle_input_group_members] == [
+        "109",
+        "209",
+        "309",
+    ]
+    assert demand[0].vehicle_input_named_by == "yunha"
+
+    why = with_human["nodes"]["4"]["vehicle_input"]
+    assert why["reason"] == reality_check_targets.HUMAN_NAMED_VEHICLE_INPUT_GROUP
+    assert why["chosen"] is None
+    assert why["chosen_group"] == "203"
+    assert why["named_by"] == "yunha"
+    # BOTH TOKENS on the audit block: the premise, and the rule.
+    assert why["assumption"] == fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL
+    assert why["class_rule"] == fixes.ASSUME_CLASS_MIX_PRESERVED
+    assert why["group"]["vehicle_input_nos"] == ["109", "209", "309"]
+    # ...and the alternative group is not erased by the choice.
+    assert [group["link_no"] for group in why["candidate_groups"]] == ["203", "205"]
+
+
+def test_a_54_record_still_names_ONE_input_even_on_a_link_59_would_fold(
+    wired, observed, shadow
+):
+    """BACKWARD COMPATIBILITY, and it is an honesty rule rather than a courtesy.
+
+    A #54 record names one vehicle input. On a link whose class trio the
+    derivation would now fold, that record must still target THAT ONE INPUT —
+    widening somebody's recorded claim into a three-class edit because a rule
+    arrived after they signed it would change what they put their name to.
+
+    It also OUTRANKS the fold, deliberately: the auto-fold is a policy, not a
+    measurement, so a person narrowing it to one class is making a claim the
+    network cannot settle rather than repeating one it already made.
+    """
+    crowded = _crowded(shadow)
+    derived_crowded = reality_check_targets.derive_targets(observed=observed, shadow_model=crowded)
+    assert derived_crowded["nodes"]["1"]["vehicle_input"]["reason"] == (
+        reality_check_targets.SINGLE_VEHICLE_INPUT_GROUP
+    ), "fixture: this link IS one the fold applies to"
+
+    _name_input(derived_crowded, "1", "107", "101", reason="승용차만 조정 — 화물은 실측 확정")
+    with_human = _derive_with_store(observed, crowded)
+
+    why = with_human["nodes"]["1"]["vehicle_input"]
+    assert why["reason"] == reality_check_targets.HUMAN_NAMED_VEHICLE_INPUT
+    assert why["chosen"] == "107"
+    # NOT widened into the trio: no group, no class rule, no members.
+    assert "group" not in why and "class_rule" not in why
+    target = _by_node(with_human, "1")[0]
+    assert target.vehicle_input_no == "107"
+    assert target.vehicle_input_current_volume == 500.0
+    assert not target.vehicle_input_group_members
+
+
+def test_a_group_naming_on_an_already_folded_node_decides_nothing(wired, observed, shadow):
+    """MACHINE OUTRANKS TESTIMONY (#53's rule), extended to the fold.
+
+    Node 1's single approach was already folded to one group by the derivation,
+    so a person naming that same group is recounting a verdict rather than
+    making a choice. Reporting HUMAN_NAMED_..._GROUP would put somebody's name
+    on something they did not decide — but the mapping is RECORDED as ignored,
+    with the code saying why, so "I named it and the screen credits the rule"
+    has an answer.
+    """
+    crowded = _crowded(shadow)
+    derived_crowded = reality_check_targets.derive_targets(observed=observed, shadow_model=crowded)
+    created = _name_group(derived_crowded, "1", "101", ["107", "207", "307"])
+    with_human = _derive_with_store(observed, crowded)
+
+    why = with_human["nodes"]["1"]["vehicle_input"]
+    assert why["reason"] == reality_check_targets.SINGLE_VEHICLE_INPUT_GROUP
+    assert why["human_mapping_ignored"] == (
+        reality_check_targets.HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE
+    )
+    assert why["mapping_id"] == created["id"]
+    assert why["named_by"] == "yunha"
+    # The target itself is unchanged and unattributed — a rule, not a person.
+    assert _by_node(with_human, "1")[0].vehicle_input_named_by is None
+
+
+def test_a_group_whose_membership_changed_is_ignored_with_its_own_named_code(
+    wired, observed, shadow
+):
+    """The SECOND guard, for the composite shape.
+
+    A class that left the link since the naming means the person's claim is
+    about a group that no longer exists. The node falls back to the exact
+    absence state it had before anybody named anything — never to a partial
+    adjustment over whatever classes happen to remain.
+    """
+    trios = _two_trios(shadow)
+    derived_trios = reality_check_targets.derive_targets(observed=observed, shadow_model=trios)
+    _name_group(derived_trios, "4", "203", ["109", "209", "309"])
+
+    moved = {
+        **trios,
+        "vehicle_inputs": [
+            entry for entry in trios["vehicle_inputs"] if entry["no"] != "309"
+        ],
+    }
+    with_human = _derive_with_store(observed, moved)
+    why = with_human["nodes"]["4"]["vehicle_input"]
+    assert why["human_mapping_ignored"] == (
+        reality_check_targets.HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED
+    )
+    assert why["reason"] == reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES
+    assert why["chosen"] is None and why["chosen_group"] is None
+    assert _by_node(with_human, "4") == []
 
 
 def test_naming_one_node_leaves_every_other_node_byte_identical(
@@ -1159,6 +1423,511 @@ def test_a_named_target_carries_the_assumption_and_the_name_into_the_proposal(
     assert named["assumption"] == fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL
 
 
+def _composite_outcome(
+    observed, *, members: list[dict[str, Any]], total: float | None, link_no: str = "999", **extra
+) -> dict[str, Any]:
+    """Node 4's demand outcome for a COMPOSITE target (unit #59).
+
+    ``link_no="999"`` is the same construction the single-input tests above use:
+    the entrance is moved somewhere the counts never reach, which is the only
+    shape that gets past unit D4's measured-entrance refusal and reaches the
+    demand-ESTIMATE path where an adjustment — and therefore a split — exists.
+    """
+    return fixes.map_node_counts(
+        {**fixes.node_evidence_from_real_counts(observed["4"]), "modelled_total": 550.0},
+        targets={
+            "vehicle_input": {
+                "input_no": None,
+                "current_volume": total,
+                "link_no": link_no,
+                "interval_no": 1,
+                "members": members,
+                **extra,
+            }
+        },
+    ).to_dict()
+
+
+_TRIO = [
+    {"input_no": "109", "current_volume": 200.0},
+    {"input_no": "209", "current_volume": 120.0},
+    {"input_no": "309", "current_volume": 80.0},
+]
+
+
+def test_a_composite_target_proposes_ONE_all_or_nothing_plan_carrying_the_split(observed):
+    """THE #59 PROPOSAL. Three classes, one card, one all-or-nothing action.
+
+    A composite is N writes and it must be N writes that ALL land or none do: a
+    partially applied trio leaves a class mix nobody approved and nobody chose,
+    which is the precise outcome the user's rule exists to prevent. So the verb
+    is ``apply_edit_plan``, whose own contract is serial application with
+    per-step readback and rollback of every applied step on the first failure.
+    """
+    outcome = _composite_outcome(observed, members=_TRIO, total=400.0)
+    assert outcome["outcome"] == "PROPOSAL"
+    assert outcome["verb"] == "apply_edit_plan"
+
+    steps = outcome["params"]["steps"]
+    assert [step["tool"] for step in steps] == ["set_vehicle_input_volume"] * 3
+    assert [step["params"]["input_no"] for step in steps] == ["109", "209", "309"]
+    # 400 * 900 / 550 = 654.55, split by the current 200:120:80 mix.
+    assert outcome["evidence"]["proposed_volume"] == 654.55
+    assert [step["params"]["volume"] for step in steps] == [327.28, 196.36, 130.91]
+
+    # BOTH TOKENS. The premise beside the rule, on the proposal's own tuple.
+    assert fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL in outcome["assumptions"]
+    assert fixes.ASSUME_CLASS_MIX_PRESERVED in outcome["assumptions"]
+
+    group = outcome["evidence"]["target"]["group"]
+    assert group["vehicle_input_nos"] == ["109", "209", "309"]
+    assert group["split_rule"] == demand_class_split.SPLIT_RULE
+    # The token rides INSIDE the block too, because a refusal has no
+    # ``assumptions`` tuple and must still state the rule that built its target.
+    assert group["assumption"] == fixes.ASSUME_CLASS_MIX_PRESERVED
+
+
+def test_the_split_the_card_shows_is_the_split_the_plan_applies(observed):
+    """One array, two renderings. The reviewer approves the numbers they can
+    SEE, so the per-member evidence and the steps that would actually run must
+    be the same numbers — not a display recomputed beside the real ones."""
+    outcome = _composite_outcome(observed, members=_TRIO, total=400.0)
+    split = outcome["evidence"]["target"]["group"]["split"]
+    steps = outcome["params"]["steps"]
+    assert [row["vehicle_input_no"] for row in split] == [
+        step["params"]["input_no"] for step in steps
+    ]
+    assert [row["proposed_volume"] for row in split] == [
+        step["params"]["volume"] for step in steps
+    ]
+    # And the members sum to the total the proposal states, exactly. A split
+    # that drifted would propose a total nobody approved in the one number this
+    # card is about.
+    assert sum(Decimal(str(row["proposed_volume"])) for row in split) == Decimal("654.55")
+    assert [row["current_volume"] for row in split] == [200.0, 120.0, 80.0]
+    assert [row["current_share"] for row in split] == [0.5, 0.3, 0.2]
+
+
+def test_a_composite_whose_classes_are_ALL_ZERO_is_refused_by_name(observed):
+    """No mix to preserve, no proportion to apply — and no invented split.
+
+    An equal division would not be the user's rule; it would be a mix this
+    system made up and attributed to that rule. The refusal names itself and
+    says what would answer it.
+    """
+    zeros = [{"input_no": no, "current_volume": 0.0} for no in ("109", "209", "309")]
+    outcome = _composite_outcome(observed, members=zeros, total=0.0)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_VOLUMES_ALL_ZERO
+    assert outcome["verb"] is None and outcome["params"] is None
+    # The refusal still discloses the group it was refusing FOR.
+    assert outcome["evidence"]["target"]["group"]["vehicle_input_nos"] == ["109", "209", "309"]
+    for language in ("ko", "en", "ja"):
+        assert outcome["rationale"][language].strip()
+
+
+def test_one_unknown_class_volume_is_the_existing_evidence_refusal_not_a_guess(observed):
+    """Unknown is not zero. A member whose volume the .inpx never stated makes
+    the group's total unknown, which is already a named refusal — reached
+    without inventing a weight for the class nobody measured."""
+    partial = [
+        {"input_no": "109", "current_volume": 200.0},
+        {"input_no": "209", "current_volume": None},
+    ]
+    outcome = _composite_outcome(observed, members=partial, total=None)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.EVIDENCE_INSUFFICIENT
+
+
+# ---------------------------------------------------------------------------
+# Refuter round 1 — the AGENT-facing composite path, where the group total and
+# the members arrive as INDEPENDENT fields an LLM fills in.
+# ---------------------------------------------------------------------------
+
+
+def test_an_unstated_class_volume_is_never_told_that_every_class_is_zero(observed):
+    """F1, THE REGRESSION. The refusal must name its own cause.
+
+    Members 500/None/200 with a total the caller declared: two classes plainly
+    carry traffic, so the all-zero sentence is FALSE about them, and the reader
+    would be sent to fix a thing that is not broken while the real problem — one
+    unstated volume — went unnamed. The refusal now names the class that is
+    missing and says why unknown cannot be read as zero.
+    """
+    partial = [
+        {"input_no": "109", "current_volume": 500.0},
+        {"input_no": "209", "current_volume": None},
+        {"input_no": "309", "current_volume": 200.0},
+    ]
+    outcome = _composite_outcome(observed, members=partial, total=700.0)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.EVIDENCE_INSUFFICIENT
+    assert outcome["reason_code"] != fixes.GROUP_VOLUMES_ALL_ZERO
+    # The CAUSE travels as data, not only as prose.
+    assert outcome["evidence"]["split_cause"] == demand_class_split.SPLIT_UNKNOWN_MEMBER_VOLUME
+    assert outcome["evidence"]["unstated_members"] == ["209"]
+    # And the false sentence is gone from every language.
+    for language in ("ko", "en", "ja"):
+        assert outcome["rationale"][language].strip()
+    assert "every one of them currently carries zero" not in outcome["rationale"]["en"]
+    assert "209" in outcome["rationale"]["en"]
+
+
+def test_a_negative_class_volume_gets_its_own_named_refusal(observed):
+    """A negative weight is not a share of any mix, and it is not zero either."""
+    negative = [
+        {"input_no": "109", "current_volume": 500.0},
+        {"input_no": "209", "current_volume": -50.0},
+    ]
+    outcome = _composite_outcome(observed, members=negative, total=450.0)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_VOLUME_NEGATIVE
+    assert outcome["evidence"]["split_cause"] == demand_class_split.SPLIT_NEGATIVE_MEMBER_VOLUME
+    assert "209" in outcome["rationale"]["en"]
+
+
+def test_a_declared_total_the_members_contradict_is_refused_not_averaged(observed):
+    """F4. Two numbers describing one link disagree, so one is wrong.
+
+    Measured in round 1: members 500/300/200 with a declared total of 400
+    produced "from 400 to 480" beside a split that cut every class by 52%, while
+    the card claimed the mix was preserved. This system cannot tell which number
+    is wrong, so it refuses rather than picking one — the same doctrine
+    `genesis.side_inputs` applies to a declared cycle that contradicts
+    Σ(green + clearance).
+    """
+    contradicting = [
+        {"input_no": "109", "current_volume": 500.0},
+        {"input_no": "209", "current_volume": 300.0},
+        {"input_no": "309", "current_volume": 200.0},
+    ]
+    outcome = _composite_outcome(observed, members=contradicting, total=400.0)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_MEMBER_TOTAL_DISAGREES
+    assert outcome["verb"] is None and outcome["params"] is None
+    # The evidence states BOTH numbers, so the reader can see which to fix.
+    assert outcome["evidence"]["declared_group_total"] == 400.0
+    assert outcome["evidence"]["member_volume_sum"] == 1000.0
+    assert outcome["evidence"]["difference"] == 600.0
+    for language in ("ko", "en", "ja"):
+        assert outcome["rationale"][language].strip()
+    # And the agreeing case is untouched: _TRIO really does sum to its total.
+    agreeing = _composite_outcome(observed, members=_TRIO, total=400.0)
+    assert agreeing["outcome"] == "PROPOSAL"
+
+
+def test_rounding_does_not_count_as_a_contradiction(observed):
+    """Every member is quantised to hundredths, so a truthfully declared total
+    may differ from their sum by each member's own rounding — and by no more.
+    A tolerance that refused honest rounding would make the composite path
+    unusable; one that swallowed a real gap would be F4 again."""
+    outcome = _composite_outcome(observed, members=_TRIO, total=400.01)
+    assert outcome["outcome"] == "PROPOSAL", outcome.get("reason_code")
+
+
+def test_a_plan_that_could_not_run_is_refused_before_any_card_exists(observed):
+    """F3. The reviewer's signature is never spent on an unrunnable plan.
+
+    A group of eleven classes exceeds `batch.MAX_STEPS`, so `apply_edit_plan`
+    would refuse it at preflight — in round 1 that happened only AFTER a human
+    approved the card. The plan-level check now runs where the plan is built.
+    """
+    many = [
+        {"input_no": str(100 + index), "current_volume": 100.0}
+        for index in range(batch.MAX_STEPS + 1)
+    ]
+    outcome = _composite_outcome(observed, members=many, total=100.0 * len(many))
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_PLAN_REJECTED_BY_PREFLIGHT
+    assert outcome["verb"] is None and outcome["params"] is None
+    assert outcome["evidence"]["plan_findings"], "the batch's own findings ride in the evidence"
+    for language in ("ko", "en", "ja"):
+        assert outcome["rationale"][language].strip()
+
+
+def test_two_steps_naming_ONE_input_are_refused_before_any_card_exists(observed):
+    """F3's collision half: a duplicated class would have two steps writing the
+    same input's volume, the later silently overwriting the earlier's intent."""
+    duplicated = [
+        {"input_no": "109", "current_volume": 200.0},
+        {"input_no": "109", "current_volume": 300.0},
+    ]
+    outcome = _composite_outcome(observed, members=duplicated, total=500.0)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_PLAN_REJECTED_BY_PREFLIGHT
+
+
+def test_a_member_with_no_id_is_refused_rather_than_shrinking_the_group(observed):
+    """The docstring's claim, executed — and it is a claim round 1 got wrong.
+
+    An id-less member is KEPT (dropping it would adjust the rest at a mix the
+    approver never saw). Nothing downstream refuses it in time: the step params
+    model takes a bare ``str`` and accepts ``""``, and the batch collision check
+    skips a step whose target id is empty, so it used to reach a card and die at
+    dispatch. It is refused here instead, before any card exists.
+    """
+    anonymous = [
+        {"input_no": "109", "current_volume": 200.0},
+        {"input_no": "", "current_volume": 300.0},
+    ]
+    outcome = _composite_outcome(observed, members=anonymous, total=500.0)
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.EVIDENCE_INSUFFICIENT
+    assert outcome["evidence"]["unidentified_member_positions"] == [2]
+    assert outcome["verb"] is None and outcome["params"] is None
+
+    # THE MEASUREMENT behind the sentence above, so the docstring's claim about
+    # what does NOT catch this cannot rot silently.
+    ok, _ = fixes.validate_params(
+        "set_vehicle_input_volume", {"input_no": "", "volume": 100.0, "interval_no": 1}
+    )
+    assert ok, "fixture: the step schema really does accept an empty input_no"
+
+
+# ---------------------------------------------------------------------------
+# Refuter round 2 — a target that does not say, once, what it is about.
+#
+# Every test below was written from an input the refuter EXECUTED against the
+# round-1 build, and each one reached an approval card (or an approval card's
+# silence) where a refusal belonged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("blank", ["   ", "\t", "　", " \t　 "])
+def test_a_whitespace_only_member_id_names_nothing_and_is_refused(observed, blank: str):
+    """F1, THE BLOCKER. ``"   "`` is not an input number; it is an absent one.
+
+    Measured on the round-1 build: a member whose id was three spaces was truthy
+    everywhere this module looked, so it passed the "did every member name its
+    input" check, reached an APPROVAL CARD, and died in
+    ``tools_edit._coerce_id`` at dispatch — after a human had approved it. That
+    is exactly the after-the-signature death the build-time preflight beside it
+    exists to prevent.
+
+    Every other id path in this repo strips (``demand_target_map._clean_token``,
+    ``record_mapping``, ``_usable_human_mapping``); this one now does too, and
+    the variants below are the shapes a picker, a spreadsheet paste and a
+    Korean-keyboard space actually produce.
+    """
+    anonymous = [
+        {"input_no": "109", "current_volume": 200.0},
+        {"input_no": blank, "current_volume": 300.0},
+    ]
+    outcome = _composite_outcome(observed, members=anonymous, total=500.0)
+    assert outcome["outcome"] == "REFUSAL", outcome.get("verb")
+    assert outcome["reason_code"] == fixes.EVIDENCE_INSUFFICIENT
+    assert outcome["evidence"]["unidentified_member_positions"] == [2]
+    assert outcome["verb"] is None and outcome["params"] is None
+
+    # THE MEASUREMENT behind the sentence above: nothing downstream would have
+    # caught it either, so this refusal is the only thing standing there.
+    ok, _ = fixes.validate_params(
+        "set_vehicle_input_volume", {"input_no": blank, "volume": 100.0, "interval_no": 1}
+    )
+    assert ok, "fixture: the step schema really does accept a whitespace-only input_no"
+
+
+def test_a_group_of_ONE_is_refused_by_name_instead_of_evaporating(observed):
+    """F2(b). Two layers disagreed about the word "group", and a class vanished.
+
+    ``tools_metrics._reality_check_targets`` treats ANY non-empty member list as
+    a composite; ``fixes._group_members`` used to return ``[]`` below a length of
+    two. A one-member list therefore arrived as a group and left as nothing —
+    and the refusal the caller then got said the input number, the current volume
+    or the observed/modelled total was missing, when all three were present.
+
+    A group of one is now its own named refusal, and the sentence says the one
+    thing the reader needs: this system cannot tell a link that really has one
+    class from a trio that lost two on the way.
+    """
+    outcome = _composite_outcome(
+        observed, members=[{"input_no": "999", "current_volume": 400.0}], total=400.0
+    )
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_HAS_ONE_MEMBER
+    assert outcome["reason_code"] != fixes.EVIDENCE_INSUFFICIENT
+    assert outcome["evidence"]["member_count"] == 1
+    # The member is DISCLOSED, not dropped: the group block still says which
+    # input arrived, which is the whole complaint.
+    assert outcome["evidence"]["target"]["group"]["vehicle_input_nos"] == ["999"]
+    for language in ("ko", "en", "ja"):
+        assert "999" in outcome["rationale"][language], language
+
+
+def test_a_single_member_group_never_becomes_a_proposal_for_the_input_beside_it(observed):
+    """F2(a), the shape that actually shipped a proposal.
+
+    ``input_no="109"`` with one member ``"999"``: the member list evaporated and
+    the card proposed ``set_vehicle_input_volume input_no=109``, with nothing
+    anywhere saying a class had been dropped. Whichever refusal answers it, the
+    one outcome that may never happen again is a PROPOSAL.
+    """
+    outcome = _composite_outcome(
+        observed,
+        members=[{"input_no": "999", "current_volume": 400.0}],
+        total=400.0,
+        input_no="109",
+    )
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["verb"] is None and outcome["params"] is None
+    # And the member the round-1 build dropped is still on the record.
+    assert outcome["evidence"]["target"]["group"]["vehicle_input_nos"] == ["999"]
+
+
+def test_the_group_boundary_is_TWO_members_and_it_is_pinned_in_both_directions(observed):
+    """M14, executed. The refuter mutated ``< 2`` to ``< 1`` and the whole suite
+    passed, which means nothing in it knew where a group begins.
+
+    Both sides are asserted here, so a boundary moved either way dies:
+    two members ARE a group and PROPOSE; one member is not, and REFUSES BY NAME.
+    """
+    pair = [
+        {"input_no": "109", "current_volume": 300.0},
+        {"input_no": "209", "current_volume": 100.0},
+    ]
+    proposed = _composite_outcome(observed, members=pair, total=400.0)
+    assert proposed["outcome"] == "PROPOSAL", proposed.get("reason_code")
+    assert proposed["verb"] == "apply_edit_plan"
+    assert len(proposed["params"]["steps"]) == 2
+
+    alone = _composite_outcome(observed, members=pair[:1], total=300.0)
+    assert alone["outcome"] == "REFUSAL"
+    assert alone["reason_code"] == fixes.GROUP_HAS_ONE_MEMBER
+    # ...and NOT the batch preflight's step-count message, which is what a group
+    # of one would collide with if it were allowed through as a group. The
+    # reader is owed the sentence about their trio, not one about step counts.
+    assert alone["reason_code"] != fixes.GROUP_PLAN_REJECTED_BY_PREFLIGHT
+    assert fixes.MIN_GROUP_MEMBERS == 2
+
+
+def test_an_input_number_AND_a_member_list_is_the_same_refusal_the_human_path_makes(observed):
+    """F3. The plan wrote 109/209 while the audit block quoted 777.
+
+    ``evidence.target.input_no`` is what an audit DOCX and the screen both cite
+    as "the object this proposal is about", so a proposal whose plan touches
+    other inputs entirely makes that citation false. The human path refuses the
+    identical shape by name; the agent path was silently preferring the members
+    and keeping the stale number beside them.
+    """
+    outcome = _composite_outcome(observed, members=_TRIO, total=400.0, input_no="777")
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_AND_INPUT_BOTH_NAMED
+    assert outcome["verb"] is None and outcome["params"] is None
+    for language in ("ko", "en", "ja"):
+        assert "777" in outcome["rationale"][language], language
+        assert "109" in outcome["rationale"][language], language
+
+    # THE CORRESPONDENCE, executed rather than asserted in prose: the store
+    # refuses the same contradiction, and this is the code it uses.
+    with pytest.raises(demand_target_map.DemandTargetRefused) as caught:
+        demand_target_map.record_mapping(
+            node_id="4",
+            vehicle_input_no="777",
+            vehicle_input_nos=["109", "209"],
+            link_no="205",
+            reason="both at once",
+            named_by="yunha",
+            candidates=[],
+        )
+    assert caught.value.code == "demand_target_conflicting_target"
+
+
+def test_a_negative_modelled_total_really_does_reach_the_INVALID_TOTAL_refusal(observed):
+    """F5. The comment said this branch was unreachable. It is not.
+
+    ``new_volume = current * observed / modelled`` and the evidence guard above
+    rejects only a FALSY modelled total, so -550 sails through it and scales the
+    group to a negative target. ``split_proportionally`` then refuses by name,
+    and the generic tail — the one round 1 called dead code — is what the reader
+    actually receives. Pinned so the comment beside it stays true.
+    """
+    outcome = fixes.map_node_counts(
+        {**fixes.node_evidence_from_real_counts(observed["4"]), "modelled_total": -550.0},
+        targets={
+            "vehicle_input": {
+                "input_no": None,
+                "current_volume": 400.0,
+                "link_no": "999",
+                "interval_no": 1,
+                "members": _TRIO,
+            }
+        },
+    ).to_dict()
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.EVIDENCE_INSUFFICIENT
+    assert outcome["evidence"]["split_cause"] == demand_class_split.SPLIT_INVALID_TOTAL
+    for language in ("ko", "en", "ja"):
+        assert demand_class_split.SPLIT_INVALID_TOTAL in outcome["rationale"][language], language
+
+
+def test_the_group_reason_codes_are_the_STRINGS_a_consumer_matches_on():
+    """M5, executed. The refuter typoed these values one character at a time and
+    every test in the suite passed, because each was only ever compared to
+    itself through the constant.
+
+    They travel on the wire: ``outcome.reason_code`` is echoed verbatim on the
+    calibration card, in the audit document and in the fix ledger, so the VALUE
+    is the contract and not the attribute name. Pinned as literals, once.
+    """
+    assert fixes.GROUP_VOLUMES_ALL_ZERO == "GROUP_VOLUMES_ALL_ZERO"
+    assert fixes.GROUP_VOLUME_NEGATIVE == "GROUP_VOLUME_NEGATIVE"
+    assert fixes.GROUP_MEMBER_TOTAL_DISAGREES == "GROUP_MEMBER_TOTAL_DISAGREES"
+    assert fixes.GROUP_PLAN_REJECTED_BY_PREFLIGHT == "GROUP_PLAN_REJECTED_BY_PREFLIGHT"
+    assert fixes.GROUP_HAS_ONE_MEMBER == "GROUP_HAS_ONE_MEMBER"
+    assert fixes.GROUP_AND_INPUT_BOTH_NAMED == "GROUP_AND_INPUT_BOTH_NAMED"
+    assert demand_class_split.SPLIT_RULE == "LARGEST_REMAINDER_BY_CURRENT_VOLUME"
+    codes = [
+        fixes.GROUP_VOLUMES_ALL_ZERO,
+        fixes.GROUP_VOLUME_NEGATIVE,
+        fixes.GROUP_MEMBER_TOTAL_DISAGREES,
+        fixes.GROUP_PLAN_REJECTED_BY_PREFLIGHT,
+        fixes.GROUP_HAS_ONE_MEMBER,
+        fixes.GROUP_AND_INPUT_BOTH_NAMED,
+    ]
+    assert len(set(codes)) == len(codes), "two refusals sharing a code cannot be told apart"
+
+
+def test_a_composite_on_a_MEASURED_entrance_is_still_refused_and_says_it_is_a_trio(observed):
+    """Unit D4's boundary is untouched by #59.
+
+    The counts were taken AT this link, so its volume is the calibration TARGET
+    and not a knob — for three classes exactly as for one. What the refusal
+    gains is the sentence saying the target was a trio, so "one input was
+    refused" and "a link's whole class trio was refused, together" do not read
+    alike.
+    """
+    outcome = _composite_outcome(observed, members=_TRIO, total=400.0, link_no="205")
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+    assert "109+209+309" in outcome["rationale"]["en"]
+    assert "grouped" in outcome["rationale"]["en"] or "together" in outcome["rationale"]["en"]
+    assert outcome["evidence"]["target"]["group"]["member_count"] == 3
+
+
+def test_a_single_input_target_is_untouched_by_all_of_this(observed):
+    """The #54 path keeps its verb, its params and its silence about groups.
+
+    Everything above is entered only when a composite really arrived; a proposal
+    for one input must not start claiming a rule was applied to it.
+    """
+    outcome = fixes.map_node_counts(
+        {**fixes.node_evidence_from_real_counts(observed["4"]), "modelled_total": 550.0},
+        targets={
+            "vehicle_input": {
+                "input_no": "6",
+                "current_volume": 400.0,
+                "link_no": "999",
+                "interval_no": 1,
+            }
+        },
+    ).to_dict()
+    assert outcome["outcome"] == "PROPOSAL"
+    assert outcome["verb"] == "set_vehicle_input_volume"
+    assert outcome["params"] == {"input_no": "6", "volume": 654.55, "interval_no": 1}
+    assert outcome["evidence"]["target"]["group"] is None
+    assert fixes.ASSUME_CLASS_MIX_PRESERVED not in outcome["assumptions"]
+
+
 def test_a_derived_target_carries_no_name_at_all(derived, observed):
     """The asymmetry that makes the block mean something: a target the NETWORK
     vouched for has ``human_named: None``, so a non-None value means exactly one
@@ -1177,6 +1946,189 @@ def test_a_derived_target_carries_no_name_at_all(derived, observed):
         },
     ).to_dict()
     assert outcome["evidence"]["target"]["human_named"] is None
+
+
+def _single_input_outcome(observed, **target) -> dict[str, Any]:
+    """Node 4's demand outcome for an ORDINARY single-input target (no members).
+
+    The sibling of ``_composite_outcome`` above, and the same ``link_no="999"``
+    construction for the same reason: it is the shape that gets past unit D4's
+    measured-entrance refusal and reaches the path where a proposal exists.
+    """
+    return fixes.map_node_counts(
+        {**fixes.node_evidence_from_real_counts(observed["4"]), "modelled_total": 550.0},
+        targets={
+            "vehicle_input": {
+                "current_volume": 400.0,
+                "link_no": "999",
+                "interval_no": 1,
+                **target,
+            }
+        },
+    ).to_dict()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t", "　", " \t　 "])
+def test_a_whitespace_only_input_no_names_nothing_and_never_reaches_a_card(observed, blank: str):
+    """D1, THE BLOCKER of round 2 — F1's defect, through the field BESIDE it.
+
+    Round 2 stripped every MEMBER id and left the top-level ``input_no`` alone,
+    and the test that would have caught it did not exist. Measured on the round-2
+    build: ``{"input_no": "   ", "current_volume": 400.0}`` with no members
+    passed ``input_no not in (None, "")``, was therefore a "named object",
+    derived a volume, and shipped a PROPOSAL to an approval card — which then
+    died in ``tools_edit._coerce_id`` at dispatch, after a human had signed it.
+    The same after-the-signature death F1 exists to prevent.
+
+    ``""`` rides in the same parametrize deliberately: it is the mutation
+    ``named_object = input_no is not None`` (refuter M-R2-7), which survived the
+    whole round-2 suite because no case distinguished "absent" from "empty".
+    """
+    outcome = _single_input_outcome(observed, input_no=blank)
+    assert outcome["outcome"] == "REFUSAL", outcome.get("verb")
+    assert outcome["reason_code"] == fixes.EVIDENCE_INSUFFICIENT
+    assert outcome["verb"] is None and outcome["params"] is None
+    # And the audit block says "nothing was named" rather than quoting padding
+    # back as the object this outcome is about.
+    assert outcome["evidence"]["target"]["input_no"] is None
+    assert outcome["evidence"]["target"]["entrance_measurement"]["input_no"] is None
+
+    # THE MEASUREMENT behind the sentence above: nothing downstream would have
+    # caught it either — the step schema takes a bare ``str`` and is happy.
+    ok, _ = fixes.validate_params(
+        "set_vehicle_input_volume", {"input_no": blank, "volume": 100.0, "interval_no": 1}
+    )
+    assert ok, "fixture: the step schema really does accept a whitespace-only input_no"
+
+
+@pytest.mark.parametrize("padded", [" 109 ", "109 ", " 109", "\t109\n"])
+def test_a_padded_input_no_is_STRIPPED_into_the_plan_not_carried_into_it(observed, padded: str):
+    """D1's other half (refuter Q4): ``" 109 "`` reached the card verbatim.
+
+    A padded id is a real id wearing a picker's whitespace, so the answer is not
+    a refusal — it is the same proposal, for the input the caller meant, spelled
+    the one way every other id path in this repo spells it. Both sides are
+    padded here because a one-sided strip is a live mutation class.
+    """
+    outcome = _single_input_outcome(observed, input_no=padded)
+    assert outcome["outcome"] == "PROPOSAL", outcome.get("reason_code")
+    assert outcome["verb"] == "set_vehicle_input_volume"
+    assert outcome["params"] == {"input_no": "109", "volume": 654.55, "interval_no": 1}
+    assert outcome["evidence"]["target"]["input_no"] == "109"
+    assert outcome["evidence"]["target"]["entrance_measurement"]["input_no"] == "109"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_a_blank_input_no_beside_a_REAL_trio_is_a_group_plan_not_a_conflict(observed, blank: str):
+    """D2. The "name yourself once" refusal misfired on a target that named
+    itself exactly once.
+
+    Measured on the round-2 build: ``input_no="   "`` with the healthy trio
+    109/209/309 answered ``GROUP_AND_INPUT_BOTH_NAMED``, and the Korean sentence
+    printed the padding — "차량 인풋     하나와" — asserting that a thing made of
+    spaces was one of the two names in conflict. Whitespace names nothing, so
+    there is exactly one name here and the group plan stands.
+    """
+    outcome = _composite_outcome(observed, members=_TRIO, total=400.0, input_no=blank)
+    assert outcome["outcome"] == "PROPOSAL", outcome.get("reason_code")
+    assert outcome["reason_code"] != fixes.GROUP_AND_INPUT_BOTH_NAMED
+    assert outcome["verb"] == "apply_edit_plan"
+    assert [step["params"]["input_no"] for step in outcome["params"]["steps"]] == [
+        "109",
+        "209",
+        "309",
+    ]
+    assert outcome["evidence"]["target"]["input_no"] is None
+
+
+def test_naming_yourself_twice_is_the_FIRST_complaint_even_when_the_group_is_short(observed):
+    """D8. WHICH refusal a contested input is owed, pinned.
+
+    ``input_no="109"`` with a ONE-member list is two defects at once: the target
+    names itself twice AND its group is too short. Nothing in the round-2 suite
+    said which sentence the reader gets, so the refuter narrowed the F3 guard to
+    ``len(members) >= MIN_GROUP_MEMBERS`` (M-R2-6) and the whole suite passed
+    while the answer silently changed.
+
+    The order is not arbitrary: until it is settled WHAT object this request is
+    about, "your group is too short" is a statement about an unidentified thing.
+    "Name yourself once" is the first complaint.
+    """
+    outcome = _composite_outcome(
+        observed,
+        members=[{"input_no": "999", "current_volume": 400.0}],
+        total=400.0,
+        input_no="109",
+    )
+    assert outcome["outcome"] == "REFUSAL"
+    assert outcome["reason_code"] == fixes.GROUP_AND_INPUT_BOTH_NAMED
+    assert outcome["reason_code"] != fixes.GROUP_HAS_ONE_MEMBER
+    assert outcome["verb"] is None and outcome["params"] is None
+
+    # ...and with the input number gone, the SHORT-GROUP complaint is what is
+    # left — so the precedence above is a real ordering of two live branches,
+    # not one branch shadowing a dead one.
+    alone = _composite_outcome(
+        observed, members=[{"input_no": "999", "current_volume": 400.0}], total=400.0
+    )
+    assert alone["reason_code"] == fixes.GROUP_HAS_ONE_MEMBER
+
+
+def test_a_member_id_is_stripped_on_BOTH_sides_before_it_becomes_a_step(observed):
+    """M-R2-8, executed. ``.strip()`` mutated to ``.rstrip()`` passed the whole
+    round-2 suite, because every padded-member case in it padded the TRAILING
+    side only.
+
+    The step params are the assertion, not the member block: they are what
+    dispatch coerces, and a leading space there is the ``_coerce_id`` death F1
+    was written against.
+    """
+    outcome = _composite_outcome(
+        observed,
+        members=[
+            {"input_no": "  109  ", "current_volume": 200.0},
+            {"input_no": " 209", "current_volume": 120.0},
+            {"input_no": "309 ", "current_volume": 80.0},
+        ],
+        total=400.0,
+    )
+    assert outcome["outcome"] == "PROPOSAL", outcome.get("reason_code")
+    assert [step["params"]["input_no"] for step in outcome["params"]["steps"]] == [
+        "109",
+        "209",
+        "309",
+    ]
+    assert outcome["evidence"]["target"]["group"]["vehicle_input_nos"] == ["109", "209", "309"]
+    for language in ("ko", "en", "ja"):
+        assert "109+209+309" in outcome["rationale"][language], language
+
+
+def test_every_GROUP_constant_this_module_defines_is_on_its___all__():
+    """D7, and deliberately written so a FUTURE constant is caught without a
+    future test.
+
+    ``GROUP_HAS_ONE_MEMBER`` and ``GROUP_AND_INPUT_BOTH_NAMED`` shipped in round
+    2 as module attributes that ``__all__`` did not list, so
+    ``from ... import *`` gave a consumer four of this module's six group codes
+    and no error for the two missing ones. Rather than adding two names to a
+    hand-maintained list and calling it closed, this asserts the RULE — every
+    ``GROUP_``-prefixed string constant is exported — by introspection, so the
+    next one is covered on the day it is written.
+    """
+    defined = {
+        name
+        for name, value in vars(fixes).items()
+        if name.startswith("GROUP_") and isinstance(value, str)
+    }
+    assert defined, "fixture: this module really does define GROUP_* constants"
+    missing = sorted(defined - set(fixes.__all__))
+    assert not missing, f"GROUP_* constants defined but not exported: {missing}"
+
+    # The threshold beside them travels the same way: it is the number a
+    # consumer needs to say WHY a group of one was refused.
+    assert "MIN_GROUP_MEMBERS" in fixes.__all__
+    # __all__ must not promise names the module does not have, either.
+    assert not [name for name in fixes.__all__ if not hasattr(fixes, name)]
 
 
 # ===========================================================================
@@ -1297,6 +2249,145 @@ def test_the_candidates_route_serves_the_derivations_own_list(client: TestClient
     assert standing["stale"] is False
     assert after["nodes"]["4"]["reason"] == reality_check_targets.HUMAN_NAMED_VEHICLE_INPUT
     assert after["nodes"]["4"]["human_mapping_ignored"] is None
+
+
+#: Unit #59: link 205 rewritten as a three-class trio, the shape every approach
+#: link in the real client model actually has. The autouse
+#: ``_network_bytes_restored`` fixture puts the original back afterwards.
+_TRIO_ON_205 = (
+    '<vehicleInput no="601" name="Park Ave NB 승용차" link="205">'
+    '<timeIntervalVehVolume volume="500"/></vehicleInput>'
+    '<vehicleInput no="602" name="Park Ave NB 버스" link="205">'
+    '<timeIntervalVehVolume volume="300"/></vehicleInput>'
+    '<vehicleInput no="603" name="Park Ave NB 트럭" link="205">'
+    '<timeIntervalVehVolume volume="200"/></vehicleInput>'
+)
+
+
+def _make_205_a_trio(network: Path) -> None:
+    text = network.read_text(encoding="utf-8")
+    assert '<vehicleInput no="6" name="Park Ave NB" link="205"/>' in text, "fixture moved"
+    network.write_text(
+        text.replace('<vehicleInput no="6" name="Park Ave NB" link="205"/>', _TRIO_ON_205),
+        encoding="utf-8",
+    )
+
+
+def test_the_picker_route_offers_LINK_GROUPS_and_a_group_naming_round_trips(
+    client: TestClient, network: Path
+):
+    """THE DOOR, end to end, on the shape the real client model actually has.
+
+    The picker is served link-groups (node 4: two choices over four inputs), a
+    person names one through the same POST #54 opened, and the node comes back
+    resolved as a GROUP with the class rule disclosed. The namer is still the
+    session's and the clock still the server's — #59 widened what may be named,
+    not who may name it.
+    """
+    _make_205_a_trio(network)
+    body = client.get(
+        "/api/calibration/demand-targets/candidates",
+        params={"period": "AM"},
+        headers=admin_headers(),
+    ).json()
+    node_4 = body["nodes"]["4"]
+    assert node_4["reason"] == reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES
+    # FOUR raw inputs, TWO choices — and the raw list is still served beside the
+    # groups so a reader can see which classes each choice holds.
+    assert len(node_4["candidates"]) == 4
+    groups = node_4["candidate_groups"]
+    assert [group["link_no"] for group in groups] == ["203", "205"]
+    assert [group["vehicle_input_nos"] for group in groups] == [["5"], ["601", "602", "603"]]
+    assert groups[1]["current_volume_total"] == 1000.0
+
+    created = client.post(
+        "/api/calibration/demand-targets",
+        json={
+            "node_id": "4",
+            "link_no": "205",
+            "vehicle_input_nos": ["601", "602", "603"],
+            "reason": "링크 205가 이 노드 유입의 대부분 — 차종 구성비 유지해 함께 조정",
+            "period": "AM",
+        },
+        headers=admin_headers(),
+    )
+    assert created.status_code == 200, created.text
+    record = created.json()
+    assert record["target_kind"] == "vehicle_input_link_group"
+    assert record["vehicle_input_nos"] == ["601", "602", "603"]
+    assert record["vehicle_input_no"] is None
+    assert record["named_by"] == "suite-admin"
+
+    after = client.get(
+        "/api/calibration/demand-targets/candidates",
+        params={"period": "AM"},
+        headers=admin_headers(),
+    ).json()["nodes"]["4"]
+    assert after["reason"] == reality_check_targets.HUMAN_NAMED_VEHICLE_INPUT_GROUP
+    assert after["chosen"] is None
+    assert after["chosen_group"] == "205"
+    assert after["class_rule"] == fixes.ASSUME_CLASS_MIX_PRESERVED
+    assert after["group"]["vehicle_input_nos"] == ["601", "602", "603"]
+    assert after["human_mapping_ignored"] is None
+    assert after["mapping"]["stale"] is False
+
+
+def test_naming_a_group_the_server_does_not_vouch_for_is_refused_over_http(
+    client: TestClient, network: Path
+):
+    """The door refuses the composite exactly as it refuses an invented triple —
+    with a named code and a tri-lingual message, never a bare 400."""
+    _make_205_a_trio(network)
+    unknown_link = client.post(
+        "/api/calibration/demand-targets",
+        json={
+            "node_id": "4",
+            "link_no": "999",
+            "vehicle_input_nos": ["601", "602", "603"],
+            "reason": "없는 링크",
+            "period": "AM",
+        },
+        headers=admin_headers(),
+    )
+    assert unknown_link.status_code == 422, unknown_link.text
+    assert unknown_link.json()["detail"]["reason_code"] == "demand_target_unverifiable_group"
+
+    # A membership the network no longer has: a class the reviewer never saw
+    # must not be swept into the adjustment.
+    partial = client.post(
+        "/api/calibration/demand-targets",
+        json={
+            "node_id": "4",
+            "link_no": "205",
+            "vehicle_input_nos": ["601", "602"],
+            "reason": "트럭은 빼고",
+            "period": "AM",
+        },
+        headers=admin_headers(),
+    )
+    assert partial.status_code == 409, partial.text
+    detail = partial.json()["detail"]
+    assert detail["reason_code"] == "demand_target_group_membership_changed"
+    assert set(detail["message"]) == {"ko", "en", "ja"}
+
+
+def test_a_group_naming_cannot_forge_its_namer_either(client: TestClient, network: Path):
+    """``extra="forbid"`` still guards the door #59 widened: the namer is the
+    session and the clock is the server's, on both shapes."""
+    _make_205_a_trio(network)
+    forged = client.post(
+        "/api/calibration/demand-targets",
+        json={
+            "node_id": "4",
+            "link_no": "205",
+            "vehicle_input_nos": ["601", "602", "603"],
+            "reason": "누가 지정했는지 사칭",
+            "named_by": "somebody-else",
+            "period": "AM",
+        },
+        headers=admin_headers(),
+    )
+    assert forged.status_code == 422, forged.text
 
 
 def test_a_stale_mapping_is_still_SHOWN_with_the_reason_it_was_ignored(

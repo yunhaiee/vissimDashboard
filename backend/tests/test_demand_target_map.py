@@ -48,6 +48,27 @@ CANDIDATES = [
     {"vehicle_input_no": "109", "link_no": "620", "current_volume": 400.0, "name": "South St"},
 ]
 
+#: Unit #59: the SAME candidates folded per link, as
+#: ``reality_check_targets.link_groups`` emits them. This is what a link-group
+#: naming is checked against, and the membership is checked as a SET — so this
+#: shape's keys matter for exactly the reason ``CANDIDATES``' do.
+GROUPS = [
+    {
+        "link_no": "617",
+        "vehicle_input_nos": ["113", "213"],
+        "members": CANDIDATES[:2],
+        "current_volume_total": 689.4,
+        "name": "Murdoch NB",
+    },
+    {
+        "link_no": "620",
+        "vehicle_input_nos": ["109"],
+        "members": CANDIDATES[2:],
+        "current_volume_total": 400.0,
+        "name": "South St",
+    },
+]
+
 
 @pytest.fixture()
 def workspace_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -96,6 +117,28 @@ def _name(
         reason=reason,
         named_by=by,
         candidates=candidates,
+    )
+
+
+def _name_group(
+    *,
+    node_id: str = "8",
+    vehicle_input_nos=("113", "213"),
+    link_no: str = "617",
+    reason: str = "링크 617이 노드 8 유입의 71.9% — 차종 3종을 함께 조정",
+    by: str = "yunha",
+    groups=GROUPS,
+    candidates=CANDIDATES,
+):
+    """Unit #59's naming: ONE link-group, checked against ``groups``."""
+    return demand_target_map.record_mapping(
+        node_id=node_id,
+        vehicle_input_nos=list(vehicle_input_nos),
+        link_no=link_no,
+        reason=reason,
+        named_by=by,
+        candidates=candidates,
+        groups=groups,
     )
 
 
@@ -584,3 +627,173 @@ def test_the_store_lives_beside_the_step_attestations_not_under_genesis(network:
     assert directory.relative_to(workspace).parts == ("calibration", "demand-targets")
     assert "genesis" not in directory.relative_to(workspace).parts
     assert demand_target_map.registry_path().is_file()
+
+
+# ===========================================================================
+# Unit #59 — the LINK-GROUP shape, added without disturbing the one above
+# ===========================================================================
+
+
+def test_a_link_group_is_recorded_as_what_it_is_not_as_one_of_its_members(network: str):
+    """The user's decided class rule made the LINK the unit of choice, so the
+    record says so. A group mapping carries its members and NO single
+    ``vehicle_input_no`` — putting a representative there would read, to every
+    later reader, as "this one input was chosen out of the three"."""
+    record = _name_group()
+    assert record["target_kind"] == "vehicle_input_link_group"
+    assert record["vehicle_input_nos"] == ["113", "213"]
+    assert record["vehicle_input_no"] is None
+    assert record["link_no"] == "617"
+    # Everything #54 demands of a claim is demanded of this one too.
+    assert record["named_by"] == "yunha"
+    assert record["named_at"].endswith("+00:00")
+    assert record["inpx_sha256"] == network
+    assert record["stale"] is False
+    assert [event["event"] for event in record["history"]] == ["named"]
+
+
+def test_a_link_group_the_derivation_does_not_vouch_for_is_refused_by_name(network: str):
+    """The composite half of the rule that keeps this store from laundering an
+    unverifiable claim: a person chooses among the REAL groups."""
+    with pytest.raises(demand_target_map.DemandTargetRefused) as caught:
+        _name_group(link_no="999", vehicle_input_nos=("113", "213"))
+    assert caught.value.code == "demand_target_unverifiable_group"
+    assert caught.value.status == 422
+    assert set(caught.value.messages) == {"ko", "en", "ja"}
+
+
+def test_a_membership_that_changed_is_refused_rather_than_quietly_enrolled(network: str):
+    """MEMBERSHIP IS SET EQUALITY, and this is why.
+
+    Under a containment check, a class that arrived on the link since the picker
+    rendered it would be swept into a proportional adjustment nobody reviewed —
+    the composite form of laundering. The refusal names both memberships so the
+    modeller can see what moved.
+    """
+    with pytest.raises(demand_target_map.DemandTargetRefused) as caught:
+        _name_group(vehicle_input_nos=("113",))
+    assert caught.value.code == "demand_target_group_membership_changed"
+    assert caught.value.status == 409
+    assert caught.value.detail["vehicle_input_nos"] == ["113"]
+    assert caught.value.detail["current_vehicle_input_nos"] == ["113", "213"]
+
+    # A class that is not on the link at all is the same refusal, not a pass.
+    with pytest.raises(demand_target_map.DemandTargetRefused) as extra:
+        _name_group(vehicle_input_nos=("113", "213", "313"))
+    assert extra.value.code == "demand_target_group_membership_changed"
+
+
+def test_naming_an_input_AND_a_group_at_once_is_refused_rather_than_resolved(network: str):
+    """Which of two conflicting targets a person meant is not something to guess,
+    so there is no precedence rule here to get wrong later."""
+    with pytest.raises(demand_target_map.DemandTargetRefused) as caught:
+        demand_target_map.record_mapping(
+            node_id="8",
+            vehicle_input_no="113",
+            vehicle_input_nos=["113", "213"],
+            link_no="617",
+            reason="둘 다",
+            named_by="yunha",
+            candidates=CANDIDATES,
+            groups=GROUPS,
+        )
+    assert caught.value.code == "demand_target_conflicting_target"
+
+
+def test_a_group_naming_with_no_group_list_to_check_against_is_refused(network: str):
+    """``None`` groups means the server could not compute one — no network, no
+    workbook, no object-id-keyed rows. A refusal, never a licence."""
+    with pytest.raises(demand_target_map.DemandTargetRefused) as caught:
+        _name_group(groups=None)
+    assert caught.value.code == "demand_target_no_group_candidates"
+    assert caught.value.status == 409
+
+
+def test_a_group_naming_still_needs_a_reason_and_a_namer(network: str):
+    """#54's non-negotiables belong to the STORE, not to the single-input path."""
+    with pytest.raises(demand_target_map.DemandTargetRefused) as no_reason:
+        _name_group(reason="   ")
+    assert no_reason.value.code == "demand_target_reason_required"
+    with pytest.raises(demand_target_map.DemandTargetRefused) as no_namer:
+        _name_group(by="  ")
+    assert no_namer.value.code == "demand_target_no_namer"
+
+
+def test_the_nodes_latest_word_rules_across_BOTH_shapes(network: str):
+    """The selection rules #54 measured are about the NODE, not about the shape
+    of the claim — so a group naming supersedes an input naming for the same
+    node exactly as another input naming would, and withdrawing the latest
+    leaves nothing standing rather than resurrecting the one it replaced."""
+    first = _name()
+    second = _name_group()
+    standing = demand_target_map.index_payload()["8"]
+    assert standing["id"] == second["id"]
+    assert standing["target_kind"] == "vehicle_input_link_group"
+
+    demand_target_map.revoke_mapping(second["id"], revoked_by="yunha", reason="아니었음")
+    assert "8" not in demand_target_map.index_payload()
+    # The superseded single-input record is still on file and unrevoked in the
+    # audit view — history is a record; evidence is a claim that still stands.
+    listed = {entry["id"]: entry for entry in demand_target_map.list_mappings()}
+    assert listed[first["id"]]["revoked"] is False
+    assert listed[first["id"]]["target_kind"] == "vehicle_input"
+
+
+def test_a_record_written_before_59_loads_and_rules_unchanged(network: str):
+    """BACKWARD COMPATIBILITY, executed rather than asserted in a comment.
+
+    A #54 record on disk carries no ``target_kind`` and no ``vehicle_input_nos``
+    at all. It must still load, still be its node's latest word, and still read
+    as exactly what it is — ONE vehicle input — without being migrated, widened
+    or rewritten by a rule that arrived after somebody signed it.
+    """
+    _name()  # creates the registry, so the legacy record joins a real one
+    path = demand_target_map.registry_path()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    legacy = {
+        "kind": demand_target_map.DEMAND_TARGET_DOC_KIND,
+        "id": "beefbeefbeef",
+        "seq": 99,
+        "workspace_id": workspaces.current_workspace_id(),
+        "node_id": "9",
+        "vehicle_input_no": "109",
+        "link_no": "620",
+        "named_by": "yunha",
+        "named_at": "2026-08-24T09:00:00+00:00",
+        "reason": "예전에 지정한 것",
+        "inpx_sha256": network,
+        "revoked": False,
+        "history": [
+            {
+                "event": "named",
+                "at": "2026-08-24T09:00:00+00:00",
+                "by": "yunha",
+                "reason": "예전에 지정한 것",
+            }
+        ],
+    }
+    assert "target_kind" not in legacy and "vehicle_input_nos" not in legacy
+    payload["mappings"][legacy["id"]] = legacy
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    standing = demand_target_map.index_payload()["9"]
+    assert standing["id"] == "beefbeefbeef"
+    assert standing["vehicle_input_no"] == "109"
+    assert standing["stale"] is False
+    # Defaulted on READ, so nobody has to tell "an old record" from "a record
+    # whose kind went missing".
+    assert standing["target_kind"] == "vehicle_input"
+    assert standing["vehicle_input_nos"] == []
+
+
+def test_a_group_record_survives_the_write_read_cycle(network: str):
+    """The registry is JSON on disk, so the shape has to round-trip — a member
+    list that came back as something else would silently change which classes an
+    approved proposal moves."""
+    created = _name_group()
+    stored = json.loads(demand_target_map.registry_path().read_text(encoding="utf-8"))
+    record = stored["mappings"][created["id"]]
+    assert record["target_kind"] == "vehicle_input_link_group"
+    assert record["vehicle_input_nos"] == ["113", "213"]
+    assert record["vehicle_input_no"] is None
+    assert demand_target_map.get_mapping(created["id"])["vehicle_input_nos"] == ["113", "213"]

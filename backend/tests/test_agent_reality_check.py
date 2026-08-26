@@ -788,11 +788,45 @@ def test_the_tool_params_translate_into_u4s_target_shape():
     # renders the block only when `named_by` is truthy, so a silently absent key
     # and a None read identically downstream and this is the only place the
     # difference can be executed.
+    #
+    # Unit #59 added `members`, and it is asserted as an EXPLICIT empty list for
+    # the same family of reasons: a single-input target owes the reviewer no
+    # per-class split, so the list is empty, and `fixes` treats `bool(members)`
+    # as the one test for "is this a composite". An absent key and an empty list
+    # must therefore read alike downstream, and this is where that is executed.
     assert targets["1"]["vehicle_input"] == {
         "input_no": "7",
         "current_volume": 800.0,
         "link_no": "620",
         "interval_no": 1,
+        "members": [],
+        "named_by": None,
+        "named_at": None,
+    }
+    # A COMPOSITE target (unit #59) names no single input and carries its class
+    # members instead — the shape `fixes` splits an adjustment across.
+    composite, _ = _reality_check_targets(
+        [
+            RealityCheckNodeTarget(
+                node_id="9",
+                vehicle_input_current_volume=1000.0,
+                vehicle_input_link_no="617",
+                vehicle_input_group_members=[
+                    {"vehicle_input_no": "113", "current_volume": 569.4},
+                    {"vehicle_input_no": "213", "current_volume": 430.6},
+                ],
+            )
+        ]
+    )
+    assert composite["9"]["vehicle_input"] == {
+        "input_no": None,
+        "current_volume": 1000.0,
+        "link_no": "617",
+        "interval_no": 1,
+        "members": [
+            {"input_no": "113", "current_volume": 569.4},
+            {"input_no": "213", "current_volume": 430.6},
+        ],
         "named_by": None,
         "named_at": None,
     }

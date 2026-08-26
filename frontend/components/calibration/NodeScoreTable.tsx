@@ -41,6 +41,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 import {
   postCalibrationDemandTarget,
   revokeCalibrationDemandTarget,
+  type CalibrationDemandGroupTarget,
   type CalibrationDemandTargetNode,
   type CalibrationRealityCheck,
   type CalibrationRealityNode,
@@ -345,6 +346,13 @@ export function NodeScoreDetail({
   const evidence = (node.outcome?.evidence ?? {}) as Record<string, unknown>;
   const target = (evidence.target ?? {}) as Record<string, unknown>;
   const entrance = (target.entrance_measurement ?? null) as Record<string, unknown> | null;
+  // UNIT #59. Where this node's demand target is a link's vehicle-class trio,
+  // the SERVER computed how the adjustment divides across the classes and the
+  // reviewer approves the division they can SEE. Read straight off the evidence
+  // — this file recomputes nothing, so the numbers below are the ones the plan
+  // would actually apply rather than a second arithmetic that could disagree.
+  const group = (target.group ?? null) as CalibrationDemandGroupTarget | null;
+  const split = group?.split ?? [];
   const diagnosisEvidence = (node.diagnosis?.evidence ?? {}) as Record<string, unknown>;
   const congestion = (diagnosisEvidence.congestion ?? {}) as Record<string, unknown>;
   const approaches = Array.isArray(congestion.approaches) ? (congestion.approaches as unknown[]) : [];
@@ -445,6 +453,52 @@ export function NodeScoreDetail({
           <span className="font-mono">{String(entrance.status ?? "-")}</span>
           {entrance.basis ? <span className="block text-slate-600">{String(entrance.basis)}</span> : null}
         </p>
+      )}
+
+      {/* UNIT #59 — THE PER-CLASS SPLIT, ON THE SURFACE.
+
+          Deliberately NOT behind the fold below. This proposal moves three
+          vehicle inputs at once, and "the reviewer approves the split they can
+          see" is the condition the user's decided rule was accepted under: a
+          division of demand hidden one click away is a division nobody
+          approved. Each row is the server's own — current, proposed, and the
+          share of the mix being preserved — and they sum to the proposed total
+          by construction, never by this file adding them up. */}
+      {split.length > 0 && (
+        <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+          <p className="text-[14px] font-semibold text-slate-700">
+            {t(
+              "차종별 배분 (구성비 유지)",
+              "Per-class split (mix preserved)",
+              "車種別の按分(構成比を維持)",
+            )}
+          </p>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {split.map((row) => (
+              <li
+                key={row.vehicle_input_no}
+                className="flex flex-wrap items-center gap-2 text-[14px] leading-6 text-slate-800"
+              >
+                <span className="font-mono font-semibold">
+                  {t("인풋", "input", "インプット")} {row.vehicle_input_no}
+                </span>
+                <span className="font-mono text-slate-600">
+                  {fmt(row.current_volume, 0)} → {fmt(row.proposed_volume, 0)} veh/h
+                </span>
+                <span className="font-mono text-slate-500">
+                  {fmt(row.current_share * 100, 1)}%
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-[14px] leading-6 text-slate-600">
+            {t(
+              "이 링크의 차종별 인풋을 현재 구성비 그대로 함께 조정합니다. 전부 적용되거나 전부 취소되며, 일부만 적용되지 않습니다.",
+              "These are adjusted together at their current mix. All of it applies or none of it does — never a part.",
+              "これらは現在の構成比のまま一緒に調整されます。全て適用されるか全て取り消されるかで、一部だけが適用されることはありません。",
+            )}
+          </p>
+        </div>
       )}
 
       {/* #41 doctrine: raw material behind a fold, never in the reader's face.
@@ -560,7 +614,15 @@ function DemandTargetPicker({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const candidates = demandTarget?.candidates ?? [];
+  // UNIT #59: THE LINK IS THE UNIT OF CHOICE. The user decided that a link's
+  // 승용차/버스/트럭 trio is adjusted together and its mix preserved, so the
+  // inputs sharing a link are one composite candidate and this picker offers
+  // groups — two choices on the demo's node 8, where six raw inputs used to be
+  // listed as six rivals. The groups are FOLDED SERVER-SIDE
+  // (`reality_check_targets.link_groups`) and checked against the same list when
+  // the choice is recorded; folding them here would be the second opinion that
+  // offers a modeller a choice the server then refuses.
+  const groups = demandTarget?.candidate_groups ?? [];
   const mapping = demandTarget?.mapping ?? null;
   const missingTarget = (node.diagnosis?.missing_evidence ?? []).includes(NO_DEMAND_TARGET);
 
@@ -573,7 +635,7 @@ function DemandTargetPicker({
   // A node whose gap has already been ANSWERED still shows this card, because
   // the standing mapping and its 철회 live here: a control that vanished the
   // moment it worked would leave a named assumption with no way to withdraw it.
-  if (candidates.length === 0 || (!missingTarget && !mapping)) return null;
+  if (groups.length === 0 || (!missingTarget && !mapping)) return null;
 
   const close = () => {
     setMode(null);
@@ -601,13 +663,15 @@ function DemandTargetPicker({
         if (!mapping) return;
         await revokeCalibrationDemandTarget(mapping.id, { reason });
       } else {
-        const picked = candidates.find(
-          (candidate) => `${candidate.vehicle_input_no}|${candidate.link_no}` === choice,
-        );
+        const picked = groups.find((group) => group.link_no === choice);
         if (!picked) return;
         await postCalibrationDemandTarget({
           nodeId: node.node_id,
-          vehicleInputNo: picked.vehicle_input_no,
+          // The FULL membership the reviewer was shown, sent as they saw it. The
+          // server checks it for set equality and refuses by name if a class
+          // arrived or left since — so a trio nobody reviewed can never be
+          // adjusted under a signature given for a different one.
+          vehicleInputNos: picked.vehicle_input_nos,
           linkNo: picked.link_no,
           reason,
         });
@@ -627,7 +691,7 @@ function DemandTargetPicker({
     <div className="mt-2 rounded-md border border-slate-200 bg-surface px-2 py-1.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[14px] font-semibold text-slate-700">
-          {t("수요 대상 차량 인풋", "The node's demand vehicle input", "需要対象の車両インプット")}
+          {t("수요 대상 진입 링크", "The node's demand approach link", "需要対象の接近リンク")}
         </span>
         {mapping?.stale && (
           <span className="rounded-full border border-slate-300 bg-surface px-1.5 py-0.5 text-[14px] font-semibold text-slate-600">
@@ -642,7 +706,7 @@ function DemandTargetPicker({
         >
           {mapping
             ? t("다시 지정", "Name another", "指定し直す")
-            : t("차량 인풋 지정", "Name the vehicle input", "車両インプットを指定")}
+            : t("진입 링크 지정", "Name the approach link", "接近リンクを指定")}
         </button>
         {mapping && (
           <button
@@ -660,9 +724,16 @@ function DemandTargetPicker({
           record's entire worth is that somebody accountable stated one. */}
       {mapping && (
         <p className="mt-1 text-[14px] leading-6 text-slate-700">
+          {/* WHAT WAS NAMED, in the shape it was named in. A #59 link-group
+              record has no single input and lists its classes; a #54 record
+              still shows the one input somebody chose, because that is still
+              exactly what it targets. Reading `vehicle_input_nos.length` rather
+              than a reason code keeps this branching on the data's own shape. */}
           <span className="font-mono font-semibold">
-            {t("인풋", "input", "インプット")} {mapping.vehicle_input_no} ·{" "}
-            {t("링크", "link", "リンク")} {mapping.link_no}
+            {mapping.vehicle_input_nos.length > 0
+              ? `${t("인풋", "input", "インプット")} ${mapping.vehicle_input_nos.join(", ")}`
+              : `${t("인풋", "input", "インプット")} ${mapping.vehicle_input_no}`}{" "}
+            · {t("링크", "link", "リンク")} {mapping.link_no}
           </span>
           <span className="block">
             <b>{mapping.named_by}</b> · {mapping.named_at}
@@ -675,45 +746,58 @@ function DemandTargetPicker({
         <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
           <p className="text-[14px] font-semibold text-slate-700">
             {t(
-              "이 노드로 들어오는 차량 인풋 후보",
-              "The vehicle inputs feeding this node's counted approaches",
-              "このノードに流入する車両インプット候補",
+              "이 노드로 들어오는 진입 링크 후보",
+              "The counted approach links feeding this node",
+              "このノードに流入する接近リンク候補",
             )}
           </p>
-          {/* THE CANDIDATES, verbatim from the server. Input number, the link it
-              feeds, and its CURRENT volume — a number a modeller recognises
-              from Vissim, not a label this file made up. A volume the .inpx
-              never stated prints as "미기재", never as 0: a zero here would read
-              as a measurement. */}
+          {/* THE CANDIDATE GROUPS, verbatim from the server. The link, its class
+              inputs, and their CURRENT total — numbers a modeller recognises
+              from Vissim, not labels this file made up. A total the .inpx never
+              stated prints as "미기재", never as 0: a zero here would read as a
+              measurement. Each member is listed under its group so choosing a
+              link never means choosing something unseen. */}
           <ul className="mt-1 flex flex-col gap-1">
-            {candidates.map((candidate) => {
-              const key = `${candidate.vehicle_input_no}|${candidate.link_no}`;
-              return (
-                <li key={key}>
-                  <label className="flex items-center gap-2 text-[14px] leading-6 text-slate-800">
-                    <input
-                      type="radio"
-                      name={`demand-target-${node.node_id}`}
-                      value={key}
-                      checked={choice === key}
-                      onChange={() => setChoice(key)}
-                    />
-                    <span className="font-mono font-semibold">
-                      {t("인풋", "input", "インプット")} {candidate.vehicle_input_no}
-                    </span>
-                    <span className="font-mono text-slate-600">
-                      {t("링크", "link", "リンク")} {candidate.link_no}
-                    </span>
-                    <span className="font-mono text-slate-600">
-                      {typeof candidate.current_volume === "number"
-                        ? `${fmt(candidate.current_volume, 0)} veh/h`
-                        : t("교통량 미기재", "no volume stated", "交通量の記載なし")}
-                    </span>
-                    {candidate.name && <span className="text-slate-600">{candidate.name}</span>}
-                  </label>
-                </li>
-              );
-            })}
+            {groups.map((group) => (
+              <li key={group.link_no}>
+                <label className="flex items-center gap-2 text-[14px] leading-6 text-slate-800">
+                  <input
+                    type="radio"
+                    name={`demand-target-${node.node_id}`}
+                    value={group.link_no}
+                    checked={choice === group.link_no}
+                    onChange={() => setChoice(group.link_no)}
+                  />
+                  <span className="font-mono font-semibold">
+                    {t("링크", "link", "リンク")} {group.link_no}
+                  </span>
+                  <span className="font-mono text-slate-600">
+                    {typeof group.current_volume_total === "number"
+                      ? `${fmt(group.current_volume_total, 0)} veh/h`
+                      : t("교통량 미기재", "no volume stated", "交通量の記載なし")}
+                  </span>
+                  {group.name && <span className="text-slate-600">{group.name}</span>}
+                </label>
+                <ul className="ml-6 mt-0.5 flex flex-col gap-0.5">
+                  {group.members.map((member) => (
+                    <li
+                      key={member.vehicle_input_no}
+                      className="flex items-center gap-2 text-[14px] leading-6 text-slate-600"
+                    >
+                      <span className="font-mono">
+                        {t("인풋", "input", "インプット")} {member.vehicle_input_no}
+                      </span>
+                      <span className="font-mono">
+                        {typeof member.current_volume === "number"
+                          ? `${fmt(member.current_volume, 0)} veh/h`
+                          : t("교통량 미기재", "no volume stated", "交通量の記載なし")}
+                      </span>
+                      {member.name && <span>{member.name}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
           </ul>
           <label
             className="mt-1.5 block text-[14px] font-semibold text-slate-700"
@@ -734,9 +818,9 @@ function DemandTargetPicker({
               their name on something is entitled to know. */}
           <p className="mt-1 text-[14px] leading-6 text-slate-600">
             {t(
-              "지정하면 '이 인풋이 이 노드 총량을 좌우한다'는 가정이 로그인한 사용자의 이름·시각과 함께 기록됩니다. 네트워크가 바뀌면 다시 묻습니다.",
-              "Naming one records the assumption that this input drives the node's total, under the signed-in user's name and the server's clock. If the network changes, this asks again.",
-              "指定すると「このインプットがノード総量を左右する」という仮定が、ログイン中の利用者名と時刻とともに記録されます。ネットワークが変わると再び確認します。",
+              "지정하면 '이 링크가 이 노드 총량을 좌우한다'는 가정이 로그인한 사용자의 이름·시각과 함께 기록됩니다. 이 링크의 차종별 인풋은 현재 구성비를 유지한 채 함께 조정되며, 어느 한 차종만 따로 조정하지 않습니다. 네트워크가 바뀌면 다시 묻습니다.",
+              "Naming one records the assumption that this link drives the node's total, under the signed-in user's name and the server's clock. Its vehicle-class inputs are adjusted together, preserving their current mix; no single class is adjusted on its own. If the network changes, this asks again.",
+              "指定すると「このリンクがノード総量を左右する」という仮定が、ログイン中の利用者名と時刻とともに記録されます。このリンクの車種別インプットは現在の構成比を保ったまま一緒に調整され、特定の車種だけを個別に調整することはしません。ネットワークが変わると再び確認します。",
             )}
           </p>
           <PickerActions
@@ -746,13 +830,13 @@ function DemandTargetPicker({
             onCancel={close}
             onSubmit={submit}
             submitLabel={t(
-              "이 인풋을 지정합니다",
-              "I name this input",
-              "このインプットを指定します",
+              "이 링크를 지정합니다",
+              "I name this link",
+              "このリンクを指定します",
             )}
             hint={
               choice.length === 0
-                ? t("인풋을 고르세요.", "Pick an input.", "インプットを選んでください。")
+                ? t("링크를 고르세요.", "Pick a link.", "リンクを選んでください。")
                 : reason.trim().length === 0
                   ? t("이유를 적어야 합니다.", "A reason is required.", "理由の記入が必要です。")
                   : null

@@ -243,6 +243,52 @@ def reverted_targets_from_diff(diff: list[dict[str, Any]]) -> list[dict[str, Any
     return list(buckets.values())
 
 
+def normalize_target_id(raw: str) -> str:
+    """One id, one spelling: surrounding whitespace removed, per identity part
+    -- FOR THE CHECKS THAT REFUSE, and for nothing else.
+
+    UNIT #59 (refuter round 2 D3; premise corrected in round 3, R3-1). What is
+    true and measured: ``_find_target_collisions`` keys on this string, so
+    ``"109"`` and ``" 109"`` were two different objects to it, and a two-step
+    plan writing both produced no ``apply_edit_plan_target_collision`` at all.
+
+    WHAT ROUND 2 CLAIMED HERE AND ROUND 3 MEASURED FALSE: that the same plan
+    produced "NO findings at all" and that step 2 "silently overwrote" step 1.
+    It did not. An id no object carries is a refuse-tier ``object_not_found``
+    (or the per-tool not-found check that stands in for it -- every batch-
+    eligible write verb has one), so the padded plan was ALREADY blocked from
+    approval before this function existed. Measured both ways round on this
+    build, with a one-space id and a real shadow object 109: normalized, the
+    plan carries ``object_not_found`` AND the collision refusal; with
+    normalization removed, it carries ``object_not_found`` alone. What this
+    adds is the SECOND refusal, never the first.
+
+    SO THE RULE IS ONE-WAY, AND IT IS THE WHOLE RULE. A padded id may make the
+    preflight MORE suspicious and may never make it less: this is consumed by
+    collision keying and by ``_apply_patch`` (whose patched shadow can only ADD
+    findings -- ``validate_plan`` keeps only constraint ids the unpatched pass
+    did NOT report). It is deliberately NOT consumed by ``_describe_step``:
+    resolving a padded id to a real object there made the card say
+    ``vehicle_inputs#109: 200.0 -> 300.0`` in its overview while refusing
+    ``Target id ' 109 ' was not found`` two lines up -- one card, two verdicts,
+    about the same step. The overview quotes what the step wrote
+    (:func:`_step_target_id_as_written`) so that it agrees with the refusal.
+
+    The parts are stripped INDIVIDUALLY rather than the joined string being
+    stripped once, because a two-part identity (``set_route_relative_flow``
+    and its siblings) joins with ``"."`` and padding can sit on either side of
+    that dot. Splitting on ``"."`` and rejoining is content-preserving for a
+    single id that happens to contain one (a canonical link id such as
+    ``"617.0"``), so the same one line is correct for both spec shapes.
+
+    Stripping is what every other id path in this repo already does
+    (``demand_target_map._clean_token``, ``fixes._group_members``,
+    ``fixes.normalize_input_no``); this is that same rule, at the point the
+    batch layer first turns params into an identity.
+    """
+    return ".".join(part.strip() for part in raw.split("."))
+
+
 def resolve_write_target(action: dict[str, Any]) -> dict[str, Any] | None:
     """``{"object_class", "target_id", "fields"}`` this single write action's
     own RESOLVABLE target is, per ``guardrails._WRITE_TARGET_FIELD_SPEC`` --
@@ -253,6 +299,12 @@ def resolve_write_target(action: dict[str, Any]) -> dict[str, Any] | None:
     ``set_reduced_speed_area``) -- every consumer below degrades to "no claim
     can be made" for that step, the same conservative default the spec table
     itself documents for an unmapped tool elsewhere in this codebase.
+
+    The id is NORMALIZED here, once, because the two consumers that REFUSE on
+    it (collision keying, the patched-shadow lookup in :func:`_apply_patch`)
+    compare it, and two spellings of one object defeat both -- see
+    :func:`normalize_target_id`, which also says why the third consumer, the
+    human-facing plan overview, deliberately does not read this field.
     """
     tool = action.get("tool", "")
     spec = _WRITE_TARGET_FIELD_SPEC.get(tool)
@@ -260,9 +312,25 @@ def resolve_write_target(action: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {
         "object_class": spec["object_class"],
-        "target_id": _target_id_for_spec(spec, action),
+        "target_id": normalize_target_id(_target_id_for_spec(spec, action)),
         "fields": _write_target_fields(spec, action),
     }
+
+
+def _step_target_id_as_written(action: dict[str, Any]) -> str:
+    """The id this step SPELLS, unnormalized -- ``""`` for an unmapped tool.
+
+    The plan overview's own id, and the only place in this module that wants
+    the raw spelling: what an approval card quotes has to be what the plan
+    actually asked for, because a refusal one line above it quotes exactly that
+    (``constraints._check_object_not_found`` reads the param string as given).
+
+    Built from the SAME ``_target_id_for_spec`` primitive
+    :func:`resolve_write_target` normalizes, so the two can differ in the
+    normalization and in nothing else -- never in which params they read.
+    """
+    spec = _WRITE_TARGET_FIELD_SPEC.get(action.get("tool", ""))
+    return "" if spec is None else _target_id_for_spec(spec, action)
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +483,19 @@ def _apply_patch(shadow_model: dict[str, Any], action: dict[str, Any]) -> None:
     """Mutate ``shadow_model`` IN PLACE so it reflects ``action``'s own
     intended value -- the patched-shadow preflight mechanism a LATER step's
     combined-effect check runs against. No-op when the target can't be
-    resolved or patched (see :func:`_patch_for_step`)."""
+    resolved or patched (see :func:`_patch_for_step`).
+
+    THE ID IT MATCHES ON IS THE NORMALIZED ONE (unit #59, refuter round 3
+    R3-2), and this is the third consumer of that normalization -- the one
+    round 3 left unpinned, where reverting the comparison to the raw param
+    string passed all 6051 tests. What that mutation costs is a refusal: a
+    padded step's intended value never lands on the shadow object, so a LATER
+    step that only trips a constraint in combination with it comes back clean
+    and ``apply_edit_plan_combined_effect`` silently disappears. Patching can
+    only ever ADD findings -- ``validate_plan`` reports a patched-pass finding
+    only when the UNPATCHED pass did not already report that constraint id --
+    which is why matching the padded id here is the safe direction and
+    matching the raw one is not."""
     target_info = resolve_write_target(action)
     if target_info is None or not target_info["target_id"]:
         return
@@ -705,21 +785,32 @@ def _attribute_finding_to_step(finding: Finding, index: int, tool: str) -> Findi
 
 
 def _describe_step(step: dict[str, Any], original_model: dict[str, Any]) -> str:
+    """One overview line, spelled the way the STEP spells it (unit #59, R3-1).
+
+    The id here is :func:`_step_target_id_as_written`, NOT the normalized one:
+    this line and the step's own refusals ride on the same approval card, and a
+    refusal that says ``Target id ' 109 ' was not found`` above an overview that
+    says ``vehicle_inputs#109: 200.0 -> 300.0`` is one card making two claims
+    about one step. Quoting the step's own spelling makes the two agree --
+    an id the network does not carry finds no object here either, so the old
+    value renders as the absence it is.
+    """
     target = resolve_write_target(step)
     if target is None:
         return f"{step['tool']}({step['params']})"
+    written_id = _step_target_id_as_written(step)
     id_field = _SHADOW_OBJECT_ID_FIELDS.get(target["object_class"])
     obj: dict[str, Any] = {}
     if id_field:
         obj = next(
-            (o for o in original_model.get(target["object_class"], []) if str(o.get(id_field, "")) == target["target_id"]),
+            (o for o in original_model.get(target["object_class"], []) if str(o.get(id_field, "")) == written_id),
             {},
         ) or {}
     patch = _patch_for_step(step, obj)
     if not patch:
-        return f"{step['tool']} ({target['object_class']}#{target['target_id']})"
+        return f"{step['tool']} ({target['object_class']}#{written_id})"
     changes = ", ".join(f"{field}: {obj.get(field)!r} -> {new_value!r}" for field, new_value in patch.items())
-    return f"{step['tool']} ({target['object_class']}#{target['target_id']}): {changes}"
+    return f"{step['tool']} ({target['object_class']}#{written_id}): {changes}"
 
 
 def _plan_overview_finding(steps: list[dict[str, Any]], original_model: dict[str, Any]) -> Finding:
@@ -745,6 +836,52 @@ def _plan_overview_finding(steps: list[dict[str, Any]], original_model: dict[str
 # ---------------------------------------------------------------------------
 
 
+def validate_plan_structure(
+    action: dict[str, Any],
+    *,
+    registry: ToolRegistry | None = None,
+) -> list[Finding]:
+    """The half of :func:`validate_plan` that needs NO shadow model.
+
+    Step count in range, every step a registered eligible write tool with params
+    its own model accepts (ids coerced by that model), and no two steps writing
+    the same field of the same object. Everything :func:`validate_plan` adds on
+    top of this — per-step preflight and the patched-shadow combined-effect
+    pass — needs a network to run against; these checks need only the plan.
+
+    WHY IT IS PUBLIC AND SEPARATE (unit #59, refuter round 1). A PROPOSAL
+    BUILDER can now emit an ``apply_edit_plan`` (``fixes._build_demand_proposal``
+    splits a link's class trio into one step per class), and it builds that plan
+    with no shadow model in hand. Without this, a malformed plan — too many
+    steps, two steps on one input, a param the step model rejects — reached an
+    approval card and died only AFTER a human approved it, which is exactly the
+    "shipped to a card that would fail at dispatch" failure ``fixes._emit``
+    exists to prevent one level up.
+
+    The alternative — re-deriving "is this plan structurally sound" inside
+    ``fixes`` — is the second opinion this codebase refuses everywhere else: the
+    rule for what a batch may contain has to live where batches are validated,
+    or the builder and the preflight will eventually disagree about it.
+
+    Returns findings, refuse-tier included, in :func:`validate_plan`'s own
+    order. An empty list means the plan is structurally sound; it does NOT mean
+    the plan will pass preflight against a network.
+
+    :func:`validate_plan` CALLS THIS (refuter round 2, F4). Round 1 said the two
+    "cannot drift" while ``validate_plan`` in fact kept its own inline copy of
+    both primitives, and the refuter proved the claim empty by adding a
+    structural rule to ``validate_plan`` alone and watching the whole suite pass.
+    There is now exactly one implementation and one caller relationship, so a
+    rule added to either is a rule both enforce.
+    """
+    target_registry = registry if registry is not None else default_registry
+    steps, findings = _validate_steps(action.get("params", {}).get("steps"), target_registry)
+    if not steps:
+        return findings
+    findings.extend(_find_target_collisions(steps))
+    return findings
+
+
 def validate_plan(
     action: dict[str, Any],
     shadow_model: dict[str, Any],
@@ -755,12 +892,27 @@ def validate_plan(
     refuse-tier structural/per-step/collision/combined-effect findings, PLUS
     an always-present warn-tier plan overview (when the plan is structurally
     valid enough to describe). See the module docstring for the full design.
+
+    THE STRUCTURAL HALF IS DELEGATED, never re-implemented (refuter round 2,
+    F4). Everything decidable from the plan alone -- step count, per-step tool
+    eligibility and params, same-object-same-field collisions -- comes from
+    :func:`validate_plan_structure`, the same function ``fixes`` calls when it
+    BUILDS a plan. Round 1 claimed the builder and the preflight "cannot drift"
+    while this function held an inline copy of both primitives; a structural rule
+    added here alone was invisible to every test in the suite. It is one call
+    now, so the claim is a fact about the code rather than a comment about it.
     """
     target_registry = registry if registry is not None else default_registry
     raw_steps = action.get("params", {}).get("steps")
-    steps, findings = _validate_steps(raw_steps, target_registry)
+    # The delegated half, computed ONCE and spent in two places below: it is the
+    # whole answer for a structurally broken plan, and it is the collision
+    # findings (the only structural findings a well-formed plan can carry) in
+    # their historical position for a sound one.
+    structural = validate_plan_structure(action, registry=target_registry)
+    steps, _ = _validate_steps(raw_steps, target_registry)
     if not steps:
-        return findings  # structurally broken -- nothing else is safe to check
+        return structural  # structurally broken -- nothing else is safe to check
+    findings: list[Finding] = []
 
     original_model = copy.deepcopy(shadow_model)
     patched_model = copy.deepcopy(shadow_model)
@@ -772,7 +924,9 @@ def validate_plan(
         per_step_original.append(step_findings)
         findings.extend(_attribute_finding_to_step(f, index, step["tool"]) for f in step_findings)
 
-    findings.extend(_find_target_collisions(steps))
+    # The collisions the structural pass already found -- extended here rather
+    # than recomputed, so this function has no second opinion about them.
+    findings.extend(structural)
 
     for index, step in enumerate(steps, start=1):
         step_action = {"tool": step["tool"], "params": step["params"]}
@@ -796,8 +950,10 @@ __all__ = [
     "MAX_STEPS",
     "MIN_STEPS",
     "BatchAbortedError",
+    "normalize_target_id",
     "resolve_write_target",
     "reverted_targets_from_diff",
     "validate_plan",
+    "validate_plan_structure",
     "values_differ",
 ]

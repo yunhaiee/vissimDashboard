@@ -16,6 +16,7 @@ import services.agent.tools_edit  # noqa: F401 - registers the real tools (incl.
 import services.agent.tools_network  # noqa: F401 - registers read tools (get_network_overview, ...)
 import services.agent.tools_run  # noqa: F401 - registers run_simulation (tier "run")
 from services.agent import batch
+from services.agent.constraints import Finding
 from services.agent.toolkit import default_registry
 
 LANGS = {"ko", "en", "ja"}
@@ -204,6 +205,132 @@ def test_validate_plan_attributes_per_step_preflight_refusal_with_step_index():
 
 
 # ---------------------------------------------------------------------------
+# Unit #59 refuter round 2 (F4): validate_plan_structure is not a SECOND copy
+# of the structural rules -- validate_plan is built ON it.
+#
+# WHAT WAS MEASURED. Unit #59 split `validate_plan_structure` out so a PROPOSAL
+# BUILDER (`fixes._build_demand_proposal`, which emits an `apply_edit_plan` with
+# no shadow model in hand) could reject an unrunnable plan before an approval
+# card exists, and its docstring claimed the builder and the preflight therefore
+# "cannot drift". They could: `validate_plan` kept its own inline calls to both
+# primitives, and the refuter added a structural rule to `validate_plan` alone
+# and watched the entire suite pass. A rule the builder does not see is exactly
+# the drift the split was supposed to make impossible.
+#
+# Two pins, opposite in kind: the CALL happens, and the two answers AGREE.
+# ---------------------------------------------------------------------------
+
+
+def _sentinel_finding() -> Any:
+    return Finding(
+        constraint_id="sentinel_only_validate_plan_structure_could_have_produced_this",
+        tier="refuse",
+        phase="preflight",
+        messages={"ko": "센티넬", "en": "sentinel", "ja": "センチネル"},
+        suggested_fix=None,
+        details={},
+    )
+
+
+def test_validate_plan_delegates_its_structural_half_to_validate_plan_structure(monkeypatch):
+    """The delegation itself, executed: a finding ONLY the structural pass can
+    have produced comes out of `validate_plan`.
+
+    A `validate_plan` that went back to calling the primitives inline would
+    still refuse every plan these tests refuse -- which is why the equivalence
+    test below is not enough on its own -- but it would never consult the spy,
+    and this pin fails the moment the call disappears.
+    """
+    calls: list[dict[str, Any]] = []
+    real = batch.validate_plan_structure
+
+    def spy(action: dict[str, Any], *, registry: Any = None) -> list[Any]:
+        calls.append(action)
+        return [*real(action, registry=registry), _sentinel_finding()]
+
+    monkeypatch.setattr(batch, "validate_plan_structure", spy)
+
+    sound = batch.validate_plan(
+        _plan_action(
+            _step("set_signal_offset", sc_no="1", offset=5),
+            _step("set_vehicle_input_volume", input_no="1", volume=800.0),
+        ),
+        _shadow_model(),
+    )
+    assert len(calls) == 1, "the structural half must be computed once, by its own function"
+    assert any(f.constraint_id == _sentinel_finding().constraint_id for f in sound)
+
+    # And on the OTHER arm: a structurally broken plan returns the structural
+    # pass's answer and nothing else, so the same finding has to survive there.
+    broken = batch.validate_plan(
+        _plan_action(_step("set_signal_offset", sc_no="1", offset=5)), _shadow_model()
+    )
+    assert len(calls) == 2
+    assert any(f.constraint_id == _sentinel_finding().constraint_id for f in broken)
+
+
+#: Plans whose verdict is decidable from the plan ALONE -- the exact class of
+#: input both validators claim to answer identically. Every step names an object
+#: the shared `_shadow_model` really holds, so per-step preflight adds nothing
+#: and the two refuse-sets are directly comparable.
+_STRUCTURALLY_DECIDABLE_PLANS = {
+    "sound two-step plan": lambda: _plan_action(
+        _step("set_signal_offset", sc_no="1", offset=5),
+        _step("set_vehicle_input_volume", input_no="1", volume=800.0),
+    ),
+    "one step": lambda: _plan_action(_step("set_signal_offset", sc_no="1", offset=5)),
+    "eleven steps": lambda: _plan_action(
+        *[_step("set_signal_offset", sc_no="1", offset=index) for index in range(11)]
+    ),
+    "malformed step": lambda: {"tool": "apply_edit_plan", "params": {"steps": ["nope", 7]}},
+    "unknown tool": lambda: _plan_action(
+        _step("set_signal_offset", sc_no="1", offset=5), _step("set_signal_ofset", sc_no="1")
+    ),
+    "read-tier step": lambda: _plan_action(
+        _step("set_signal_offset", sc_no="1", offset=5), _step("get_network_overview")
+    ),
+    "apply_edit_plan inside itself": lambda: _plan_action(
+        _step("set_signal_offset", sc_no="1", offset=5), _step("apply_edit_plan", steps=[])
+    ),
+    "invalid step params": lambda: _plan_action(
+        _step("set_signal_offset", sc_no="1", offset=5),
+        _step("set_signal_cycle", sc_no="1", cycle="not a number"),
+    ),
+    "two steps on one object's one field": lambda: _plan_action(
+        _step("set_vehicle_input_volume", input_no="1", volume=800.0),
+        _step("set_vehicle_input_volume", input_no="1", volume=900.0),
+    ),
+}
+
+
+def test_the_two_validators_refuse_exactly_the_same_structurally_decidable_plans():
+    """The drift the delegation prevents, measured as a set equality.
+
+    For every plan whose verdict needs no network, `validate_plan`'s refuse-tier
+    findings and `validate_plan_structure`'s must be the SAME set of constraint
+    ids. A structural rule added to either one alone makes them differ -- which
+    is what nothing in the suite could see before.
+    """
+    shadow = _shadow_model()
+    for name, build in _STRUCTURALLY_DECIDABLE_PLANS.items():
+        action = build()
+        full = {f.constraint_id for f in batch.validate_plan(action, shadow) if f.tier == "refuse"}
+        structural = {
+            f.constraint_id for f in batch.validate_plan_structure(action) if f.tier == "refuse"
+        }
+        assert full == structural, f"{name}: {full ^ structural}"
+
+    # A fixture assertion, so this test cannot pass by comparing two empty sets:
+    # all but one of the plans above really do refuse.
+    refused = [
+        name
+        for name, build in _STRUCTURALLY_DECIDABLE_PLANS.items()
+        if any(f.tier == "refuse" for f in batch.validate_plan_structure(build()))
+    ]
+    assert len(refused) == len(_STRUCTURALLY_DECIDABLE_PLANS) - 1, refused
+
+
+# ---------------------------------------------------------------------------
 # Requirement #2a: same-object-same-field collision
 # ---------------------------------------------------------------------------
 
@@ -229,6 +356,168 @@ def test_validate_plan_refuses_same_object_same_field_collision():
     assert finding.details["target_id"] == "5"
     assert finding.details["shared_fields"] == ["status"]
     assert "1" in finding.messages["en"] and "2" in finding.messages["en"]
+
+
+def test_a_padded_id_is_the_SAME_target_and_still_collides():
+    """Unit #59 (refuter round 2 D3; premise corrected round 3, R3-1).
+
+    ``_find_target_collisions`` keys on the raw param string, so ``"109"`` and
+    ``" 109"`` were two different objects to it and this exact plan produced no
+    ``apply_edit_plan_target_collision`` at all — the outcome that refusal
+    exists to name, reached through one space. The id is normalized once, in
+    ``resolve_write_target``, so both consumers that REFUSE on it (collision
+    keying, ``_apply_patch``'s shadow lookup) see one spelling of one object.
+
+    WHAT ROUND 2 WROTE HERE AND ROUND 3 MEASURED FALSE: that the plan produced
+    "NO findings at all" and that step 2 "silently overwrote" step 1. Neither
+    was ever measured, and both are wrong — an id no object carries is a
+    refuse-tier ``object_not_found``, which was blocking approval before the
+    normalization existed. The assertion below is therefore explicit about the
+    WHOLE refusal set this plan earns: the padded step is refused for naming an
+    object that is not there, AND the pair is refused for being one object.
+
+    Both paddings are exercised, in both directions, because a one-sided strip
+    (``rstrip``) passed the entire suite as a mutation: leading padding is the
+    half that survives it.
+    """
+    for first, second in ((" 109", "109"), ("109", "109 "), (" 109 ", "109")):
+        shadow = _shadow_model(
+            vehicle_inputs=[{"no": "109", "name": "trio car", "link": "101", "volume": 200.0}]
+        )
+        findings = batch.validate_plan(
+            _plan_action(
+                _step("set_vehicle_input_volume", input_no=first, volume=300.0, interval_no=1),
+                _step("set_vehicle_input_volume", input_no=second, volume=400.0, interval_no=1),
+            ),
+            shadow,
+        )
+        matches = [f for f in findings if f.constraint_id == "apply_edit_plan_target_collision"]
+        assert len(matches) == 1, f"{first!r} vs {second!r}: {[f.constraint_id for f in findings]}"
+        _assert_well_formed(matches[0])
+        assert matches[0].details["target_id"] == "109"
+        assert matches[0].details["object_class"] == "vehicle_inputs"
+        # The padded step is ALSO refused for naming an object the network does
+        # not carry — the refusal round 2's docstring said was not there. Both
+        # refusals, together, are what this plan earns.
+        not_found = [f for f in findings if f.constraint_id == "object_not_found" and f.tier == "refuse"]
+        assert len(not_found) == 1, f"{first!r} vs {second!r}: {[f.constraint_id for f in findings]}"
+        assert not_found[0].details["batch_step_index"] == (1 if first != first.strip() else 2)
+
+
+def test_a_padded_id_gets_ONE_verdict_on_the_card_not_two():
+    """The card's refuse-tier line and its warn-tier overview describe the SAME
+    step the SAME way (unit #59, refuter round 3, R3-1).
+
+    MEASURED on the round-3 build: normalizing the id inside ``_describe_step``
+    resolved ``" 109 "`` to the real input 109, so one approval card said
+
+        [refuse] Target id ' 109 ' was not found among vehicle input objects.
+        [warn]   1. set_vehicle_input_volume (vehicle_inputs#109): 200.0 -> 300.0
+
+    at once — the refusal naming an object that does not exist, the overview
+    naming an object that does, about one step, in one card, for a reviewer to
+    reconcile. The overview now quotes the id the STEP wrote, so an id the
+    network does not carry finds nothing here either and its "old value"
+    renders as the absence it is.
+
+    Both directions are asserted, because "they agree" is only worth as much as
+    its opposite: the SAME plan with the padding removed must lose the refusal
+    and gain the real old value.
+    """
+    def card(input_no: str) -> tuple[list[Any], str]:
+        shadow = _shadow_model(
+            vehicle_inputs=[{"no": "109", "name": "trio car", "link": "101", "volume": 200.0}]
+        )
+        findings = batch.validate_plan(
+            _plan_action(
+                _step("set_vehicle_input_volume", input_no=input_no, volume=300.0, interval_no=1),
+                _step("set_signal_cycle", sc_no="1", cycle=100),
+            ),
+            shadow,
+        )
+        overview = next(f for f in findings if f.constraint_id == "apply_edit_plan_summary")
+        return findings, overview.messages["en"]
+
+    padded_findings, padded_overview = card(" 109 ")
+
+    # The refusal is there, and it quotes the padding.
+    refusals = [f for f in padded_findings if f.constraint_id == "object_not_found" and f.tier == "refuse"]
+    assert len(refusals) == 1, [f.constraint_id for f in padded_findings]
+    assert "' 109 '" in refusals[0].messages["en"]
+    # ...and the overview quotes the SAME spelling and agrees there is nothing
+    # there: no old value, and never the normalized id the refusal denies.
+    assert "vehicle_inputs# 109 " in padded_overview
+    assert "volume: None -> 300.0" in padded_overview
+    assert "vehicle_inputs#109" not in padded_overview
+    assert "200.0 -> 300.0" not in padded_overview
+
+    clean_findings, clean_overview = card("109")
+
+    assert not [f for f in clean_findings if f.constraint_id == "object_not_found"]
+    assert "vehicle_inputs#109" in clean_overview
+    assert "volume: 200.0 -> 300.0" in clean_overview
+
+
+def test_a_padded_step_still_poisons_the_next_step_s_combined_check():
+    """``_apply_patch`` is the THIRD consumer of the normalization, and the one
+    round 3 left unpinned (unit #59, refuter round 3, R3-2).
+
+    MEASURED: reverting ``_apply_patch``'s comparison from the normalized id to
+    the raw param string passed all 6051 tests (mutation M-A3). What that costs
+    is this refusal — step 1's intended 4000 never lands on input 1, so step 2
+    is checked against a link that still looks empty, comes back clean, and
+    ``apply_edit_plan_combined_effect`` disappears from the card. The plan stays
+    refused (step 1's padded id is an ``object_not_found``), but the SECOND
+    reason it is refused — that these two volumes do not fit on one link
+    together — is gone, and that is the reason a reviewer would act on.
+
+    This is the same fixture as the combined-effect test above, with one space
+    added to step 1's id: nothing else about the plan changes.
+    """
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main St EB A", "link": "101"},
+            {"no": "2", "name": "Main St EB B", "link": "101"},
+        ]
+    )
+    findings = batch.validate_plan(
+        _plan_action(
+            _step("set_vehicle_input_volume", input_no=" 1 ", volume=4000.0),
+            _step("set_vehicle_input_volume", input_no="2", volume=4000.0),
+        ),
+        shadow,
+    )
+
+    combined = [f for f in findings if f.constraint_id == "apply_edit_plan_combined_effect"]
+    assert len(combined) == 1, [f.constraint_id for f in findings]
+    _assert_well_formed(combined[0])
+    assert combined[0].tier == "refuse"
+    assert combined[0].details["batch_step_index"] == 2
+    assert combined[0].details["underlying_constraint_id"] == "latent_demand_overflow"
+    # ...and the padded step keeps its OWN refusal too: the patch is not an
+    # excuse for the id, it is the reason the next step is judged honestly.
+    assert any(f.constraint_id == "object_not_found" and f.tier == "refuse" for f in findings)
+
+
+def test_normalize_target_id_strips_each_identity_part_and_keeps_the_rest():
+    """``normalize_target_id`` is content-preserving apart from the padding.
+
+    The two-part identities join with ``"."`` and padding can sit on either side
+    of that dot, so the parts are stripped individually; a single id that
+    happens to contain a dot (a canonical link id such as ``"617.0"``) is
+    therefore unchanged rather than mangled.
+    """
+    assert batch.normalize_target_id(" 109 ") == "109"
+    assert batch.normalize_target_id("\t109\n") == "109"
+    assert batch.normalize_target_id(" 1 . 10 ") == "1.10"
+    assert batch.normalize_target_id("617.0") == "617.0"
+    assert batch.normalize_target_id("") == ""
+    assert batch.normalize_target_id("   ") == ""
+    # The two-part resolver goes through it too, not only the single-id one.
+    padded = batch.resolve_write_target(
+        _step("set_vehicle_composition_share", composition_no=" 1", veh_type_no="10 ", rel_flow=5.0)
+    )
+    assert padded["target_id"] == "1.10"
 
 
 def test_validate_plan_does_not_collide_on_different_targets():

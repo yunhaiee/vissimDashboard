@@ -2534,7 +2534,19 @@ export interface CalibrationDemandTargetMapping {
    * Nothing on the client compares it; it is here because a bug report quotes it. */
   seq: number;
   node_id: string;
-  vehicle_input_no: string;
+  /** Unit #59. `"vehicle_input"` for a #54 record — one input — and
+   * `"vehicle_input_link_group"` for a link's vehicle-class trio named as one
+   * target. Records written before #59 carry no kind on disk and the server
+   * defaults them to the first, so this is never absent. */
+  target_kind: "vehicle_input" | "vehicle_input_link_group";
+  /** `null` on a link-group record: no ONE input was chosen, and a
+   * representative here would read as though one had been. */
+  vehicle_input_no: string | null;
+  /** The members of a link-group record, in the order the picker offered them;
+   * `[]` on a single-input record. The server checks this membership for SET
+   * EQUALITY when the claim is used, so a class that arrived on the link since
+   * is a named refusal rather than a silent enrolment. */
+  vehicle_input_nos: string[];
   link_no: string;
   named_by: string;
   named_at: string;
@@ -2568,17 +2580,86 @@ export interface CalibrationDemandCandidate {
   name?: string | null;
 }
 
+/** One LINK-GROUP a modeller may name — the unit of choice since #59.
+ *
+ * The user decided (DECISIONS.md 2026-08-24) that a link's 승용차/버스/트럭 trio
+ * is adjusted TOGETHER, proportionally, mix preserved. So the inputs sharing a
+ * link stop being rival candidates and become one composite, and the picker
+ * offers these: two choices on the demo's node 8, not six inputs.
+ *
+ * Folded by `reality_check_targets.link_groups` and checked against the same
+ * list when a choice is recorded — the client folds nothing, for the reason it
+ * builds no candidate list of its own. */
+export interface CalibrationDemandLinkGroup {
+  link_no: string;
+  /** The vehicle-class inputs on this link, in the order they are offered. */
+  vehicle_input_nos: string[];
+  members: CalibrationDemandCandidate[];
+  /** `null` when ANY member's volume is unstated — never a sum over the ones
+   * that happened to be stated, because unknown is not zero. */
+  current_volume_total: number | null;
+  name?: string | null;
+}
+
+/** One member's share of a proposed demand adjustment (#59).
+ *
+ * The SERVER's own arithmetic (`services/agent/demand_class_split.py`,
+ * largest-remainder over hundredths so the members sum to the proposed total
+ * exactly). Rendered as given: a client that recomputed the division would show
+ * a reviewer numbers other than the ones the plan would apply. */
+export interface CalibrationDemandSplitRow {
+  vehicle_input_no: string;
+  current_volume: number;
+  proposed_volume: number;
+  delta: number;
+  current_share: number;
+}
+
+/** The grouping behind a node's demand target, when there is one (#59).
+ *
+ * Present only where a composite actually stands, so its presence means exactly
+ * one thing: this target is a class trio folded by the decided rule, not one
+ * input the network vouched for. `split` appears once a proposal has computed
+ * one. */
+export interface CalibrationDemandGroupTarget {
+  link_no: string | null;
+  vehicle_input_nos: string[];
+  member_count: number;
+  members: CalibrationDemandSplitRow[] | CalibrationDemandCandidate[];
+  current_volume_total: number | null;
+  split_rule?: string;
+  /** `fixes.ASSUME_CLASS_MIX_PRESERVED`, riding inside the block so a REFUSAL —
+   * which carries no assumptions tuple — still states the rule behind it. */
+  assumption?: string;
+  split?: CalibrationDemandSplitRow[];
+}
+
 /** Per node: why the derivation answered as it did, what could be named, and
  * what stands. Everything here is derived server-side. */
 export interface CalibrationDemandTargetNode {
   approach_links: string[];
   /** `reality_check_targets.REASON_CODES` — including `HUMAN_NAMED_VEHICLE_INPUT`
-   * once somebody has named one. */
+   * once somebody has named one, and #59's `SINGLE_VEHICLE_INPUT_GROUP` /
+   * `HUMAN_NAMED_VEHICLE_INPUT_GROUP` where a class trio was folded. */
   reason: string | null;
+  /** The ONE input this node resolved to — `null` for a composite, which
+   * resolved to no single input. */
   chosen: string | null;
+  /** The link of the target that stands, `null` when none does. Beside `chosen`
+   * so "resolved" is never inferred from that field being empty. */
+  chosen_group?: string | null;
   candidates: CalibrationDemandCandidate[];
-  /** Why a mapping this workspace holds was NOT used (stale, revoked, or no
-   * longer a candidate). `null` when there is nothing to say. */
+  /** What the picker offers (#59). The raw `candidates` stay beside it so a
+   * reader can still see which classes each choice holds. */
+  candidate_groups: CalibrationDemandLinkGroup[];
+  /** The grouping behind the target that stands, when it is a composite. */
+  group?: CalibrationDemandGroupTarget | null;
+  /** `fixes.ASSUME_CLASS_MIX_PRESERVED` when a class rule produced this node's
+   * target — the disclosure that makes the auto-fold honest rather than silent. */
+  class_rule?: string | null;
+  /** Why a mapping this workspace holds was NOT used (stale, revoked, no longer
+   * a candidate, or its group's membership changed). `null` when there is
+   * nothing to say. */
   human_mapping_ignored?: string | null;
   mapping: CalibrationDemandTargetMapping | null;
 }
@@ -3098,17 +3179,25 @@ export async function fetchCalibrationDemandTargets(params?: {
  * what the node now says is re-derived on the next `fetchCalibrationRealityCheck`. */
 export async function postCalibrationDemandTarget(params: {
   nodeId: string;
-  vehicleInputNo: string;
+  /** The #54 shape: ONE input. Omit it when naming a link-group. */
+  vehicleInputNo?: string;
+  /** Unit #59: the FULL membership of one candidate link-group. Sent rather
+   * than derived from the link for the same reason the link is sent rather than
+   * derived from the input — the reviewer is asserting what they SAW, and the
+   * server refuses by name if the link's classes have changed since. Sending
+   * both shapes at once is a named refusal, never a precedence rule. */
+  vehicleInputNos?: string[];
   linkNo: string;
   reason: string;
   period?: string | null;
 }): Promise<CalibrationDemandTargetMapping> {
   const body: Record<string, unknown> = {
     node_id: params.nodeId,
-    vehicle_input_no: params.vehicleInputNo,
     link_no: params.linkNo,
     reason: params.reason,
   };
+  if (params.vehicleInputNos) body.vehicle_input_nos = params.vehicleInputNos;
+  else body.vehicle_input_no = params.vehicleInputNo;
   if (params.period) body.period = params.period;
   const r = await apiMutationFetch("/api/calibration/demand-targets", {
     method: "POST",

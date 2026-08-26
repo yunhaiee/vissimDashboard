@@ -525,6 +525,227 @@ function VehicleInputActionDetail({
   );
 }
 
+/** One plan step, as the approval card reads it. One of these per step in the
+ * plan, always — see `EditPlanActionDetail`. */
+type PlanStepRow = {
+  tool: string;
+  params: Record<string, unknown>;
+  inputNo: string;
+  volume: number | null;
+  intervalNo: number;
+};
+
+/** WHICH baselines to fetch — and nothing else (unit #59, refuter round 2).
+ *
+ * This lives OUTSIDE `EditPlanActionDetail` on purpose. It is a genuine
+ * narrowing (only a vehicle-input write at interval 1 has a readable "current
+ * volume" to fetch), and it was the one `.filter` in that renderer's body — the
+ * one legitimate use that made a blanket "no array-shrinking call in this
+ * function" pin impossible to write. Round 2's measurement is why that pin is
+ * worth the move: three separate truncations (`.filter((_, i) => i < 2)` folded
+ * into a pinned line, `if (index >= 2) return null` inside the row callback,
+ * `if (steps.length > 2) return null` in the renderer) all survived a suite that
+ * pinned adjacency instead of tokens.
+ *
+ * Narrowing here can only cost a row its "from" number, never the row: the list
+ * on screen is built from the steps, not from this.
+ */
+function baselineInputNos(rows: PlanStepRow[]): string[] {
+  return rows
+    .filter((row) => row.tool === "set_vehicle_input_volume" && row.intervalNo === 1 && row.inputNo !== "")
+    .map((row) => row.inputNo);
+}
+
+/** Every step's CURRENT volume, keyed by input number (unit #59).
+ *
+ * `useVehicleInputBaseline`'s plural sibling, and it exists because a batch's
+ * steps cannot each call that hook — a hook per array element is exactly what
+ * the rules of hooks forbid. One fetch per step, in parallel, resolved together
+ * so the card never renders half a comparison.
+ *
+ * A step whose baseline fails is simply absent from the map: no current value
+ * is a fine outcome (the arrow line still renders the requested volume), and an
+ * error blob never belongs on an approval card. */
+function useVehicleInputBaselines(inputNos: string[]): Record<string, VehicleInputBaseline> {
+  const key = inputNos.join(",");
+  const [loaded, setLoaded] = useState<Loaded<Record<string, VehicleInputBaseline>> | null>(null);
+  const { data } = resolve(loaded, key, { idle: !key });
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    Promise.all(
+      key.split(",").map((id) =>
+        fetchVehicleInputBaseline(id)
+          // A readable-but-empty answer is as absent as a failed one: both mean
+          // "no trustworthy current value", and neither may render as a number.
+          .then((value) => (value ? ([id, value] as const) : null))
+          .catch(() => null),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return;
+      const map: Record<string, VehicleInputBaseline> = {};
+      for (const pair of pairs) if (pair) map[pair[0]] = pair[1];
+      setLoaded(ok(key, map));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+  return data ?? {};
+}
+
+/** `apply_edit_plan`: EVERY step, enumerated (unit #59, refuter F2).
+ *
+ * THE DEFECT THIS CLOSES. A composite demand proposal is N writes carried as
+ * one all-or-nothing plan, and the approval wire for a chat-driven write
+ * carries only `tool`/`params`/`summary` — no evidence block. With no case for
+ * this verb, the plan fell to `agentActionDetail`'s generic `key=value` dump,
+ * whose `formatParamValue` truncates an object at 80 characters: steps 2..N of
+ * a three-class split were literally invisible, and the reviewer approved a
+ * division of demand they could not see. That is the exact condition the user's
+ * decided rule was accepted under ("the reviewer approves the split they can
+ * see"), so the fix is not cosmetic.
+ *
+ * WHAT IT RENDERS, AND FROM WHERE. One row per step, from `params.steps` — the
+ * steps ARE the split, so nothing here recomputes a share or a proportion; the
+ * numbers shown are the numbers the plan would write. The "current" side of
+ * each arrow is fetched, never derived, and is omitted per step when it cannot
+ * be trusted (a later interval has no readable baseline; a conversation that
+ * already edited the model has no honest "before").
+ *
+ * WHAT IT DELIBERATELY DOES NOT CLAIM: the apportionment rule's name.
+ * `apply_edit_plan` is a GENERIC batch verb — a plan of signal writes is not a
+ * class split — and its params carry no rule token, so printing
+ * "LARGEST_REMAINDER_BY_CURRENT_VOLUME" here would assert a demand-split rule
+ * over batches that are not one. The all-or-nothing contract below IS knowable
+ * from the verb itself, and is stated.
+ *
+ * HOW "NO STEP IS DROPPED" IS HELD (rewritten, refuter round 2 → round 3).
+ * Round 2 tried to hold it by ADJACENCY — "a truncation is one more statement on
+ * the path from params to rows, so require the statements to be consecutive".
+ * That theory was measurably wrong: a truncation need not be a statement. Three
+ * mutations survived it — a `.filter` folded into the tail of a pinned line, an
+ * `if (index >= 2) return null` as the row callback's first line, and an
+ * `if (steps.length > 2) return null` in the renderer itself. So the rule is now
+ * structural rather than positional, and it is three things at once:
+ *
+ *   1. `volumeSteps` is `steps.map(...)` and nothing else — one row per step, by
+ *      construction, with no narrowing anywhere on the path.
+ *   2. The stated COUNT and the rendered ROWS read the same array
+ *      (`volumeSteps`), and each row carries its own `params`, so there is no
+ *      second array to fall out of step with the first.
+ *   3. This function's body contains NO array-shrinking call and NO `return
+ *      null` — the one legitimate narrowing (which baselines to fetch) lives in
+ *      `baselineInputNos` above, outside it, where it cannot cost a row.
+ *
+ * (3) is what the contract pins assert, over this function's own extracted body.
+ * It is a bounded, named class of defect, not a proof: see the pin's comment for
+ * the threat-model boundary that decision sits inside. */
+function EditPlanActionDetail({ action, modelEdited }: { action: AgentAction; modelEdited: boolean }) {
+  const { t } = useLanguage();
+  // Same capture-once rule as the single-write card: reading the live prop
+  // would make every "before" vanish the instant the user pressed 실행. Hoisted
+  // above the steps (refuter round 2, M11) so that nothing sits between the
+  // plan's own steps and the rows built from them.
+  const [baselineTrusted] = useState(() => !modelEdited);
+  const rawSteps = (action.params ?? {}).steps;
+  const steps = Array.isArray(rawSteps) ? (rawSteps as { tool?: unknown; params?: unknown }[]) : [];
+  const volumeSteps: PlanStepRow[] = steps.map((step) => {
+    const params = (step?.params ?? {}) as Record<string, unknown>;
+    const rawInterval = Number(params.interval_no ?? 1);
+    return {
+      tool: typeof step?.tool === "string" ? step.tool : "",
+      // The step's OWN params ride on its row, so the rows are the only array
+      // this renderer reads. Reaching back into `steps` by index to render a
+      // detail (which is what this file did) is a second array that can drift
+      // out of step with the first.
+      params,
+      inputNo: params.input_no == null ? "" : String(params.input_no),
+      volume: typeof params.volume === "number" ? params.volume : null,
+      intervalNo: Number.isFinite(rawInterval) ? rawInterval : 1,
+    };
+  });
+  const baselines = useVehicleInputBaselines(baselineTrusted ? baselineInputNos(volumeSteps) : []);
+
+  if (volumeSteps.length === 0) {
+    return (
+      <p className="mt-0.5 text-[13px] text-slate-600">
+        {t("변경 단계가 없습니다.", "This plan lists no steps.", "変更ステップがありません。")}
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-1">
+      <p className="text-[13px] font-semibold text-slate-800">
+        {/* The stated count and the rendered rows come from ONE array. A
+            truncation applied to `volumeSteps` can therefore no longer produce a
+            card that says "3 changes" above two rows; it would have to make the
+            card contradict the plan out loud, which is the failure mode a reader
+            can catch without this file's source in front of them. */}
+        {t(
+          `${volumeSteps.length}개 변경을 한 번에 적용`,
+          `${volumeSteps.length} changes applied as one`,
+          `${volumeSteps.length}件の変更を一度に適用`,
+        )}
+      </p>
+      <ol className="mt-1 flex flex-col gap-0.5">
+        {volumeSteps.map((step, index) => {
+          const current = baselines[step.inputNo]?.volume ?? null;
+          const showsCurrent = step.tool === "set_vehicle_input_volume" && step.intervalNo === 1 && current != null;
+          return (
+            <li
+              key={`${step.tool}-${step.inputNo}-${index}`}
+              className="flex flex-wrap items-center gap-2 text-[13px] leading-5 text-slate-700"
+            >
+              <span className="tabular-nums text-slate-500">{index + 1}.</span>
+              {step.tool === "set_vehicle_input_volume" ? (
+                <>
+                  <span className="font-semibold text-slate-800">
+                    {t(`차량 입력 ${step.inputNo}`, `Vehicle input ${step.inputNo}`, `車両入力 ${step.inputNo}`)}
+                  </span>
+                  <span className="font-mono">
+                    {showsCurrent ? `${formatVolume(current)} → ` : ""}
+                    {step.volume == null ? "?" : formatVolume(step.volume)} veh/h
+                  </span>
+                  {step.intervalNo !== 1 && (
+                    <span className="text-slate-500">
+                      {t(`시간 구간 ${step.intervalNo}`, `interval ${step.intervalNo}`, `期間${step.intervalNo}`)}
+                    </span>
+                  )}
+                </>
+              ) : (
+                // Any OTHER batched write: the same one-line renderer the
+                // single-action card uses, so a plan never renders a verb in a
+                // way its own card would not.
+                <span className="font-mono">
+                  {agentActionDetail({ ...action, tool: step.tool, params: step.params }, t)}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <p className="mt-1 text-[13px] leading-5 text-slate-600">
+        {t(
+          "전부 적용되거나 전부 취소됩니다 — 일부만 적용되는 상태는 없습니다.",
+          "All of it applies or none of it does — there is no partially applied state.",
+          "全て適用されるか全て取り消されるかで、一部だけが適用される状態はありません。",
+        )}
+      </p>
+      {!baselineTrusted && (
+        <p className="mt-0.5 text-[13px] leading-5 text-slate-500">
+          {t(
+            "현재값 미표시 · 이 대화에서 모델이 이미 편집되었습니다",
+            "Current values hidden · this conversation has already edited the model",
+            "現在値は非表示 · この会話で既にモデルを編集しています",
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** One action row's "what exactly is being changed" line. Split out so the
  * vehicle-input case can own hooks (a baseline fetch) without every other tool
  * paying for them, and so the plain-string `agentActionDetail` below stays
@@ -541,6 +762,13 @@ export function AgentActionDetail({
   const { t } = useLanguage();
   if (action.tool === "set_vehicle_input_volume") {
     return <VehicleInputActionDetail action={action} focus={focus} modelEdited={modelEdited} />;
+  }
+  // Unit #59 (refuter F2). MUST come before the fallback below: a plan's steps
+  // are an OBJECT, and `formatParamValue` truncates one at 80 characters, so
+  // the generic dump made steps 2..N of a class split invisible to the person
+  // approving it.
+  if (action.tool === "apply_edit_plan") {
+    return <EditPlanActionDetail action={action} modelEdited={modelEdited} />;
   }
   // Mono for ids/codes: a tool with no case in agentActionDetail's switch
   // (below) falls back to a raw "key=value, key2=value2" dump instead of a

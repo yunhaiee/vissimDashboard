@@ -41,6 +41,31 @@ that list is refused BY NAME: laundering an unverifiable mapping into a
 first-class demand target is the one thing this module could do that would be
 worse than the dead end it replaces.
 
+**A LINK-GROUP IS THE SAME KIND OF CLAIM (unit #59).** The user's decision of
+2026-08-24 made the LINK the unit of choice: a link's 승용차/버스/트럭 trio is
+adjusted together, proportionally, mix preserved. So a record may name ONE
+vehicle input (the #54 shape, unchanged in every respect) or ONE link-group, and
+:attr:`DemandTargetMapping.target_kind` says which. Everything else about the
+claim is identical — a namer, a server clock, a mandatory reason, the network's
+own bytes, append-only revocation, the node's latest word.
+
+Three things about the group shape are load-bearing:
+
+* **It is checked against the derivation's own GROUPS**, threaded in by the
+  router (``reality_check_targets.link_groups``), never folded here. Grouping is
+  the derivation's opinion and a second one is exactly the divergence this store
+  must not introduce — the same rule ``candidates`` already follows.
+* **Membership is recorded, and checked as SET EQUALITY.** A group record keeps
+  the member ids that were on the link when a person looked. If a class arrived
+  or left since, the claim is about a group that no longer exists: naming is
+  refused (``demand_target_group_membership_changed``) and a standing record is
+  IGNORED by the derivation. A containment check would instead sweep a class the
+  signer never saw into a proportional adjustment nobody reviewed.
+* **Old records are not migrated, widened, or rewritten.** A #54 record carries
+  no ``target_kind`` at all, loads as ``vehicle_input``, and still targets that
+  ONE input even on a link the derivation would now fold. A rule that arrived
+  after somebody signed must not change what they signed.
+
 **SERVER-STAMPED.** ``named_by`` is the SIGNED-IN USER and ``named_at`` is the
 SERVER CLOCK; neither is a field on the request model, and
 ``routers.calibration.DemandTargetRequest`` forbids extra keys, so a body
@@ -125,7 +150,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence, TypeVar
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services import workspaces
 
@@ -250,6 +275,10 @@ class DemandTargetMapping(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["prism.calibration_demand_target_map.v1"] = DEMAND_TARGET_DOC_KIND
+    #: WHAT was named (unit #59). Defaults to the #54 shape, so every record
+    #: written before this field existed loads as exactly what it is — one
+    #: vehicle input — with no migration and no rewrite of anybody's claim.
+    target_kind: Literal["vehicle_input", "vehicle_input_link_group"] = "vehicle_input"
     id: str = Field(min_length=1)
     #: THE ORDER. A registry-level counter incremented under the write lock at
     #: append time, so it is total and it IS insertion order. Everything about
@@ -259,7 +288,20 @@ class DemandTargetMapping(BaseModel):
     seq: int = Field(ge=1)
     workspace_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1, max_length=MAX_TOKEN_CHARS)
-    vehicle_input_no: str = Field(min_length=1, max_length=MAX_TOKEN_CHARS)
+    #: The ONE input a ``vehicle_input`` record names. ``None`` on a link-group
+    #: record, and that is the honest value rather than a representative member:
+    #: a reader of an old record still finds a string here, and a reader of a
+    #: group record finds nothing here to mistake for "the input that was
+    #: chosen". Which of the two a record is, is :attr:`target_kind`'s job.
+    vehicle_input_no: str | None = Field(default=None, max_length=MAX_TOKEN_CHARS)
+    #: The MEMBERS a ``vehicle_input_link_group`` record names — the vehicle
+    #: inputs that were on this link when a person named it. Recorded rather
+    #: than re-derived at read time for the reason the whole store exists: the
+    #: claim is about what the signer SAW, and a membership that changed since
+    #: is something the derivation must be able to notice
+    #: (``reality_check_targets.HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED``), which
+    #: it cannot do if the record simply agrees with whatever is there now.
+    vehicle_input_nos: list[str] = Field(default_factory=list)
     link_no: str = Field(min_length=1, max_length=MAX_TOKEN_CHARS)
     named_by: str = Field(
         min_length=1,
@@ -275,6 +317,31 @@ class DemandTargetMapping(BaseModel):
     revoked_at: str | None = None
     revoked_reason: str | None = None
     history: list[MappingEvent] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _one_shape_or_the_other(self) -> "DemandTargetMapping":
+        """A record names ONE input or ONE link-group — never both, never neither.
+
+        The two shapes' fields are optional INDIVIDUALLY so old records load
+        untouched, which leaves exactly one way for a record to become
+        meaningless: carrying the wrong field for its kind. That is checked here
+        rather than trusted, because a group record with no members would read
+        downstream as "adjust nothing", and a ``vehicle_input`` record with no
+        input would be a claim about nothing at all.
+        """
+        if self.target_kind == "vehicle_input_link_group":
+            if not self.vehicle_input_nos:
+                raise ValueError("a link-group mapping must name its member vehicle inputs")
+            if self.vehicle_input_no:
+                raise ValueError(
+                    "a link-group mapping names members, never a single vehicle_input_no"
+                )
+        else:
+            if not self.vehicle_input_no:
+                raise ValueError("a vehicle-input mapping must name one vehicle_input_no")
+            if self.vehicle_input_nos:
+                raise ValueError("a vehicle-input mapping names one input, never members")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -370,11 +437,13 @@ def _canonical_link(value: Any) -> str:
 def record_mapping(
     *,
     node_id: str,
-    vehicle_input_no: str,
+    vehicle_input_no: str | None = None,
     link_no: str,
     reason: str,
     named_by: str,
     candidates: Sequence[Mapping[str, Any]] | None,
+    vehicle_input_nos: Sequence[str] | None = None,
+    groups: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Record ONE named mapping. Returns the stored record's summary.
 
@@ -383,9 +452,23 @@ def record_mapping(
     server could not compute one at all (no network, no workbook, no
     object-id-keyed rows), which is a refusal rather than a licence.
 
+    TWO SHAPES SINCE #59, and the caller picks by which field it fills:
+
+    * ``vehicle_input_no`` — the #54 triple, checked against ``candidates``.
+      Unchanged in every respect, including for records already on disk;
+    * ``vehicle_input_nos`` — a LINK-GROUP, checked against ``groups``
+      (``reality_check_targets.link_groups``' own output, threaded in for the
+      same reason ``candidates`` is: folding inputs into groups must have ONE
+      implementation, and this store re-deriving it would be the second opinion
+      the module docstring forbids).
+
+    Filling both is refused rather than resolved by precedence: which of two
+    conflicting targets a person meant is not something to guess.
+
     Raises:
-        DemandTargetRefused: nobody to name it, no reason, a malformed triple, a
-            triple no candidate list vouches for, or no network to bind to.
+        DemandTargetRefused: nobody to name it, no reason, a malformed triple or
+            group, a target no candidate list vouches for, a group whose
+            membership no longer matches, or no network to bind to.
     """
     namer = (named_by or "").strip()
     if not namer:
@@ -404,12 +487,36 @@ def record_mapping(
 
     cleaned = _clean_reason(reason)
     node = _clean_token(node_id, "node_id")
-    input_no = _clean_token(vehicle_input_no, "vehicle_input_no")
     link = _canonical_link(_clean_token(link_no, "link_no"))
     if not link:
         raise _incomplete_triple("link_no")
 
-    _require_real_triple(node, input_no, link, candidates)
+    single = str(vehicle_input_no or "").strip()
+    members = [str(value or "").strip() for value in vehicle_input_nos or []]
+    members = [value for value in members if value]
+    if single and members:
+        raise DemandTargetRefused(
+            "demand_target_conflicting_target",
+            {
+                "ko": "차량 인풋 하나와 링크 그룹을 동시에 지정할 수 없습니다. 무엇을 조정 대상으로 "
+                "삼았는지가 이 기록의 전부인데, 둘을 함께 적으면 그 답이 둘이 됩니다.",
+                "en": "A mapping may name ONE vehicle input or ONE link-group, not both. What this "
+                "record is FOR is naming the object to adjust; naming two makes that answer two.",
+                "ja": "車両インプット一つとリンクグループを同時に指定することはできません。何を調整"
+                "対象としたかがこの記録の全てであり、二つ書けばその答えが二つになります。",
+            },
+            detail={"node_id": node, "vehicle_input_no": single, "vehicle_input_nos": members},
+        )
+
+    if members:
+        _require_real_group(node, link, members, groups)
+        input_no: str | None = None
+        kind = "vehicle_input_link_group"
+    else:
+        input_no = _clean_token(vehicle_input_no, "vehicle_input_no")
+        _require_real_triple(node, input_no, link, candidates)
+        kind = "vehicle_input"
+        members = []
 
     sha = active_inpx_sha256()
     if not sha:
@@ -443,9 +550,11 @@ def record_mapping(
         record = DemandTargetMapping(
             id=uuid4().hex[:12],
             seq=seq,
+            target_kind=kind,
             workspace_id=workspaces.current_workspace_id(),
             node_id=node,
             vehicle_input_no=input_no,
+            vehicle_input_nos=list(members),
             link_no=link,
             named_by=namer,
             named_at=now,
@@ -461,7 +570,7 @@ def record_mapping(
     logger.info(
         "demand targets: %s named vehicle input %s (link %s) for node %s (%s, seq %s)",
         namer,
-        input_no,
+        input_no if input_no else "+".join(members),
         link,
         node,
         stored["id"],
@@ -606,6 +715,123 @@ def _require_real_triple(
     )
 
 
+def group_key(entry: Mapping[str, Any]) -> tuple[str, frozenset[str]] | None:
+    """``(canonical link, member id set)`` for one derived group, or ``None``.
+
+    The MEMBERSHIP is a set, and that is the whole check: a link-group is
+    identified by its link, but what a person agreed to move is the classes that
+    were on it when they looked.
+    """
+    from services.agent import fixes
+
+    link_raw = entry.get("link_no", entry.get("link"))
+    link_no = fixes.canonical_link_id(link_raw) if link_raw not in (None, "") else ""
+    members = {
+        str(value).strip() for value in entry.get("vehicle_input_nos") or [] if str(value).strip()
+    }
+    if not link_no or not members:
+        return None
+    return str(link_no), frozenset(members)
+
+
+def _require_real_group(
+    node_id: str,
+    link_no: str,
+    members: Sequence[str],
+    groups: Sequence[Mapping[str, Any]] | None,
+) -> None:
+    """:func:`_require_real_triple` for a LINK-GROUP, and for the same reason.
+
+    A person may choose BETWEEN the link-groups that really feed this node's
+    counted approaches. They may not invent one, and they may not name a
+    membership the network does not currently have.
+
+    Membership is compared as SET EQUALITY rather than containment, deliberately.
+    A group that gained a vehicle class since the picker rendered it would, under
+    a containment check, quietly enrol that class in a proportional adjustment
+    nobody reviewed — the composite equivalent of laundering an unverifiable
+    mapping, which is the one thing this module may not do.
+    """
+    if groups is None:
+        raise DemandTargetRefused(
+            "demand_target_no_group_candidates",
+            {
+                "ko": f"노드 {node_id}의 링크 그룹 후보를 계산할 수 없어 지정을 기록하지 않았습니다. "
+                "이 노드의 실측 행이 Vissim 이동류 ID가 아니거나, 네트워크·실측 자료를 읽지 못한 "
+                "상태입니다 — 확인할 수 없는 지정은 기록하지 않습니다.",
+                "en": f"No link-group candidate list could be computed for node {node_id}, so "
+                "nothing was recorded. Either this node's observed rows are not Vissim movement "
+                "OBJECT_IDs, or the network/observed data could not be read — a mapping nothing can "
+                "check is not recorded.",
+                "ja": f"ノード {node_id} のリンクグループ候補を計算できないため指定を記録していません。"
+                "このノードの実測行がVissimの移動ID でないか、ネットワーク・実測データを読み込めない"
+                "状態です — 確認できない指定は記録しません。",
+            },
+            status=409,
+            detail={"node_id": node_id},
+        )
+
+    named = frozenset(members)
+    keys = [key for key in (group_key(entry) for entry in groups) if key is not None]
+    for link, membership in keys:
+        if link != link_no:
+            continue
+        if membership == named:
+            return
+        raise DemandTargetRefused(
+            "demand_target_group_membership_changed",
+            {
+                "ko": f"링크 {link_no}은(는) 노드 {node_id}의 후보 그룹이 맞지만, 이 링크에 붙어 있는 "
+                f"차량 인풋이 지정하려는 목록과 다릅니다(현재 {', '.join(sorted(membership))} / 지정 "
+                f"{', '.join(sorted(named))}). 비례 배분은 이 목록 전체를 함께 움직이므로, 본 적 없는 "
+                "차종이 섞이면 승인하지 않은 교통량까지 바뀝니다 — 화면을 새로 불러온 뒤 현재 구성으로 "
+                "다시 지정해 주십시오.",
+                "en": f"Link {link_no} is a candidate group for node {node_id}, but the vehicle "
+                f"inputs on it are not the ones being named (now "
+                f"{', '.join(sorted(membership))} / named {', '.join(sorted(named))}). A "
+                "proportional adjustment moves the WHOLE list together, so a class you never saw "
+                "would have its volume changed unreviewed. Reload and name the current group.",
+                "ja": f"リンク {link_no} はノード {node_id} の候補グループですが、このリンクに接続する"
+                f"車両インプットが指定しようとしている一覧と異なります(現在 "
+                f"{', '.join(sorted(membership))} / 指定 {', '.join(sorted(named))})。比例配分は"
+                "一覧全体をまとめて動かすため、見ていない車種の交通量まで変更されます — 画面を再読み込み"
+                "して現在の構成で指定し直してください。",
+            },
+            status=409,
+            detail={
+                "node_id": node_id,
+                "link_no": link_no,
+                "vehicle_input_nos": sorted(named),
+                "current_vehicle_input_nos": sorted(membership),
+            },
+        )
+
+    raise DemandTargetRefused(
+        "demand_target_unverifiable_group",
+        {
+            "ko": f"링크 {link_no}은(는) 노드 {node_id}가 실측된 진입 링크 중 하나가 아닙니다. 이 "
+            "제품은 실제 후보들 중에서 사람이 고르는 것만 기록합니다 — 확인할 수 없는 대응은 "
+            "기록해도 근거가 되지 않습니다.",
+            "en": f"Link {link_no} is not one of the approaches node {node_id} was counted entering "
+            "from. This product records a human's CHOICE among the real candidates; a mapping "
+            "nothing can verify would not become evidence by being written down.",
+            "ja": f"リンク {link_no} は、ノード {node_id} が実測された流入リンクのいずれでもありません。"
+            "本製品は実在する候補の中から人が選んだ結果のみを記録します — 確認できない対応は記録しても"
+            "根拠になりません。",
+        },
+        status=422,
+        detail={
+            "node_id": node_id,
+            "link_no": link_no,
+            "vehicle_input_nos": sorted(named),
+            "candidates": [
+                {"link_no": link, "vehicle_input_nos": sorted(membership)}
+                for link, membership in sorted(keys)
+            ],
+        },
+    )
+
+
 def _not_found(mapping_id: str) -> DemandTargetRefused:
     return DemandTargetRefused(
         "demand_target_not_found",
@@ -698,7 +924,13 @@ def summarize(record: Mapping[str, Any], *, current_sha: str | None) -> dict[str
         # latest word" MEANS. A screen never compares it; a bug report quotes it.
         "seq": _sequence_of(record),
         "node_id": record.get("node_id"),
+        # #59. A record written before this field existed carries no
+        # ``target_kind`` and is exactly what it always was: one vehicle input.
+        # Defaulted HERE rather than left absent so a reader never has to tell
+        # "an old record" from "a record whose kind went missing".
+        "target_kind": str(record.get("target_kind") or "vehicle_input"),
         "vehicle_input_no": record.get("vehicle_input_no"),
+        "vehicle_input_nos": [str(value) for value in record.get("vehicle_input_nos") or []],
         "link_no": record.get("link_no"),
         "named_by": record.get("named_by"),
         "named_at": record.get("named_at"),
@@ -1107,6 +1339,7 @@ __all__ = [
     "active_inpx_sha256",
     "candidate_key",
     "demand_targets_dir",
+    "group_key",
     "fresh_index_payload",
     "get_mapping",
     "index_payload",

@@ -2516,8 +2516,19 @@ def _build_v6_entrance_volume(
     context = _finding_field(finding, "context", {}) or {}
     caller_targets = dict(targets or {})
     node = caller_targets.get("node")
+    supplied_input_no = caller_targets.get("input_no", input_no)
     target: dict[str, Any] = {
-        "input_no": caller_targets.get("input_no", input_no),
+        # #59 (refuter round 3, R3-3): normalized HERE, at the one point this
+        # builder turns a finding and a caller's context into an identity, and
+        # by the same rule every other id reader in the mapping uses. This was
+        # the first of the two sibling sites round 2's fix did not reach: a
+        # ``"   "`` subject is truthy, so it passed the gate below, went out as
+        # a PROPOSAL naming an object that does not exist, and died in
+        # ``tools_edit._coerce_id`` on dispatch — after a human approved it.
+        # ``None`` rather than ``""`` when nothing was named, because that is
+        # what the message text below reads as "no input" ("?" is not this
+        # module's spelling, an absent value is).
+        "input_no": fixes.normalize_input_no(supplied_input_no) or None,
         "link_no": caller_targets.get("link_no", context.get("link")),
         "interval_no": caller_targets.get("interval_no", 1),
     }
@@ -2526,6 +2537,13 @@ def _build_v6_entrance_volume(
     entrance = fixes.entrance_measurement(node, target)
     evidence: dict[str, Any] = {
         "input_no": target["input_no"],
+        # ...and what actually arrived, beside it — ``entrance_measurement``'s
+        # own ``link_no_supplied``/``input_no_supplied`` idiom, at this layer
+        # (round 3, R3-3/R3-9). The verdict below is handed an ALREADY
+        # normalized target, so its own "supplied" field can no longer show the
+        # padding; this is where "why does the refusal say no input was named"
+        # is answerable — the audit block shows the three spaces that arrived.
+        "input_no_supplied": None if supplied_input_no is None else str(supplied_input_no),
         "code": code,
         "target": target,
         "entrance_measurement": entrance,
@@ -2557,7 +2575,31 @@ def _build_v6_entrance_volume(
             "値ではないため拒否します — その値は人が実測値を確認して直接入力すべきです。",
         )
 
-    if proposed_volume is None or target["input_no"] in (None, ""):
+    # THE TARGET MUST NAME ITSELF, AND IT IS ASKED FIRST (round 3, R3-3) — the
+    # same order, and the same reason code, as the mapping's two other demand
+    # builders (``fixes._build_demand_proposal``'s round-2 comment states the
+    # principle: until it is settled what object this is about, nothing else
+    # said here is a statement about anything in particular). Round 2's single
+    # gate answered two different questions with one refusal, so a target with
+    # no input but a perfectly good estimate was told "no demand estimate was
+    # supplied" — and ``"   "``, being truthy, was not asked either question.
+    # ONE falsy test, because there is now ONE spelling.
+    if not target["input_no"]:
+        return _refuse(
+            code=code,
+            reason_code=fixes.NO_TARGET_OBJECT,
+            evidence=evidence,
+            ko="조정할 차량 입력 번호가 지정되지 않아 제안을 만들 수 없습니다 — 대상 없이 볼륨을 "
+            "바꾸자는 제안은 하지 않습니다(전달된 값은 evidence의 input_no_supplied에 있습니다).",
+            en="No vehicle input number was named, so no proposal can be made — a volume change "
+            "with no object to change is not proposed (what was handed over is recorded in the "
+            "evidence as input_no_supplied).",
+            ja="調整対象の車両インプット番号が指定されていないため、提案を作成できません — 対象の"
+            "ないボリューム変更は提案しません(渡された値は evidence の input_no_supplied にあり"
+            "ます)。",
+        )
+
+    if proposed_volume is None:
         return _refuse(
             code=code,
             reason_code=fixes.EVIDENCE_INSUFFICIENT,

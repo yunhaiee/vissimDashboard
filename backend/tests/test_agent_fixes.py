@@ -1549,6 +1549,16 @@ def test_d4_the_refusal_tail_is_a_capability_claim_that_matches_the_builders():
         source = Path(module.__file__).read_text(encoding="utf-8")
         return set(re.findall(r'verb\s*=\s*"([a-z0-9_]+)"', source))
 
+    def _plan_step_verbs(module: Any) -> set[str]:
+        """Every tool this module puts INSIDE an ``apply_edit_plan`` step (#59).
+
+        ``_emitted_verbs`` above sees only the top-level verb, so a plan could
+        grow a step reaching a lever the refusal tail says nothing proposes and
+        this pin would never notice. This reads the step tools too.
+        """
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        return set(re.findall(r'"tool":\s*"([a-z0-9_]+)"', source))
+
     emitted: set[str] = set()
     for module in (fixes, saturation_flow):
         emitted |= _emitted_verbs(module)
@@ -1556,7 +1566,37 @@ def test_d4_the_refusal_tail_is_a_capability_claim_that_matches_the_builders():
         "set_vehicle_input_volume",
         "set_route_relative_flow",
         "set_driving_behavior_parameter",
+        # Unit #59, and NOT a fifth lever — which is the whole reason it is
+        # called out here rather than quietly added to the set. It is the DEMAND
+        # lever's multi-step carrier: where the target is a link's vehicle-class
+        # trio, the proposal is N ``set_vehicle_input_volume`` steps inside one
+        # all-or-nothing plan, because a partially applied trio leaves a class
+        # mix nobody approved. The refusal tail above is about what this loop can
+        # change INSTEAD of the demand it just refused, so it is unaffected: a
+        # plan of demand writes is the same lever this refusal is refusing.
+        #
+        # If this verb ever starts carrying steps that are NOT demand writes,
+        # the tail's capability claim really has changed and this comment is
+        # where a refuter should notice.
+        "apply_edit_plan",
     }, emitted
+    # THE TOOL VOCABULARY this module may name in a dict literal. BOUNDED rather
+    # than enumerated per site, because the two members mean different things and
+    # both are legitimate: `set_vehicle_input_volume` is what a plan STEP writes,
+    # and `apply_edit_plan` appears once more as the ACTION handed to
+    # `batch.validate_plan_structure` for the build-time preflight (refuter F3)
+    # -- never as a step of itself, which `batch.BATCH_STEP_BLOCKLIST` forbids
+    # outright. Anything ELSE here would be this loop reaching a lever the
+    # refusal tail above says nothing proposes.
+    #
+    # What the STEPS actually contain at RUNTIME is pinned where it can be
+    # measured instead of pattern-matched: tests/test_calibration_targets.py::
+    #   test_a_composite_target_proposes_ONE_all_or_nothing_plan_carrying_the_split
+    # asserts every emitted step's tool is set_vehicle_input_volume.
+    assert _plan_step_verbs(fixes) <= {"set_vehicle_input_volume", "apply_edit_plan"}, (
+        "a dict literal in fixes.py names a tool outside the demand lever and its own plan "
+        "carrier -- the refusal tail's capability claim would be false"
+    )
     assert not (emitted & manual), "a manual lever grew a builder — the refusal must say so"
 
     # THE QUALIFIER IS EARNED, MEASURED RATHER THAN ASSERTED. The scan above
@@ -1893,6 +1933,133 @@ def test_a_link_id_spelled_differently_still_finds_the_measurement(supplied_link
 )
 def test_canonical_link_id_normalizes_only_what_it_was_written_for(value, expected):
     assert fixes.canonical_link_id(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("113", "113"),
+        (" 113 ", "113"),
+        ("\t113\n", "113"),
+        (113, "113"),
+        ("   ", ""),
+        ("", ""),
+        (None, ""),
+        # NOT folded the way a LINK id is: an input number is an opaque key the
+        # caller either has right or does not, so inventing "0113 means 113"
+        # here would be this module guessing at an identity.
+        ("0113", "0113"),
+        ("113.0", "113.0"),
+    ],
+)
+def test_normalize_input_no_strips_whitespace_and_deliberately_nothing_else(value, expected):
+    """Unit #59 (refuter round 3, R3-3): the ONE rule, public, so the three
+    builders that name a vehicle input cannot each have their own."""
+    assert fixes.normalize_input_no(value) == expected
+
+
+def test_the_entrance_verdict_keeps_the_input_id_it_was_handed_beside_the_one_it_used():
+    """``link_no_supplied``'s sibling (unit #59, refuter round 3, R3-9).
+
+    The link half of this verdict has always reported both spellings — the
+    canonical one the join used, and the one the caller handed over — because a
+    provenance block that silently rewrote its own input is unauditable exactly
+    where auditing matters. The input half normalized and reported only the
+    result, so a padded id left no trace of having been padded, and a
+    whitespace-only id (which names nothing, and is reported as ``None``) left
+    no trace at all — including for the refusal that fires BECAUSE of it.
+    """
+    padded = fixes.entrance_measurement(_DEMO_NODE_8, {**_DEMO_INPUT_113, "input_no": " 113 "})
+    assert padded["input_no"] == "113"
+    assert padded["input_no_supplied"] == " 113 "
+    assert padded["status"] == fixes.ENTRANCE_MEASURED
+
+    nothing = fixes.entrance_measurement(_DEMO_NODE_8, {**_DEMO_INPUT_113, "input_no": "   "})
+    assert nothing["input_no"] is None
+    assert nothing["input_no_supplied"] == "   "
+
+    absent = fixes.entrance_measurement(_DEMO_NODE_8, {"link_no": "617"})
+    assert absent["input_no"] is None
+    assert absent["input_no_supplied"] is None
+
+
+def test_both_fixes_side_input_readers_go_THROUGH_normalize_input_no(monkeypatch):
+    """The delegation, executed (unit #59, refuter round 3, R3-3).
+
+    Round 2 taught this exact lesson one level up: ``validate_plan_structure``'s
+    docstring claimed a delegation that was not there, and every behavioural test
+    passed anyway because both copies happened to agree. So the claim "one rule,
+    one place" is asserted the same way it was there — with a spy no re-inlined
+    ``.strip()`` could ever consult.
+    """
+    monkeypatch.setattr(fixes, "normalize_input_no", lambda raw: "SPY")
+
+    assert fixes._target_input_no({"input_no": "113"}) == "SPY"
+
+    shadow = {
+        "links": [{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        "vehicle_inputs": [
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "207", "name": "B", "link": "620", "volume": 500.0},
+        ],
+    }
+    proposal = fixes.propose_for_finding(
+        _latent_demand_finding(shadow, input_no="107", volume=6000.0),
+        action={"tool": "set_vehicle_input_volume", "params": {"input_no": "107", "volume": 6000.0}},
+    )
+    assert proposal.params["input_no"] == "SPY"
+
+
+def test_the_latent_demand_builder_refuses_a_whitespace_input_instead_of_proposing_it():
+    """The SECOND sibling site round 2's normalization did not reach (unit #59,
+    refuter round 3, R3-3).
+
+    MEASURED on the round-3 build, by running this builder with the id
+    normalization reverted to identity: ``input_no="   "`` came back
+    ``PROPOSAL`` carrying ``params={"input_no": "   ", ...}``. The live params
+    schema accepts that string (measured separately: ``fixes.validate_params``
+    returns ``(True, None)`` for it), so ``_emit``'s own schema gate could not
+    catch it either — it reached an approval card and would have died in
+    ``tools_edit._coerce_id`` on dispatch, after a human signed it. That is
+    defect D1 exactly, in the module beside the one round 2 fixed.
+
+    The padded half of the same defect is quieter and is asserted below: the
+    proposal wrote ``" 107 "`` while the evidence's ``entrance_measurement``
+    block (which normalizes) said ``"107"`` — one evidence payload spelling one
+    input two ways.
+    """
+    shadow = {
+        "links": [{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        "vehicle_inputs": [
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "207", "name": "B", "link": "620", "volume": 500.0},
+        ],
+    }
+    finding = _latent_demand_finding(shadow, input_no="107", volume=6000.0)
+
+    def proposal_for(input_no: str) -> fixes.FixProposal:
+        return fixes.propose_for_finding(
+            finding,
+            action={"tool": "set_vehicle_input_volume", "params": {"input_no": input_no, "volume": 6000.0}},
+        )
+
+    nothing_named = proposal_for("   ")
+    assert nothing_named.outcome == fixes.REFUSAL
+    assert nothing_named.reason_code == fixes.NO_TARGET_OBJECT
+    assert nothing_named.params is None
+    assert nothing_named.verb is None
+    # ...and the whitespace is still auditable, in the one field that keeps it.
+    assert nothing_named.evidence["input_no"] is None
+    assert nothing_named.evidence["input_no_supplied"] == "   "
+
+    padded = proposal_for(" 107 ")
+    assert padded.outcome == fixes.PROPOSAL
+    assert padded.params["input_no"] == "107"
+    # BOTH halves of the evidence spell it the same way -- the id the plan would
+    # write, and the id the entrance verdict is about, are one id.
+    assert padded.evidence["input_no"] == "107"
+    assert padded.evidence["entrance_measurement"]["input_no"] == "107"
+    assert padded.evidence["input_no_supplied"] == " 107 "
 
 
 def test_the_cited_count_is_every_row_on_the_link_not_the_first():

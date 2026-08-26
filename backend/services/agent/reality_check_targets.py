@@ -30,12 +30,43 @@ only where the same kind of identity holds AND it is unique:
   ``fixes.entrance_measurement`` already names that absence
   (:data:`fixes.ENTRANCE_NO_LINK_KEYED_ROWS`); this module does not get to
   guess what that function refuses to;
-* and EXACTLY ONE vehicle input may survive the join. A node with two counted
+* and EXACTLY ONE candidate may survive the join. A node with two counted
   approaches has two candidates and there is no evidence here that says which
-  one carries the shortfall; the real client model puts THREE inputs on one link
-  (107/207/307 on link 620, one per vehicle class — ``tools_network.
-  _parse_vehicle_inputs``), which is the same ambiguity with a different cause.
-  Both cases keep the honest ``NO_TARGET_OBJECT`` state.
+  one carries the shortfall, so it keeps the honest ``NO_TARGET_OBJECT`` state.
+
+  The real client model also puts THREE inputs on one link (107/207/307 on link
+  620, one per vehicle class — ``tools_network._parse_vehicle_inputs``). Until
+  #59 that read as the same ambiguity and got the same refusal — WRONGLY, as it
+  turned out: see the next section.
+
+THE CLASS QUESTION, ANSWERED BY THE USER (unit #59, 2026-08-24)
+---------------------------------------------------------------
+Refusing the class trio was correct only while nobody had decided what to do
+with it, and the refusal was network-wide: EVERY approach link in the client
+model carries a 승용차/버스/트럭 trio, so single-candidate demand derivation
+refused everywhere and the demand knob was unreachable in the real product.
+
+The user decided (``docs/phase2/DECISIONS.md``, verbatim): **(a) 셋을 비례로
+함께 조정 — 승용차:버스:트럭 구성비 유지**. So the LINK, not the class input, is
+the unit of choice:
+
+* inputs sharing one link fold into one COMPOSITE candidate
+  (:func:`link_groups`). A node with exactly ONE such group resolves where it
+  refused, because the only ambiguity it ever had was class-level and the class
+  rule is now decided;
+* several groups is still a human's choice and still refuses by name — the
+  picker offers GROUPS (two choices on the demo's node 8, not six inputs);
+* the fold is DISCLOSED, never silent. Such a node reports
+  :data:`SINGLE_VEHICLE_INPUT_GROUP` rather than :data:`SINGLE_VEHICLE_INPUT`,
+  carries its members in ``why["vehicle_input"]["group"]``, and carries
+  ``fixes.ASSUME_CLASS_MIX_PRESERVED`` in ``class_rule`` — because "the network
+  states one input feeds this approach" and "a rule the user chose folded three"
+  are different claims, and a reader is entitled to know which they are looking
+  at. What this module still never does is pick ONE class out of the three.
+
+The arithmetic that splits an adjustment back across the members lives in
+``services.agent.demand_class_split``; the proposal that carries it lives in
+``fixes``. This module decides only the grouping.
 
 WHAT IT MUST NEVER DO (a decision, recorded)
 --------------------------------------------
@@ -125,7 +156,7 @@ docstring for why it lives here rather than staying private to
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from services import results_evidence
 from services.agent import fixes
@@ -144,12 +175,29 @@ NO_OBJECT_ID_ROWS = "NO_OBJECT_ID_ROWS"
 SINGLE_VEHICLE_INPUT = "SINGLE_VEHICLE_INPUT"
 #: No vehicle input feeds any of this node's counted approach links.
 NO_VEHICLE_INPUT_ON_APPROACH = "NO_VEHICLE_INPUT_ON_APPROACH"
-#: Several do. See the module docstring: this is where a dominance pick would
-#: have gone, and does not.
+#: Several LINK-GROUPS do — this node is counted entering from more than one
+#: approach and there is no evidence here that says which carries the shortfall.
+#: See the module docstring: this is where a dominance pick would have gone, and
+#: does not. Since #59 the ambiguity behind this code is always LINK-level: a
+#: link's own class trio is no longer part of it.
 MULTIPLE_VEHICLE_INPUT_CANDIDATES = "MULTIPLE_VEHICLE_INPUT_CANDIDATES"
+#: Unit #59. Exactly one LINK feeds this node's counted approaches and SEVERAL
+#: vehicle inputs sit on it — one per vehicle class. Deliberately NOT
+#: :data:`SINGLE_VEHICLE_INPUT`: that code means the network stated an identity,
+#: this one means a RULE the user decided (proportional joint adjustment, mix
+#: preserved) was applied to fold a class trio into one target. Both resolve the
+#: node; only one of them is the network talking, and the reader is entitled to
+#: see which. The grouping itself rides in ``why["vehicle_input"]["group"]``.
+SINGLE_VEHICLE_INPUT_GROUP = "SINGLE_VEHICLE_INPUT_GROUP"
 #: A named human chose one of this node's candidates (#54). Not a derivation:
 #: an attributed assumption, and the only reason code here that carries a name.
 HUMAN_NAMED_VEHICLE_INPUT = "HUMAN_NAMED_VEHICLE_INPUT"
+#: Unit #59. A named human chose one of this node's candidate LINK-GROUPS.
+#: Separate from :data:`HUMAN_NAMED_VEHICLE_INPUT` for the same reason
+#: :data:`SINGLE_VEHICLE_INPUT_GROUP` is separate: the person named a LINK, and
+#: what gets adjusted is its whole class trio under the decided rule — a claim
+#: with a different shape from "this one input drives the total".
+HUMAN_NAMED_VEHICLE_INPUT_GROUP = "HUMAN_NAMED_VEHICLE_INPUT_GROUP"
 #: Exactly one static routing decision sits on this approach link.
 DECISION_IDENTIFIED = "DECISION_IDENTIFIED"
 #: One of that decision's routes ends on the link this movement exits by.
@@ -168,9 +216,11 @@ REL_FLOW_UNREADABLE = "REL_FLOW_UNREADABLE"
 REASON_CODES = (
     NO_OBJECT_ID_ROWS,
     SINGLE_VEHICLE_INPUT,
+    SINGLE_VEHICLE_INPUT_GROUP,
     NO_VEHICLE_INPUT_ON_APPROACH,
     MULTIPLE_VEHICLE_INPUT_CANDIDATES,
     HUMAN_NAMED_VEHICLE_INPUT,
+    HUMAN_NAMED_VEHICLE_INPUT_GROUP,
     DECISION_IDENTIFIED,
     ROUTE_IDENTIFIED,
     NO_DECISION_ON_APPROACH,
@@ -200,13 +250,41 @@ HUMAN_MAPPING_NOT_A_CANDIDATE = "HUMAN_MAPPING_NOT_A_CANDIDATE"
 #: #53 rule is that a machine verdict outranks a human's account of the same
 #: fact, and a node with ONE candidate is a machine verdict.
 HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE = "HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE"
+#: Unit #59. The named LINK is still a candidate group but the set of vehicle
+#: inputs on it is no longer the set that was named. A class arrived or left, so
+#: the proportional adjustment would move demand the signer never saw — checked
+#: as set equality, and a difference is this code rather than a quiet inclusion.
+HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED = "HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED"
 
 IGNORED_MAPPING_CODES = (
     HUMAN_MAPPING_STALE,
     HUMAN_MAPPING_REVOKED,
     HUMAN_MAPPING_NOT_A_CANDIDATE,
     HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE,
+    HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED,
 )
+
+
+# ---------------------------------------------------------------------------
+# What a demand target NAMES — the two shapes, spelled once (#59)
+# ---------------------------------------------------------------------------
+#
+# Defined HERE rather than in ``services.demand_target_map`` even though the
+# store is what persists them, for the reason that store already documents at
+# its own deferred agent imports: it must not pull ``services.agent`` in at
+# import time (tool-registration order). This module owns the candidate
+# vocabulary, the store imports it lazily, and there is one spelling.
+
+#: A #54 record: ONE vehicle input, named against the candidate ROWS. Still the
+#: default, and still exactly what it was — old records carry no ``target_kind``
+#: at all and read as this one.
+TARGET_VEHICLE_INPUT = "vehicle_input"
+#: A #59 record: one LINK-GROUP, named against the candidate GROUPS. What it
+#: adjusts is every vehicle-class input on that link, together and
+#: proportionally.
+TARGET_LINK_GROUP = "vehicle_input_link_group"
+
+TARGET_KINDS = (TARGET_VEHICLE_INPUT, TARGET_LINK_GROUP)
 
 
 def _number(value: Any) -> float | None:
@@ -247,10 +325,62 @@ def _object_id_rows(node_id: str, evidence: Mapping[str, Any]) -> list[dict[str,
     return rows
 
 
+def link_groups(candidate_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Candidate input rows folded into COMPOSITE candidates, one per link (#59).
+
+    THE UNIT OF CHOICE IS THE LINK. The user's decision of 2026-08-24
+    (``docs/phase2/DECISIONS.md``) settled the class question: the vehicle-class
+    trio on one link is adjusted TOGETHER, proportionally, mix preserved. So the
+    inputs sharing a link stop being rival candidates and become ONE candidate
+    with members, and what remains to choose between is links.
+
+    Public because the STORE checks a human's group naming against these exact
+    groups and the ROUTER hands them over. Same rule as ``candidate_inputs``
+    since #54, for the same reason: a second implementation of "which inputs
+    feed this node's approaches, and how do they group" is how a picker comes to
+    offer a choice this module would then refuse.
+
+    Order is deterministic and numeric-aware — groups by link, members by input
+    number — so the picker, the record and a re-derivation list them alike.
+    """
+    from services.agent import demand_class_split
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in candidate_rows:
+        link_no = str(row.get("link_no") or "")
+        if not link_no:
+            continue
+        grouped.setdefault(link_no, []).append(dict(row))
+
+    groups: list[dict[str, Any]] = []
+    for link_no in sorted(grouped, key=demand_class_split.input_sort_key):
+        members = sorted(
+            grouped[link_no],
+            key=lambda member: demand_class_split.input_sort_key(member.get("vehicle_input_no")),
+        )
+        names = {member.get("name") for member in members if member.get("name")}
+        groups.append(
+            {
+                "link_no": link_no,
+                "vehicle_input_nos": [str(member["vehicle_input_no"]) for member in members],
+                "members": members,
+                # ``None`` when ANY member's volume is unknown — never a sum
+                # over the ones that happened to be stated. See
+                # ``demand_class_split.group_total``.
+                "current_volume_total": demand_class_split.group_total(members),
+                # The class trio in the real client model shares one name; a
+                # link whose inputs disagree has no single name to show, and
+                # inventing one would put a label on the wrong thing.
+                "name": names.pop() if len(names) == 1 else None,
+            }
+        )
+    return groups
+
+
 def _vehicle_input_for(
     approach_links: list[str], shadow_model: Mapping[str, Any]
-) -> tuple[dict[str, Any] | None, str, list[str], list[dict[str, Any]]]:
-    """``(input, reason, candidate ids, candidate rows)``.
+) -> tuple[dict[str, Any] | None, str, list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(chosen group, reason, candidate ids, candidate rows, candidate groups)``.
 
     The fourth member is unit #54's: the same candidates, as ROWS a picker can
     render and a store can check a human's choice against — input number, the
@@ -258,6 +388,19 @@ def _vehicle_input_for(
     the router or the store, because "which inputs feed this node's counted
     approaches" must have exactly one implementation; a second one is how a
     screen comes to offer a choice this module would then refuse.
+
+    The fifth is unit #59's, and it is what the reason code is now decided from:
+    the same rows folded into one composite per LINK (:func:`link_groups`). The
+    raw rows stay exactly as they were — additively, because the store's #54
+    records were checked against them and a screen may still want to show which
+    classes a group holds.
+
+    What CHANGED in #59, stated plainly because it is a behaviour change to a
+    refusal: a node whose only ambiguity was class-level (one link, three class
+    inputs) used to be :data:`MULTIPLE_VEHICLE_INPUT_CANDIDATES` and now
+    resolves as :data:`SINGLE_VEHICLE_INPUT_GROUP`. The refusal did not become
+    weaker — the question it was asking got ANSWERED, by the user, and the
+    answer is disclosed on the target rather than applied silently.
     """
     candidates = [
         entry
@@ -279,24 +422,159 @@ def _vehicle_input_for(
         }
         for entry in candidates
     ]
-    if not candidates:
-        return None, NO_VEHICLE_INPUT_ON_APPROACH, ids, rows
-    if len(candidates) > 1:
-        return None, MULTIPLE_VEHICLE_INPUT_CANDIDATES, ids, rows
-    return dict(candidates[0]), SINGLE_VEHICLE_INPUT, ids, rows
+    groups = link_groups(rows)
+    if not groups:
+        return None, NO_VEHICLE_INPUT_ON_APPROACH, ids, rows, groups
+    if len(groups) > 1:
+        return None, MULTIPLE_VEHICLE_INPUT_CANDIDATES, ids, rows, groups
+    only = groups[0]
+    reason = (
+        SINGLE_VEHICLE_INPUT if len(only["members"]) == 1 else SINGLE_VEHICLE_INPUT_GROUP
+    )
+    return dict(only), reason, ids, rows, groups
+
+
+def _as_group(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One candidate ROW as a one-member group — the shape everything downstream
+    reads, so a #54 single-input target and a #59 composite differ in their
+    MEMBER COUNT and in nothing else.
+
+    A #54 record names ONE input and still targets exactly that input, even on a
+    link whose class trio the derivation would now fold. Widening somebody's
+    recorded claim into a three-class edit because a rule arrived after they
+    signed it would change what they put their name to.
+    """
+    return {
+        "link_no": row["link_no"],
+        "vehicle_input_nos": [str(row["vehicle_input_no"])],
+        "members": [dict(row)],
+        "current_volume_total": row.get("current_volume"),
+        "name": row.get("name"),
+    }
+
+
+def _sole_input_of(group: Mapping[str, Any] | None) -> str | None:
+    """The group's ONE input number, or ``None`` when it has more than one.
+
+    The whole ``chosen``/``vehicle_input_no`` distinction between a #54 target
+    and a #59 composite runs through this function, so it is one line in one
+    place: a composite has no sole input, and every field that means "the one
+    input" is empty on it rather than holding a representative.
+    """
+    if group is None:
+        return None
+    members = group.get("members") or []
+    if len(members) != 1:
+        return None
+    return str(members[0].get("vehicle_input_no") or "") or None
+
+
+def _target_members(group: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The composite's members for the target, or ``[]`` for a single input.
+
+    Empty rather than one-element for a single-input target, so "this proposal
+    owes the reviewer a split" is exactly ``bool(members)`` everywhere
+    downstream instead of a length comparison repeated at each reader.
+    """
+    members = group.get("members") or []
+    if len(members) < 2:
+        return []
+    return [
+        {
+            "vehicle_input_no": str(member.get("vehicle_input_no") or ""),
+            "current_volume": _number(member.get("current_volume")),
+        }
+        for member in members
+    ]
+
+
+def _disclose_group(block: dict[str, Any], group: Mapping[str, Any] | None) -> None:
+    """Put the GROUPING and the RULE on the audit block, or say nothing.
+
+    THE HONESTY REQUIREMENT of #59, in one place. The derivation may now resolve
+    a node it used to refuse, but only because a class rule was decided — so a
+    node that resolved that way carries the group it was folded into and the
+    token naming the rule. A reader who sees a demand target must be able to see
+    that three inputs are behind it; a silently-picked one would be exactly the
+    dominance pick this module's docstring refuses.
+
+    Nothing is written for a single-input target: absence means "no rule was
+    applied here, the network stated an identity", which is a different claim
+    and deserves a different-looking audit block.
+
+    It CLEARS before it writes, and that is not tidiness — it is the fix for a
+    defect this unit's own tests caught. A human mapping overwrites the block
+    the derivation already filled in, so a #54 record narrowing a folded link to
+    ONE class would otherwise leave the fold's group and class rule standing
+    beside it: an audit block advertising a rule that was, on that node,
+    overridden by a person. Calling this on every path makes the disclosure a
+    statement about the target that ACTUALLY stands, never a residue of one that
+    did not.
+    """
+    block.pop("group", None)
+    block.pop("class_rule", None)
+    if group is None or len(group.get("members") or []) < 2:
+        return
+    block["group"] = {
+        "link_no": group["link_no"],
+        "vehicle_input_nos": list(group["vehicle_input_nos"]),
+        "current_volume_total": group.get("current_volume_total"),
+        "member_count": len(group["members"]),
+        "members": [dict(member) for member in group["members"]],
+    }
+    block["class_rule"] = fixes.ASSUME_CLASS_MIX_PRESERVED
+
+
+def _testimony_decides_nothing(named: Mapping[str, Any], reason: str) -> bool:
+    """Did the DERIVATION already answer what this person was asked to answer?
+
+    #53's rule (machine outranks testimony), applied to two shapes rather than
+    one. A record decides nothing when the derivation had already resolved the
+    node to the SAME thing the record names:
+
+    * a LINK-GROUP record on a node the derivation already folded to one group —
+      whether that group holds one input (:data:`SINGLE_VEHICLE_INPUT`) or a
+      class trio (:data:`SINGLE_VEHICLE_INPUT_GROUP`). The store's own check
+      guarantees it is that same group;
+    * a SINGLE-INPUT record on a node with exactly one candidate, which is the
+      #54 rule unchanged.
+
+    And the case that is deliberately NOT here: a single-input record on a node
+    the derivation folded into a class TRIO. That person is not recounting the
+    machine's verdict — they are naming ONE class where the rule would move
+    three, which is a narrower claim the network cannot settle. It stands as
+    :data:`HUMAN_NAMED_VEHICLE_INPUT`, because the alternative is overriding a
+    signed decision with a default.
+    """
+    if len(named.get("members") or []) > 1:
+        return reason in (SINGLE_VEHICLE_INPUT, SINGLE_VEHICLE_INPUT_GROUP)
+    named_kind = str((named.get("mapping") or {}).get("target_kind") or TARGET_VEHICLE_INPUT)
+    if named_kind == TARGET_LINK_GROUP:
+        return reason in (SINGLE_VEHICLE_INPUT, SINGLE_VEHICLE_INPUT_GROUP)
+    return reason == SINGLE_VEHICLE_INPUT
 
 
 def _usable_human_mapping(
-    mapping: Mapping[str, Any] | None, candidate_rows: list[dict[str, Any]]
+    mapping: Mapping[str, Any] | None,
+    candidate_rows: list[dict[str, Any]],
+    candidate_groups: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """``(mapping, None)`` if this claim still stands, else ``(None, why not)``.
+    """``(group, None)`` if this claim still stands, else ``(None, why not)``.
 
     THE SECOND OF TWO GUARDS. The router threads only fresh, unrevoked mappings
     (``demand_target_map.fresh_index_payload``); this re-checks both flags and
-    re-checks the triple against the LIVE candidate list. Neither guard is
+    re-checks the claim against the LIVE candidate list. Neither guard is
     trusted alone — the store's check happened at naming time and the network
     may have moved since, and a caller that forgot to filter must not be able to
     resurrect a withdrawn claim.
+
+    Unit #59 gives the record two shapes and checks each against its own live
+    list: a ``vehicle_input`` record against the candidate ROWS exactly as
+    before, and a ``vehicle_input_link_group`` record against the candidate
+    GROUPS — link AND full membership. Membership is checked as SET EQUALITY,
+    not containment: a class that appeared on that link since the naming is a
+    class nobody agreed to move, and silently including it would adjust demand
+    the signer never saw.
     """
     if not isinstance(mapping, Mapping):
         return None, None
@@ -304,13 +582,29 @@ def _usable_human_mapping(
         return None, HUMAN_MAPPING_REVOKED
     if mapping.get("stale"):
         return None, HUMAN_MAPPING_STALE
-    input_no = str(mapping.get("vehicle_input_no") or "").strip()
+
     link_no = str(fixes.canonical_link_id(mapping.get("link_no")) or "")
-    if not input_no or not link_no:
+    if not link_no:
+        return None, HUMAN_MAPPING_NOT_A_CANDIDATE
+
+    if str(mapping.get("target_kind") or TARGET_VEHICLE_INPUT) == TARGET_LINK_GROUP:
+        named_members = {str(value).strip() for value in mapping.get("vehicle_input_nos") or []}
+        if not named_members:
+            return None, HUMAN_MAPPING_NOT_A_CANDIDATE
+        for group in candidate_groups:
+            if group["link_no"] != link_no:
+                continue
+            if set(group["vehicle_input_nos"]) == named_members:
+                return {**group, "mapping": dict(mapping)}, None
+            return None, HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED
+        return None, HUMAN_MAPPING_NOT_A_CANDIDATE
+
+    input_no = str(mapping.get("vehicle_input_no") or "").strip()
+    if not input_no:
         return None, HUMAN_MAPPING_NOT_A_CANDIDATE
     for row in candidate_rows:
         if row["vehicle_input_no"] == input_no and row["link_no"] == link_no:
-            return {**row, "mapping": dict(mapping)}, None
+            return {**_as_group(row), "mapping": dict(mapping)}, None
     return None, HUMAN_MAPPING_NOT_A_CANDIDATE
 
 
@@ -420,6 +714,10 @@ def derive_targets(
                 "chosen": None,
                 "candidates": [],
                 "candidate_inputs": [],
+                # #59: the same candidates folded per link. Present on EVERY
+                # node's audit, empty where there are none, so a reader never
+                # has to tell "no groups" from "this build predates groups".
+                "candidate_groups": [],
                 "reason": NO_OBJECT_ID_ROWS,
             },
             "routing": {},
@@ -429,15 +727,24 @@ def derive_targets(
             continue
 
         # -- the DEMAND half ------------------------------------------------
-        vehicle_input, reason, candidate_ids, candidate_rows = _vehicle_input_for(
+        group, reason, candidate_ids, candidate_rows, candidate_groups = _vehicle_input_for(
             approach_links, shadow_model
         )
         why["vehicle_input"] = {
-            "chosen": None if vehicle_input is None else str(vehicle_input.get("no")),
+            # ``chosen`` still means "the ONE input this node resolved to" and
+            # is therefore ``None`` for a composite: no single input was chosen,
+            # and writing one of the three here would name a class the rule
+            # explicitly declines to single out. ``chosen_group`` beside it is
+            # the link that WAS resolved, so "resolved" is never inferred from
+            # this field's emptiness.
+            "chosen": _sole_input_of(group),
+            "chosen_group": None if group is None else group["link_no"],
             "candidates": candidate_ids,
             "candidate_inputs": candidate_rows,
+            "candidate_groups": candidate_groups,
             "reason": reason,
         }
+        _disclose_group(why["vehicle_input"], group)
 
         # #54: a named human's choice WINS over the derivation for this node —
         # and only for this node, and only where the derivation had a choice to
@@ -446,9 +753,9 @@ def derive_targets(
         # candidates and that a person picked one of them, which is a different
         # claim from "the network says 113".
         named, ignored = _usable_human_mapping(
-            (human_mappings or {}).get(node_id), candidate_rows
+            (human_mappings or {}).get(node_id), candidate_rows, candidate_groups
         )
-        if named is not None and reason == SINGLE_VEHICLE_INPUT:
+        if named is not None and _testimony_decides_nothing(named, reason):
             # MACHINE OUTRANKS TESTIMONY (#53's rule, applied here). Exactly one
             # vehicle input feeds this node's counted approaches, so the network
             # has ALREADY answered and there was nothing for a person to choose
@@ -472,15 +779,16 @@ def derive_targets(
             mapping = named["mapping"]
             named_by = str(mapping.get("named_by") or "") or None
             named_at = str(mapping.get("named_at") or "") or None
-            vehicle_input = {
-                "no": named["vehicle_input_no"],
-                "link": named["link_no"],
-                "volume": named["current_volume"],
-            }
+            group = {key: value for key, value in named.items() if key != "mapping"}
             why["vehicle_input"].update(
                 {
-                    "chosen": named["vehicle_input_no"],
-                    "reason": HUMAN_NAMED_VEHICLE_INPUT,
+                    "chosen": _sole_input_of(group),
+                    "chosen_group": group["link_no"],
+                    "reason": (
+                        HUMAN_NAMED_VEHICLE_INPUT
+                        if len(group["members"]) == 1
+                        else HUMAN_NAMED_VEHICLE_INPUT_GROUP
+                    ),
                     "named_by": named_by,
                     "named_at": named_at,
                     "mapping_id": mapping.get("id"),
@@ -490,21 +798,37 @@ def derive_targets(
                     "assumption": fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL,
                 }
             )
+            _disclose_group(why["vehicle_input"], group)
 
-        if vehicle_input is not None:
+        if group is not None:
+            members = group["members"]
             result["targets"].append(
                 RealityCheckNodeTarget(
                     node_id=node_id,
-                    vehicle_input_no=str(vehicle_input.get("no")),
-                    # Interval 1's volume, as the shadow model reports it. ``None``
-                    # is passed through rather than defaulted: the builder then
-                    # refuses EVIDENCE_INSUFFICIENT by name, which is the truth
-                    # about an input whose volume the .inpx never states.
-                    vehicle_input_current_volume=_number(vehicle_input.get("volume")),
+                    # ``None`` for a composite, and that is the honest value: no
+                    # ONE input is this node's demand target any more. The
+                    # members below are what an accepted proposal would touch,
+                    # and ``fixes`` refuses just as loudly for an empty pair as
+                    # it did when this was the only field.
+                    vehicle_input_no=_sole_input_of(group),
+                    # Interval 1's volume, as the shadow model reports it — the
+                    # GROUP's total for a composite, ``None`` the moment any
+                    # member's volume is unstated. ``None`` is passed through
+                    # rather than defaulted: the builder then refuses
+                    # EVIDENCE_INSUFFICIENT by name, which is the truth about an
+                    # input whose volume the .inpx never states.
+                    vehicle_input_current_volume=_number(group.get("current_volume_total")),
                     # The link is what unit D4 joins the observed rows against.
                     # Supplying it is what lets a MEASURED entrance be REFUSED
-                    # instead of quietly relabelled a demand estimate.
-                    vehicle_input_link_no=str(vehicle_input.get("link") or "") or None,
+                    # instead of quietly relabelled a demand estimate. A group
+                    # has exactly ONE link by construction, so this is the same
+                    # single value it always was.
+                    vehicle_input_link_no=str(group.get("link_no") or "") or None,
+                    # #59: the class trio, in the order the picker offered it.
+                    # Empty for a single-input target, so a non-empty list means
+                    # exactly one thing — this proposal moves several inputs
+                    # together and owes the reviewer the split.
+                    vehicle_input_group_members=_target_members(group),
                     # #54's provenance. ``None`` on every derived target, which
                     # is what makes a non-None value mean exactly one thing:
                     # a person put their name on this.
@@ -623,10 +947,12 @@ def derive_targets_for_active_dataset(
 __all__ = [
     "DECISION_IDENTIFIED",
     "HUMAN_MAPPING_DERIVATION_ALREADY_UNIQUE",
+    "HUMAN_MAPPING_GROUP_MEMBERSHIP_CHANGED",
     "HUMAN_MAPPING_NOT_A_CANDIDATE",
     "HUMAN_MAPPING_REVOKED",
     "HUMAN_MAPPING_STALE",
     "HUMAN_NAMED_VEHICLE_INPUT",
+    "HUMAN_NAMED_VEHICLE_INPUT_GROUP",
     "IGNORED_MAPPING_CODES",
     "MULTIPLE_DECISIONS_ON_APPROACH",
     "MULTIPLE_VEHICLE_INPUT_CANDIDATES",
@@ -638,6 +964,11 @@ __all__ = [
     "ROUTE_IDENTIFIED",
     "ROUTE_NOT_IDENTIFIED",
     "SINGLE_VEHICLE_INPUT",
+    "SINGLE_VEHICLE_INPUT_GROUP",
+    "TARGET_KINDS",
+    "TARGET_LINK_GROUP",
+    "TARGET_VEHICLE_INPUT",
     "derive_targets",
     "derive_targets_for_active_dataset",
+    "link_groups",
 ]

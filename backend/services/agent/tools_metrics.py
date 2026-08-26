@@ -185,6 +185,28 @@ def compare_scenarios(params: CompareScenariosParams) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+class VehicleInputGroupMember(BaseModel):
+    """One vehicle-class input inside a link-group demand target (unit #59).
+
+    Deliberately only the two fields the split arithmetic needs. The member's
+    link is the GROUP's link — a group is defined by sharing one — so repeating
+    it here would create a second place for it to disagree with itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    vehicle_input_no: str = Field(description="This class's vehicle input number.")
+    current_volume: float | None = Field(
+        default=None,
+        description=(
+            "This member's CURRENT volume in veh/h — the WEIGHT the proportional split uses. "
+            "Leave it unset only where the network genuinely does not state one: unknown is not "
+            "zero, and one unknown member makes the whole group's split undefined, which the "
+            "proposal then refuses by name rather than guessing a mix."
+        ),
+    )
+
+
 class RealityCheckNodeTarget(BaseModel):
     """One node's edit targets — what an accepted proposal would actually touch.
 
@@ -216,6 +238,18 @@ class RealityCheckNodeTarget(BaseModel):
             "edit is REFUSED there and the routing/behaviour levers are proposed instead; without "
             "this the entrance cannot be checked and any demand proposal comes back explicitly "
             "labelled a demand ESTIMATE for you to confirm or replace."
+        ),
+    )
+    vehicle_input_group_members: list[VehicleInputGroupMember] | None = Field(
+        default=None,
+        description=(
+            "The vehicle-class inputs sharing this target's link, when the target is the whole "
+            "LINK-GROUP rather than one input (unit #59, the user's decided class rule: the "
+            "승용차/버스/트럭 trio is adjusted together and its mix is preserved). Supply it with "
+            "vehicle_input_no left unset and vehicle_input_current_volume set to the GROUP's "
+            "total; the proposal then splits the adjustment across these members in proportion to "
+            "their current volumes and shows the reviewer the per-member split. Leave it unset for "
+            "an ordinary single-input target."
         ),
     )
     vehicle_input_named_by: str | None = Field(
@@ -450,10 +484,27 @@ def _reality_check_targets(
     movement_ids: dict[str, dict[str, str]] = {}
     for entry in entries or []:
         node = targets.setdefault(entry.node_id, {})
-        if entry.vehicle_input_no is not None:
+        # #59: a COMPOSITE target names no single input, so "is there a demand
+        # target here" is no longer "is vehicle_input_no set". Either field
+        # standing alone is one; neither is none, and ``fixes`` refuses
+        # NO_TARGET_OBJECT for that exactly as it did before.
+        if entry.vehicle_input_no is not None or entry.vehicle_input_group_members:
             node["vehicle_input"] = {
                 "input_no": entry.vehicle_input_no,
+                # For a composite this is the GROUP's total, and the members
+                # below are what it is split back across.
                 "current_volume": entry.vehicle_input_current_volume,
+                # Unit #59: passed through, absence and all. An empty/absent
+                # list means "one input, no split to show" — the same asymmetry
+                # ``named_by`` uses, so a non-empty value means exactly one
+                # thing: this proposal moves several inputs together.
+                "members": [
+                    {
+                        "input_no": member.vehicle_input_no,
+                        "current_volume": member.current_volume,
+                    }
+                    for member in entry.vehicle_input_group_members or []
+                ],
                 # Unit D4: the link is what fixes.entrance_measurement joins
                 # the observed rows against. Passed straight through, absence
                 # and all -- an absent link is an UNVERIFIED entrance, which is

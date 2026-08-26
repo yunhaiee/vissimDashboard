@@ -133,7 +133,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
 from services import results_evidence, validation
-from services.agent import anomalies, constraints
+from services.agent import anomalies, batch, constraints, demand_class_split
 from services.agent.toolkit import ToolRegistry, default_registry
 
 logger = logging.getLogger(__name__)
@@ -242,6 +242,61 @@ NO_MAPPING_REGISTERED = "NO_MAPPING_REGISTERED"
 #: numbers agree inverts the direction of calibration and destroys the very
 #: measurement the run is graded against. Structural refusal, not a threshold.
 INPUT_VOLUME_IS_OBSERVED_DATA = "INPUT_VOLUME_IS_OBSERVED_DATA"
+#: Unit #59. The target is a LINK-GROUP (a link's vehicle-class trio, adjusted
+#: together under the user's decided rule) and EVERY member's current volume is
+#: zero. The split is proportional to those volumes, so there is no proportion
+#: to apply and no mix to preserve: any division of the new total across the
+#: three would be this system's invention wearing the rule's name. Refused by
+#: name — the modeller states the classes' volumes, or names one input.
+#:
+#: THIS CODE MEANS EXACTLY WHAT IT SAYS, and that is round 1's measured defect:
+#: it was also emitted for an unknown volume and for a negative one, so a group
+#: of ``500 / None / 200`` was told "every one of them currently carries zero".
+#: Each cause now has its own code below; ``demand_class_split`` returns which.
+GROUP_VOLUMES_ALL_ZERO = "GROUP_VOLUMES_ALL_ZERO"
+#: Unit #59. A member's current volume is NEGATIVE, which is not a share of any
+#: mix — scaling by it would propose a negative volume for that class.
+GROUP_VOLUME_NEGATIVE = "GROUP_VOLUME_NEGATIVE"
+#: Unit #59. The caller declared a group TOTAL that the members' own volumes do
+#: not add up to. The two numbers describe the same link and disagree, so one of
+#: them is wrong and this system cannot tell which: proceeding would scale a
+#: total that the classes underneath it contradict, while calling the result
+#: "mix preserved". Same doctrine as the declared-cycle-vs-Σ(green+clearance)
+#: refusal in ``genesis.side_inputs``: a stated value contradicting the sum of
+#: its own parts is a refusal, never a correction.
+GROUP_MEMBER_TOTAL_DISAGREES = "GROUP_MEMBER_TOTAL_DISAGREES"
+#: Unit #59. The multi-step plan this proposal would carry does not survive
+#: ``batch``'s OWN structural preflight (step count, eligible tools, per-step
+#: params, same-target collisions). Refused HERE, before an approval card
+#: exists, rather than after a human approves something that dies at dispatch.
+GROUP_PLAN_REJECTED_BY_PREFLIGHT = "GROUP_PLAN_REJECTED_BY_PREFLIGHT"
+#: Unit #59 (refuter round 2, F2). The caller sent a ``members`` list holding
+#: exactly ONE input. A group of one is not a group: the convention is that a
+#: single input arrives as ``input_no`` with no members at all, so a one-member
+#: list means the caller believes it is describing a class trio and has handed
+#: over only part of it — or has folded a link the network says holds several
+#: classes down to one behind the reader's back.
+#:
+#: Round 2's measured defect is why it is a REFUSAL rather than a silent
+#: narrowing: ``_group_members`` returned ``[]`` below a length of two while
+#: ``tools_metrics._reality_check_targets`` treated any non-empty list as a
+#: group, so the two layers disagreed about the word "group" and the member
+#: vanished without trace — a proposal for ``input_no`` alone, with no sentence
+#: anywhere saying a class had been dropped.
+GROUP_HAS_ONE_MEMBER = "GROUP_HAS_ONE_MEMBER"
+#: Unit #59 (refuter round 2, F3). The target names a single ``input_no`` AND a
+#: member list at the same time, so "what would this edit write" has two
+#: answers: the plan writes the members, while ``evidence.target.input_no``
+#: points at an input the plan never touches.
+#:
+#: The human path already refuses exactly this, by name
+#: (``demand_target_map.record_mapping`` →
+#: ``"demand_target_conflicting_target"``), and for the same stated reason: what
+#: a demand target is FOR is naming the object to adjust, and naming two makes
+#: that answer two. The agent path now matches it rather than silently
+#: preferring one — a preference would be this system deciding which half of a
+#: contradictory request the caller meant.
+GROUP_AND_INPUT_BOTH_NAMED = "GROUP_AND_INPUT_BOTH_NAMED"
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +352,18 @@ ASSUME_INTERVAL_MATCHES_COUNT_PERIOD = "INTERVAL_MATCHES_COUNT_PERIOD"
 #: estimate; if the real entrance count is known, the proposal should be
 #: rejected and that count supplied instead.
 ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED = "ENTRANCE_NOT_VERIFIED_MEASURED"
+#: Unit #59, and the machine half of the user's decision of 2026-08-24
+#: (``docs/phase2/DECISIONS.md``): where a target is a link's vehicle-class trio
+#: rather than one input, the adjustment is split across the classes in
+#: proportion to their CURRENT volumes, so the 승용차:버스:트럭 mix the network
+#: holds today is the mix it holds after. That is a POLICY, not a measurement —
+#: the counts say what the entrance total should be, never how it divides by
+#: class — so it travels as a stated assumption on every audit block a composite
+#: touches, exactly like :data:`ASSUME_INPUT_DRIVES_NODE_TOTAL` does for the
+#: premise beside it. A reviewer who knows the truck share actually changed
+#: rejects the proposal and supplies the classes; the token is what tells them
+#: there was something to disagree with.
+ASSUME_CLASS_MIX_PRESERVED = "CLASS_MIX_PRESERVED"
 
 
 # ---------------------------------------------------------------------------
@@ -1092,7 +1159,13 @@ def entrance_measurement(
     """
     node = node or {}
     target = target or {}
-    input_no = target.get("input_no")
+    # Same normalization, same rule, as the proposal builder below and as every
+    # member id (:func:`normalize_input_no`) — a provenance block that quoted
+    # ``"   "`` back as "the input this verdict is about" would be naming an
+    # object that does not exist.
+    input_no = _target_input_no(target)
+    raw_input_no = target.get("input_no")
+    supplied_input_no = None if raw_input_no is None else str(raw_input_no)
     # ``link_no`` is this module's spelling; ``link`` is the shadow model's own
     # field name, accepted so a caller that passes a vehicle input straight
     # through is not silently downgraded to UNVERIFIED. ``or`` rather than a
@@ -1108,7 +1181,16 @@ def entrance_measurement(
         "status": ENTRANCE_UNVERIFIED,
         "why": ENTRANCE_NO_LINK_ON_TARGET,
         "basis": "",
-        "input_no": None if input_no in (None, "") else str(input_no),
+        "input_no": input_no or None,
+        # ...and the SAME idiom for the input id (unit #59, refuter round 3,
+        # R3-9): the normalized form is what everything downstream uses, and
+        # what the caller actually handed over sits beside it. For a link that
+        # pair is canonical-vs-supplied; here it is stripped-vs-as-handed-over,
+        # each at the layer its own vocabulary normalizes at. This is the one
+        # place a whitespace-only id stays visible: ``input_no`` is None (it
+        # names nothing) while this says three spaces arrived, which is what an
+        # auditor asking "why was this refused" needs to see.
+        "input_no_supplied": supplied_input_no,
         # The CANONICAL form is what the join used, so it is what the evidence
         # reports; what the caller actually handed over is kept beside it,
         # because a provenance block that silently rewrote its input would be
@@ -1367,11 +1449,359 @@ def _human_named_block(target: Mapping[str, Any] | None) -> dict[str, Any] | Non
     named_by = str(target.get("named_by") or "").strip()
     if not named_by:
         return None
-    return {
+    block = {
         "named_by": named_by,
         "named_at": str(target.get("named_at") or "") or None,
         "assumption": ASSUME_INPUT_DRIVES_NODE_TOTAL,
     }
+    if _group_members(target):
+        # #59: what this person named was a LINK, and what it moves is that
+        # link's whole class trio. The rule that makes those the same act is
+        # stated HERE too, beside their name, for the same reason
+        # ASSUME_INPUT_DRIVES_NODE_TOTAL is: a refusal has no ``assumptions``
+        # tuple, and the refusal is what a named group most often produces.
+        block["class_rule"] = ASSUME_CLASS_MIX_PRESERVED
+    return block
+
+
+def normalize_input_no(raw: Any) -> str:
+    """ONE vehicle-input id, ONE spelling — ``""`` when nothing was named.
+
+    :func:`canonical_link_id`'s sibling for the OTHER id vocabulary this module
+    joins on, and public for the same reason that one is: three builders across
+    two modules name a vehicle input, and a rule that lives in only one of them
+    is not a rule (unit #59, refuter round 3, R3-3 — measured: it lived in one).
+
+    THE RULE IS WHITESPACE, AND DELIBERATELY NOTHING MORE. ``" 113 "`` becomes
+    ``"113"`` (a picker, a spreadsheet paste and a Korean-keyboard space all
+    produce it) and ``"   "`` becomes ``""``, which every caller reads as "no
+    object was named". It does NOT do what ``canonical_link_id`` does — no
+    zero-stripping, no float-suffix folding — because those spellings are ones
+    VISSIM ITSELF produces for a link id, while an input number is an opaque
+    key the caller either has right or does not. Folding ``"0113"`` into
+    ``"113"`` here would be this module guessing at an identity, which is the
+    opposite of what a normalizer is for.
+
+    ``""`` rather than ``None`` so the type is one type: the falsy test is then
+    the only test, and ``input_no not in (None, "")`` — the two-valued spelling
+    under which ``"   "`` named an object that does not exist all the way to an
+    approval card, and died after a human signed it — cannot come back.
+    """
+    return "" if raw is None else str(raw).strip()
+
+
+def _target_input_no(target: Mapping[str, Any] | None) -> str:
+    """The ONE input id this target names, normalized — ``""`` when it names none.
+
+    :func:`_group_members`' singular sibling, deliberately placed beside it and
+    written to the SAME rule, because they answer the same question about the
+    same object and a target has exactly one of these two shapes. Round 2's
+    defect (refuter D1) was that only one of the two normalized: a member id of
+    ``"   "`` was cleaned to ``""`` and named a refusal, while a top-level
+    ``input_no`` of ``"   "`` stayed truthy through
+    ``input_no not in (None, "")``, passed every "is there an object to edit"
+    test, and reached an APPROVAL CARD — dying afterwards in
+    ``tools_edit._coerce_id``, on dispatch, after a human had signed it. That is
+    the same after-the-signature death :func:`_group_members` strips to prevent,
+    arrived at through the field beside it.
+
+    The rule itself is :func:`normalize_input_no` (round 3, R3-3): this is the
+    TARGET-shaped accessor for it, not a second copy of it. The two sibling
+    builders that hold a bare id rather than a target — ``genesis_fixes.
+    _build_v6_entrance_volume`` and :func:`_build_latent_demand_overflow_proposal`
+    — call that function directly, so all four id readers spell one id one way.
+    """
+    if not isinstance(target, Mapping):
+        return ""
+    return normalize_input_no(target.get("input_no"))
+
+
+def _group_members(target: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """EVERY member the target declared, normalized, or ``[]`` (unit #59).
+
+    ``[]`` means the caller declared no member list at all — an ordinary
+    single-input target — so ``bool(...)`` is the ONE test for "did a composite
+    arrive" everywhere below.
+
+    IT NO LONGER MEANS "AND ALSO A LIST TOO SHORT TO BE A GROUP" (refuter round
+    2, F2). This function used to return ``[]`` for any list shorter than two,
+    which put a second, quieter definition of the word "group" in the codebase:
+    ``tools_metrics._reality_check_targets`` treats ANY non-empty member list as
+    a composite, so a one-member list arrived here as a group and left as
+    nothing. Measured: ``input_no="109"`` with one member ``"999"`` proposed
+    ``set_vehicle_input_volume input_no=109`` and the member vanished without a
+    sentence anywhere saying so — the exact silent narrowing the paragraph below
+    forbids for an id-less member. A length below two is now a NAMED refusal
+    (:data:`GROUP_HAS_ONE_MEMBER`) raised by :func:`_build_demand_proposal`,
+    which is the one place that can say it out loud.
+
+    Reads either spelling of the id (``input_no``, this module's own, or
+    ``vehicle_input_no``, the derivation's) because both vocabularies meet here
+    and a member silently dropped for spelling its key the other way would be a
+    class quietly excluded from the mix this rule exists to preserve.
+
+    The id is STRIPPED, like every other id path in this repo
+    (``demand_target_map._clean_token``, ``record_mapping``,
+    ``_usable_human_mapping``). Measured (refuter round 2, F1): without it a
+    member id of ``"   "`` is falsy nowhere — it passed the "did every member
+    name its input" check below, reached an approval card, and died in
+    ``tools_edit._coerce_id`` on dispatch, AFTER a human had approved it. A
+    whitespace-only id names nothing, so it is normalized to the empty id that
+    says so.
+
+    A member with no id at all is KEPT, with that empty id, rather than
+    shrinking the group behind the reader's back — dropping it would adjust the
+    remaining classes at a mix the approver never saw.
+
+    What then rejects it is stated exactly, because round 1's version of this
+    sentence claimed "the verb's own schema then rejects it" and that was
+    measurably FALSE: ``SetVehicleInputVolumeParams.input_no`` is a bare ``str``
+    and accepts ``""`` happily, and ``batch``'s collision check skips a step
+    whose target id is empty. Nothing downstream caught it before dispatch. So
+    :func:`_build_demand_proposal` refuses an id-less member itself, by name,
+    before any approval card exists.
+    """
+    if not isinstance(target, Mapping):
+        return []
+    members = target.get("members")
+    if not isinstance(members, (list, tuple)) or not members:
+        return []
+    return [
+        {
+            "vehicle_input_no": str(
+                member.get("vehicle_input_no", member.get("input_no")) or ""
+            ).strip(),
+            "current_volume": _number(member.get("current_volume")),
+        }
+        for member in members
+        if isinstance(member, Mapping)
+    ]
+
+
+#: The smallest member list that is a GROUP rather than a malformed single
+#: target (unit #59). Named rather than inlined because two things must agree
+#: about it: this module's refusal below, and ``batch.MIN_STEPS`` — a group of
+#: one would build a one-step ``apply_edit_plan``, which the batch preflight
+#: refuses anyway, but under a message about step counts rather than about a
+#: class trio that arrived incomplete.
+MIN_GROUP_MEMBERS = 2
+
+
+def _input_label(input_no: Any, members: list[dict[str, Any]]) -> str:
+    """How a target names itself in prose: ``"113"`` or ``"113+213+313"``.
+
+    A composite has no single input number and must not borrow one — quoting a
+    representative would read, in the one sentence a reviewer actually reads, as
+    a proposal touching that input alone.
+    """
+    if members:
+        return "+".join(member["vehicle_input_no"] for member in members)
+    return str(input_no)
+
+
+def _group_block(target: Mapping[str, Any] | None, members: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The GROUPING, for the evidence — ``None`` for a single-input target.
+
+    Present on the PROPOSAL and on every demand refusal alike, because the
+    reviewer of a refusal is entitled to the same disclosure as the reviewer of
+    a proposal: which inputs this target actually stands for, and under which
+    rule they were folded into one.
+    """
+    if not members:
+        return None
+    return {
+        "link_no": (target or {}).get("link_no"),
+        "vehicle_input_nos": [member["vehicle_input_no"] for member in members],
+        "member_count": len(members),
+        "members": [dict(member) for member in members],
+        "current_volume_total": _number((target or {}).get("current_volume")),
+        "split_rule": demand_class_split.SPLIT_RULE,
+        # The token rides INSIDE the block, so a refusal (which carries no
+        # ``assumptions`` tuple) still states the rule that produced its target.
+        "assumption": ASSUME_CLASS_MIX_PRESERVED,
+    }
+
+
+def _group_clause(members: list[dict[str, Any]], link_no: Any) -> tuple[str, str, str]:
+    """The ko/en/ja sentence that says "this target is a link's class trio".
+
+    Empty strings for a single-input target — appended to a message that is then
+    byte-identical to what it has always been, so #59 adds a sentence exactly
+    where a group exists and nowhere else.
+    """
+    if not members:
+        return "", "", ""
+    label = "+".join(member["vehicle_input_no"] for member in members)
+    count = len(members)
+    link = str(link_no or "")
+    return (
+        f" ※ 이 대상은 링크 {link}의 차량 인풋 {count}개({label})를 하나로 묶은 것입니다 — "
+        "사용자가 정한 규칙에 따라 차종 구성비를 유지한 채 함께 조정되며, 개별 차종만 따로 "
+        "고르지 않습니다.",
+        f" NB This target is the {count} vehicle inputs on link {link} ({label}) taken together — "
+        "the user's decided rule adjusts them jointly and preserves the class mix; no single "
+        "class is picked out.",
+        f" ※ この対象はリンク {link} の車両インプット{count}件({label})を一つにまとめたものです — "
+        "利用者が決めた規則により、車種構成比を保ったまま一緒に調整され、個別の車種だけを選ぶ"
+        "ことはしません。",
+    )
+
+
+def _refuse_undefined_split(
+    *,
+    cause: str,
+    key: str,
+    kind: str,
+    evidence: dict[str, Any],
+    node_id: str,
+    members: list[dict[str, Any]],
+    input_label: str,
+    link_no: str,
+    node_total_geh: float,
+    threshold: float,
+) -> FixProposal:
+    """ONE refusal per NAMED cause of an undefined class split (unit #59).
+
+    Round 1's defect, in one sentence: four different causes shared one refusal
+    whose text asserted that every member carried zero. Two of them did not, and
+    the reader was sent to fix a thing that was not broken while the real
+    problem went unnamed. So every branch here states the condition it actually
+    established, and the cause token rides in the evidence so a consumer can
+    tell them apart without parsing prose.
+
+    The cause is never inferred from the inputs a second time — it comes from
+    the function that failed to split them.
+    """
+    evidence = {**evidence, "split_cause": cause}
+    opening_ko = (
+        f"노드 {node_id}의 총 교통량이 실측과 어긋나고(GEH {_round(node_total_geh)} ≥ "
+        f"{threshold}), 조정 대상은 링크 {link_no}의 차량 인풋 {len(members)}개({input_label})입니다. "
+    )
+    opening_en = (
+        f"Node {node_id}'s total volume misses the observed count (GEH "
+        f"{_round(node_total_geh)} >= {threshold}) and the target is the {len(members)} vehicle "
+        f"inputs on link {link_no} ({input_label}). "
+    )
+    opening_ja = (
+        f"ノード {node_id} の総交通量が実測と乖離しており(GEH {_round(node_total_geh)} ≥ "
+        f"{threshold})、調整対象はリンク {link_no} の車両インプット{len(members)}件"
+        f"({input_label})です。"
+    )
+
+    if cause == demand_class_split.SPLIT_UNKNOWN_MEMBER_VOLUME:
+        # NAME THE MEMBERS THAT ARE ACTUALLY UNSTATED. "Which ones" is the whole
+        # content of this refusal -- the reader has to know where to look.
+        unstated = [
+            member["vehicle_input_no"]
+            for member in members
+            if _number(member.get("current_volume")) is None
+        ]
+        stated = [
+            f"{member['vehicle_input_no']}: {_fmt(_number(member.get('current_volume')))}"
+            for member in members
+            if _number(member.get("current_volume")) is not None
+        ]
+        listed = ", ".join(unstated)
+        known = ", ".join(stated) or "-"
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=EVIDENCE_INSUFFICIENT,
+            evidence={**evidence, "unstated_members": list(unstated)},
+            ko=opening_ko + f"그러나 차량 인풋 {listed}의 현재 교통량이 없습니다(확인된 값: {known}). "
+            "구성비를 유지한 비례 배분은 각 차종의 현재 값을 가중치로 쓰므로, 값이 없는 차종이 하나만 "
+            "있어도 배분 비율을 세울 수 없습니다 — 모르는 값은 0이 아니며, 0으로 놓으면 그 차종을 "
+            "구성비에서 소리 없이 지우고 승인 시 그 차종의 교통량을 0으로 덮어씁니다. 해당 차종의 "
+            "현재 교통량을 넣어 주시거나, 차량 인풋 하나를 직접 지정해 주십시오.",
+            en=opening_en + f"But vehicle input {listed} has no current volume "
+            f"(known: {known}). A mix-preserving proportional split uses each class's current "
+            "value as its weight, so one unstated class is enough to leave the proportions "
+            "undefined — unknown is NOT zero, and treating it as zero would silently drop that "
+            "class out of the mix and write its volume to zero on approval. Supply that class's "
+            "current volume, or name a single vehicle input instead.",
+            ja=opening_ja + f"しかし車両インプット {listed} の現在交通量がありません"
+            f"(判明している値: {known})。構成比を保つ比例配分は各車種の現在値を重みとして使うため、"
+            "値のない車種が一つでもあれば配分比率を決められません — 不明は0ではなく、0として扱えば"
+            "その車種を構成比から静かに消し、承認時にその車種の交通量を0で上書きします。当該車種の"
+            "現在交通量を入力するか、車両インプットを一つ指定してください。",
+        )
+
+    if cause == demand_class_split.SPLIT_NEGATIVE_MEMBER_VOLUME:
+        negative = [
+            f"{member['vehicle_input_no']}: {_fmt(_number(member.get('current_volume')))}"
+            for member in members
+            if (_number(member.get("current_volume")) or 0.0) < 0
+        ]
+        listed = ", ".join(negative)
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=GROUP_VOLUME_NEGATIVE,
+            evidence={**evidence, "negative_members": list(negative)},
+            ko=opening_ko + f"그러나 현재 교통량이 음수인 차종이 있습니다({listed}). 음수는 구성비의 "
+            "몫이 될 수 없고, 그 값을 가중치로 비례 배분하면 해당 차종에 음수 교통량을 제안하게 "
+            "됩니다. 입력값을 바로잡아 주십시오.",
+            en=opening_en + f"But a class currently carries a NEGATIVE volume ({listed}). A "
+            "negative number is not a share of any mix, and scaling by it would propose a negative "
+            "volume for that class. Correct the input value.",
+            ja=opening_ja + f"しかし現在交通量が負の車種があります({listed})。負の値は構成比の取り分に"
+            "なり得ず、それを重みとして比例配分すれば当該車種に負の交通量を提案することになります。"
+            "入力値を修正してください。",
+        )
+
+    if cause == demand_class_split.SPLIT_ALL_ZERO:
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=GROUP_VOLUMES_ALL_ZERO,
+            evidence=evidence,
+            ko=opening_ko + "그러나 이 인풋들의 현재 볼륨이 모두 0이라 차종 구성비가 존재하지 "
+            "않습니다 — 비례 배분의 기준이 없으므로 새 총량을 어떻게 나눌지 정할 수 없습니다. "
+            "임의로 균등 분배하면 그것은 사용자가 정한 '구성비 유지' 규칙이 아니라 이 시스템이 "
+            "지어낸 구성비입니다. 각 차종의 현재 교통량을 입력하거나, 차량 인풋 하나를 직접 "
+            "지정해 주십시오.",
+            en=opening_en + "But every one of them currently carries zero, so there is no class "
+            "mix to preserve and no proportion to split the new total by. Dividing it equally "
+            "would not be the user's stated rule — it would be a mix this system invented and "
+            "attributed to that rule. Supply each class's current volume, or name a single "
+            "vehicle input instead.",
+            ja=opening_ja + "しかし現在のボリュームがすべて0のため車種構成比が存在せず、新しい総量を"
+            "どう按分するか決められません。均等に分ければ、それは利用者が定めた「構成比維持」では"
+            "なく、本システムが作り出した構成比です。各車種の現在の交通量を入力するか、車両"
+            "インプットを一つ指定してください。",
+        )
+
+    # SPLIT_NO_MEMBERS / SPLIT_INVALID_TOTAL, and anything a future cause adds.
+    #
+    # ONE OF THESE IS REACHABLE AND ONE IS NOT, and round 1's comment here said
+    # both were unreachable, which the refuter disproved by executing it:
+    #
+    # * ``SPLIT_NO_MEMBERS`` really is unreachable from this builder — the split
+    #   is attempted only inside ``if members:``.
+    # * ``SPLIT_INVALID_TOTAL`` IS REACHABLE, measured. ``new_volume`` is
+    #   ``current * observed / modelled`` and the guard above only rejects a
+    #   modelled total that is falsy, so a NEGATIVE one (e.g. -550) survives it
+    #   and scales the group to a negative target, which
+    #   ``split_proportionally`` refuses by that name. The generic sentence
+    #   below is therefore live text a reader can actually receive, not a
+    #   defensive branch — and it is the honest answer: a total that cannot be
+    #   apportioned is not apportioned, and the cause is quoted rather than
+    #   guessed at.
+    #
+    # Either way it is NAMED rather than folded into a neighbouring sentence,
+    # which is the entire lesson of this function's existence.
+    return _refuse(
+        key=key,
+        key_kind=kind,
+        reason_code=EVIDENCE_INSUFFICIENT,
+        evidence=evidence,
+        ko=opening_ko + f"그러나 차종별 비례 배분을 계산할 수 없습니다(사유: {cause}). 근거를 댈 수 "
+        "없는 배분은 제안하지 않습니다.",
+        en=opening_en + f"But the per-class proportional split could not be computed (cause: "
+        f"{cause}). A division whose basis cannot be stated is not proposed.",
+        ja=opening_ja + f"しかし車種別の比例配分を計算できません(理由: {cause})。根拠を示せない"
+        "配分は提案しません。",
+    )
 
 
 def _build_demand_proposal(
@@ -1436,14 +1866,34 @@ def _build_demand_proposal(
             "作成できません — 対象のない需要変更は提案しません。",
         )
 
-    input_no = target.get("input_no")
+    # #59 (refuter round 2, D1): STRIPPED, by the same rule and at the same
+    # point as every member id beside it (:func:`_target_input_no`). Everything
+    # below therefore reads one falsy test rather than the two-valued
+    # ``not in (None, "")``, under which ``"   "`` named an object that does not
+    # exist all the way to an approval card.
+    input_no = _target_input_no(target)
+    # #59: a link's vehicle-class trio, folded into ONE target by the user's
+    # decided rule. Empty for every ordinary single-input target, so everything
+    # below reads exactly as it did unless a composite actually arrived.
+    members = _group_members(target)
+    #: "Is there an object to edit at all?" — no longer the same question as
+    #: "is there ONE input", because a composite names none.
+    named_object = bool(input_no) or bool(members)
+    input_label = _input_label(input_no, members)
     current_volume = _number(target.get("current_volume"))
     interval_no = target.get("interval_no", 1)
     entrance = entrance_measurement(node, target)
     base_evidence["target"] = {
-        "input_no": input_no,
+        # The NORMALIZED id, and ``None`` when nothing was named — the audit
+        # block quotes what the plan would actually write, never the padding a
+        # picker happened to send.
+        "input_no": input_no or None,
         "current_volume": current_volume,
         "interval_no": interval_no,
+        # Unit #59: the members this target stands for and the rule that folded
+        # them, on the PROPOSAL and on every refusal below alike. ``None`` for a
+        # single input, so its presence means exactly one thing.
+        "group": _group_block(target, members),
         # Unit D4: the verdict AND its basis ride in the evidence, so the
         # approval card and the audit DOCX (both of which render evidence
         # generically) carry "why this was, or was not, ours to edit".
@@ -1458,7 +1908,89 @@ def _build_demand_proposal(
         "human_named": _human_named_block(target),
     }
 
-    if input_no not in (None, "") and entrance["status"] == ENTRANCE_MEASURED:
+    # -- unit #59 (refuter round 2): the target must NAME ITSELF ONCE ---------
+    #
+    # Both refusals below are about the REQUEST, not about the network, and both
+    # come before every other branch for that reason: until it is settled what
+    # object this proposal is about, neither D4's measured-entrance verdict nor
+    # the arithmetic underneath it is a statement about anything in particular.
+    #
+    # F3. ``input_no`` and ``members`` describing different things at once.
+    # Measured: ``input_no="777"`` with members 109/209 built a plan writing
+    # 109 and 209 while ``evidence.target.input_no`` said ``"777"`` — an audit
+    # block pointing at an input the plan never touches. Refused rather than
+    # reconciled: preferring either one would be this system choosing which half
+    # of a self-contradicting request the caller meant. The human path refuses
+    # the same shape by name (``demand_target_map.record_mapping`` →
+    # ``demand_target_conflicting_target``), and the two paths now agree.
+    # The guard is ``members and input_no`` — EVERY member list, not only one
+    # long enough to be a group, because "name yourself once" is the FIRST
+    # complaint and comes before "your group is too short" (refuter round 2, D8:
+    # narrowing this to ``len(members) >= MIN_GROUP_MEMBERS`` survived the whole
+    # suite, which meant nothing knew which of the two refusals a one-member
+    # list WITH an input number is owed). And ``input_no`` is the normalized id,
+    # so whitespace — which names nothing — does not trip this refusal.
+    if members and input_no:
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=GROUP_AND_INPUT_BOTH_NAMED,
+            evidence=base_evidence,
+            ko=f"노드 {node_id}의 수요 대상이 자기 자신을 두 가지로 지목합니다: 차량 인풋 "
+            f"{input_no} 하나와, 링크 그룹 {_input_label(None, members)}"
+            f"({len(members)}개)가 동시에 지정되었습니다. 무엇을 바꾸겠다는 것인지가 이 대상의 "
+            "전부인데 둘을 함께 적으면 그 답이 둘이 되고, 실제로 쓰이는 것은 그룹인 반면 감사 "
+            "기록에는 계획이 건드리지도 않는 인풋 번호가 남습니다. 둘 중 하나만 지정해 주십시오 — "
+            "인풋 하나를 조정하려면 members를 비우고, 링크의 차종 전체를 조정하려면 인풋 번호를 "
+            "비우십시오.",
+            en=f"Node {node_id}'s demand target names itself two ways at once: vehicle input "
+            f"{input_no}, and the link group {_input_label(None, members)} ({len(members)} "
+            "members). What this target is FOR is naming the object to change; naming two makes "
+            "that answer two — the plan would write the group while the audit block quoted an "
+            "input the plan never touches. Send exactly one: leave the members out to adjust one "
+            "input, or leave the input number out to adjust the link's whole class group.",
+            ja=f"ノード {node_id} の需要対象が自分自身を二通りに指しています: 車両インプット "
+            f"{input_no} と、リンクグループ {_input_label(None, members)}({len(members)}件)が"
+            "同時に指定されています。何を変更するかがこの対象の全てであり、二つ書けばその答えが"
+            "二つになります — 実際に書き込まれるのはグループの方で、監査記録には計画が触れもしない"
+            "インプット番号が残ります。どちらか一方だけを指定してください。",
+        )
+
+    # F2. A "group" of one. The convention is that a single input arrives as
+    # ``input_no`` with no member list at all, so a one-member list means the
+    # caller believes it is describing a class trio and has handed over part of
+    # it. Round 2's measurement: this used to be answered by ``_group_members``
+    # returning ``[]``, which made the member disappear with no sentence
+    # anywhere — the same silent narrowing the id-less-member refusal below
+    # exists to prevent, arrived at from the other direction.
+    if members and len(members) < MIN_GROUP_MEMBERS:
+        listed = _input_label(None, members) or "-"
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=GROUP_HAS_ONE_MEMBER,
+            evidence={**base_evidence, "member_count": len(members)},
+            ko=f"노드 {node_id}의 수요 대상이 차종 그룹으로 왔지만 구성원이 {len(members)}개"
+            f"({listed})뿐입니다. 하나짜리 그룹은 그룹이 아니며, 이 시스템은 나머지 차종이 원래 "
+            "없는 것인지 전달 과정에서 빠진 것인지 구별할 수 없습니다 — 빠진 것이라면 남은 하나에 "
+            "링크 전체의 교통량을 몰아주게 되고, 그것은 승인자가 본 적 없는 구성비입니다. 차량 인풋 "
+            "하나만 조정하려면 members 없이 인풋 번호로 지정하시고, 링크의 차종 전체를 조정하려면 "
+            "차종을 모두 넣어 주십시오.",
+            en=f"Node {node_id}'s demand target arrived as a vehicle-class group carrying only "
+            f"{len(members)} member ({listed}). A group of one is not a group, and this system "
+            "cannot tell whether the other classes do not exist or were lost on the way — if they "
+            "were lost, the whole link's demand would be piled onto the one that survived, at a "
+            "mix the approver never saw. Name a single input WITHOUT a member list to adjust one "
+            "input, or send every class to adjust the link's group.",
+            ja=f"ノード {node_id} の需要対象が車種グループとして届きましたが、構成員が"
+            f"{len(members)}件({listed})しかありません。一つだけのグループはグループではなく、"
+            "他の車種が元から無いのか伝達の途中で欠落したのかを本システムは区別できません — 欠落"
+            "であれば、リンク全体の交通量を残った一つに寄せることになり、それは承認者が見ていない"
+            "構成比です。インプットを一つだけ調整するなら members を付けずに番号で指定し、リンクの"
+            "車種全体を調整するなら全ての車種を送ってください。",
+        )
+
+    if named_object and entrance["status"] == ENTRANCE_MEASURED:
         row = entrance["observed_row"] or {}
         # The number quoted is every counted row on that link, not just the
         # example row named beside it -- an entrance normally fans out into
@@ -1468,6 +2000,12 @@ def _build_demand_proposal(
         rows_ko = "" if rows_here <= 1 else f"(이 링크 진입 실측 행 {rows_here}건 합계) "
         rows_en = "" if rows_here <= 1 else f"(summed over {rows_here} counted rows on that link) "
         rows_ja = "" if rows_here <= 1 else f"(このリンクからの実測行 {rows_here} 件の合計) "
+        # #59: a composite target says so IN the refusal, not only in the
+        # evidence block. The reader has to be able to tell "one input was
+        # refused" from "a link's whole class trio was refused, together,
+        # because the rule folded them" — and the second sentence is also the
+        # answer to "why does this refusal name three numbers".
+        group_ko, group_en, group_ja = _group_clause(members, entrance.get("link_no"))
         # Unit #45. The tail of this refusal used to promise four levers —
         # "turn distribution, driving behaviour and desired speeds, signal
         # timing, and link geometry/lanes" — when exactly ONE of them had a
@@ -1518,7 +2056,7 @@ def _build_demand_proposal(
             reason_code=INPUT_VOLUME_IS_OBSERVED_DATA,
             evidence=base_evidence,
             ko=f"노드 {node_id}의 총 교통량이 실측과 어긋납니다(GEH {_round(node_total_geh)} ≥ "
-            f"{threshold}). 그러나 이 제안이 바꾸려는 차량 입력 {input_no}은(는) 링크 "
+            f"{threshold}). 그러나 이 제안이 바꾸려는 차량 입력 {input_label}은(는) 링크 "
             f"{entrance['link_no']}의 진입부이고, 그 진입부가 바로 실측이 이루어진 지점입니다: "
             f"실측 이동류 {row.get('movement_id')}이(가) 링크 {entrance['link_no']}에서 진입하며 "
             f"{rows_ko}{counted_here}대로 계측되었습니다. 실측된 진입 교통량은 "
@@ -1531,9 +2069,9 @@ def _build_demand_proposal(
             "제안은 만들지 않습니다. 희망 속도와 링크 기하·차로(용량)는 이 루프에 제안 빌더가 없어 "
             "사람이 직접 편집합니다. "
             "그리고 모델에 차량이 부족한 이유가 다른 '실측되지 않은' 진입부라면, 수요 추정은 이 "
-            "입력이 아니라 그쪽에서 이루어져야 합니다.",
+            "입력이 아니라 그쪽에서 이루어져야 합니다." + group_ko,
             en=f"Node {node_id}'s total volume misses the observed count (GEH "
-            f"{_round(node_total_geh)} >= {threshold}). But vehicle input {input_no}, the object "
+            f"{_round(node_total_geh)} >= {threshold}). But vehicle input {input_label}, the object "
             f"this edit would rewrite, feeds link {entrance['link_no']} — and that entrance is "
             f"where the counts were TAKEN: observed movement row {row.get('movement_id')} enters "
             f"from link {entrance['link_no']} carrying {rows_en}{counted_here} "
@@ -1549,9 +2087,9 @@ def _build_demand_proposal(
             "speeds and link geometry/lanes (capacity) have no proposal builder in this loop: "
             "hand-edited. And where the model is short of "
             "vehicles because some OTHER, unmeasured entrance is too low, that entrance is where "
-            "demand may be estimated, not this one.",
+            "demand may be estimated, not this one." + group_en,
             ja=f"ノード {node_id} の総交通量が実測と乖離しています(GEH {_round(node_total_geh)} ≥ "
-            f"{threshold})。しかし、この編集が書き換えようとする車両インプット {input_no} はリンク "
+            f"{threshold})。しかし、この編集が書き換えようとする車両インプット {input_label} はリンク "
             f"{entrance['link_no']} の流入部であり、その流入部こそ実測が行われた地点です: 実測移動 "
             f"{row.get('movement_id')} がリンク {entrance['link_no']} から流入し "
             f"{rows_ja}{counted_here} 台として計測されています。実測された流入交通量は"
@@ -1564,10 +2102,11 @@ def _build_demand_proposal(
             "⑥の確認指示までで、提案は作りません。希望速度とリンク幾何・車線数(容量)はこのループに"
             "提案ビルダーがなく手動編集です。"
             "そして車両が不足している原因が別の「実測されて"
-            "いない」流入部であるなら、需要の推定はこのインプットではなくそちらで行うべきです。",
+            "いない」流入部であるなら、需要の推定はこのインプットではなくそちらで行うべきです。"
+            + group_ja,
         )
 
-    if input_no in (None, "") or current_volume is None or not modelled or not observed:
+    if not named_object or current_volume is None or not modelled or not observed:
         return _refuse(
             key=key,
             key_kind=kind,
@@ -1586,6 +2125,88 @@ def _build_demand_proposal(
             "提案しません。",
         )
 
+    # -- unit #59: every member must NAME the input it would write ------------
+    #
+    # An id-less member is kept by ``_group_members`` rather than dropped (see
+    # its docstring: shrinking the trio behind the reader's back is the worse
+    # failure), which means the refusal has to happen HERE. Measured: nothing
+    # downstream catches it in time — ``SetVehicleInputVolumeParams.input_no``
+    # is a bare ``str`` and accepts ``""``, and ``batch``'s collision check skips
+    # a step whose target id is empty — so an anonymous member sailed to an
+    # approval card and died at ``tools_edit._coerce_id`` on dispatch, after a
+    # human had approved it.
+    if members and any(not member["vehicle_input_no"] for member in members):
+        anonymous = [index for index, member in enumerate(members, start=1)
+                     if not member["vehicle_input_no"]]
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=EVIDENCE_INSUFFICIENT,
+            evidence={**base_evidence, "unidentified_member_positions": anonymous},
+            ko=f"노드 {node_id}의 차종 그룹에 차량 인풋 번호가 없는 항목이 있습니다"
+            f"({len(anonymous)}건). 번호가 없으면 무엇을 바꾸겠다는 것인지 지정할 수 없으므로 "
+            "제안하지 않습니다 — 그 항목을 조용히 빼면 승인자가 본 적 없는 구성비로 나머지를 "
+            "조정하게 됩니다.",
+            en=f"{len(anonymous)} member(s) of node {node_id}'s class group carry no vehicle input "
+            "number. Without one there is no object to change, so nothing is proposed — and "
+            "dropping those members instead would adjust the rest at a mix the approver never saw.",
+            ja=f"ノード {node_id} の車種グループに車両インプット番号のない項目があります"
+            f"({len(anonymous)}件)。番号がなければ何を変更するのか指定できないため提案しません — "
+            "その項目を黙って除けば、承認者が見ていない構成比で残りを調整することになります。",
+        )
+
+    # -- unit #59 (F4): the total and its own members must be the same claim ---
+    #
+    # On the AGENT path these two arrive INDEPENDENTLY — an LLM fills the group
+    # total and the member list as separate fields — so nothing structurally
+    # forces them to describe the same link. Measured: members 500/300/200 with
+    # a declared total of 400 produced "from 400 to 480" beside a split that cut
+    # every class by 52%, while the card claimed the mix was preserved.
+    #
+    # Refused rather than reconciled, and the choice of WHICH to refuse matters:
+    # this system cannot tell whether the total is wrong or a member is, so
+    # picking either (summing the members, or scaling them to the total) would
+    # be inventing the answer to a question the caller got wrong. The same
+    # doctrine ``genesis.side_inputs`` applies to a declared cycle that
+    # contradicts Σ(green + clearance).
+    disagreement = demand_class_split.member_total_disagreement(members, current_volume)
+    if disagreement is not None and disagreement > demand_class_split.member_total_tolerance(
+        members
+    ):
+        member_sum = _round(sum(member["current_volume"] or 0.0 for member in members))
+        rendered = ", ".join(
+            f"{member['vehicle_input_no']}: {_fmt(member['current_volume'])}" for member in members
+        )
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=GROUP_MEMBER_TOTAL_DISAGREES,
+            evidence={
+                **base_evidence,
+                "declared_group_total": current_volume,
+                "member_volume_sum": member_sum,
+                "difference": _round(disagreement),
+                "tolerance": _round(demand_class_split.member_total_tolerance(members)),
+            },
+            ko=f"노드 {node_id}의 수요 대상으로 넘어온 두 숫자가 서로 맞지 않습니다: 그룹 합계는 "
+            f"{_fmt(current_volume)}로 선언되었는데 차종별 현재 교통량의 합은 {_fmt(member_sum)}"
+            f"입니다({rendered}). 같은 링크를 두고 두 값이 다르므로 둘 중 하나는 틀렸고, 이 시스템은 "
+            "어느 쪽이 틀렸는지 알 수 없습니다 — 합계에 맞춰 차종을 줄이거나 차종 합으로 총량을 "
+            "덮어쓰면 그것은 보정이 아니라 지어낸 답입니다. 두 값을 일치시켜 다시 요청해 주십시오.",
+            en=f"The two numbers handed over for node {node_id}'s demand target do not agree: the "
+            f"group total is declared as {_fmt(current_volume)} while the members' current volumes "
+            f"sum to {_fmt(member_sum)} ({rendered}). They describe one link and they disagree, so "
+            "one of them is wrong and this system cannot tell which. Scaling the classes to the "
+            "declared total, or overwriting the total with their sum, would be inventing the "
+            "answer rather than calibrating. Send them consistent.",
+            ja=f"ノード {node_id} の需要対象として渡された二つの数値が一致しません: グループ合計は "
+            f"{_fmt(current_volume)} と宣言されていますが、車種別の現在交通量の合計は "
+            f"{_fmt(member_sum)} です({rendered})。同じリンクについて二つの値が異なるため、"
+            "どちらかが誤りであり、本システムにはどちらとは判断できません — 合計に合わせて車種を"
+            "縮めても、車種の合計で総量を上書きしても、それは補正ではなく作り出した答えです。"
+            "二つの値を一致させて再度指定してください。",
+        )
+
     new_volume = _round(current_volume * observed / modelled)
     arithmetic = (
         f"{_fmt(current_volume)} * {_fmt(observed)} / {_fmt(modelled)} = {_fmt(new_volume)}"
@@ -1596,6 +2217,41 @@ def _build_demand_proposal(
         "arithmetic": arithmetic,
         "run_result_keys": list((node.get("sources") or {}).get("run_result_keys") or []),
     }
+
+    # -- unit #59: split the adjustment back across the vehicle classes -------
+    #
+    # The WEIGHTS are the members' current volumes, so this is where the decided
+    # rule either applies or provably cannot. ``split_proportionally`` returns
+    # the NAMED CAUSE when it cannot, and each cause gets its own refusal below:
+    # round 1 mapped every cause onto the all-zero sentence, which told the
+    # reader of a 500/None/200 group that "every one of them currently carries
+    # zero" — false about two members, and silent about the one real problem.
+    # An equal split would be this system inventing a mix and signing the
+    # user's rule to it; a MISNAMED refusal is the same dishonesty one step
+    # earlier, so the cause travels rather than being re-derived.
+    split: list[dict[str, Any]] | None = None
+    if members:
+        split, cause = demand_class_split.split_proportionally(members, new_volume)
+        if split is None:
+            return _refuse_undefined_split(
+                cause=cause,
+                key=key,
+                kind=kind,
+                evidence=evidence,
+                node_id=node_id,
+                members=members,
+                input_label=input_label,
+                link_no=str((target or {}).get("link_no") or ""),
+                node_total_geh=node_total_geh,
+                threshold=threshold,
+            )
+        # The split is EVIDENCE, on the same block the grouping already rides on:
+        # the reviewer approves the numbers they can see, and the screen renders
+        # this array rather than recomputing one of its own.
+        evidence["target"] = {
+            **base_evidence["target"],
+            "group": {**(base_evidence["target"]["group"] or {}), "split": split},
+        }
 
     # Unit D4: the entrance survived the measured gate only as UNVERIFIED, so
     # what follows is a demand ESTIMATE and says so — in the rationale, in the
@@ -1620,41 +2276,176 @@ def _build_demand_proposal(
         "なります。"
     )
 
+    # -- unit #59: ONE edit, or an all-or-nothing plan of one per class -------
+    #
+    # A composite proposal is N writes, and it must be N writes that either ALL
+    # land or none do. A partially applied trio is a network whose class mix is
+    # something nobody approved and nobody chose — the precise outcome the
+    # user's rule exists to prevent — so the verb is ``apply_edit_plan``, whose
+    # own contract is serial application with per-step readback and a rollback
+    # of every applied step on the first failure of any kind. Choosing
+    # ``set_vehicle_input_volume`` per member and hoping would trade the rule's
+    # only guarantee for a shorter card.
+    #
+    # A single-input target keeps the exact verb, params and text it has always
+    # had: the branch below is entered only when a group really arrived.
+    split_ko = split_en = split_ja = ""
+    if split is not None:
+        steps = [
+            {
+                "tool": "set_vehicle_input_volume",
+                "params": {
+                    "input_no": row["vehicle_input_no"],
+                    "volume": row["proposed_volume"],
+                    "interval_no": int(interval_no or 1),
+                },
+            }
+            for row in split
+        ]
+        # ``_emit`` validates the PLAN against ``apply_edit_plan``'s schema,
+        # which types its steps as free-form dicts — so each step's own params
+        # are checked here against the verb that will actually receive them.
+        # Without this, a payload the step tool would reject reaches an approval
+        # card and fails at dispatch, which is the exact failure ``_emit``'s own
+        # docstring exists to prevent one level up.
+        for index, step in enumerate(steps, start=1):
+            ok, error = validate_params(step["tool"], step["params"], registry=registry)
+            if not ok:
+                return _refuse(
+                    key=key,
+                    key_kind=kind,
+                    reason_code=PARAMS_REJECTED_BY_SCHEMA,
+                    evidence={**evidence, "rejected_step": index, "error": error},
+                    ko=f"차종별 배분 {index}번째 항목이 'set_vehicle_input_volume'의 실제 파라미터 "
+                    f"스키마에 거부되었습니다: {error}. 일부만 적용되는 일이 없도록 계획 전체를 "
+                    "거부합니다.",
+                    en=f"Step {index} of the per-class split was rejected by "
+                    f"'set_vehicle_input_volume''s own live params schema: {error}. The whole plan "
+                    "is refused rather than risking a partially applied class mix.",
+                    ja=f"車種別配分の{index}番目が 'set_vehicle_input_volume' の実際のパラメータ"
+                    f"スキーマに拒否されました: {error}。一部だけが適用されないよう、計画全体を"
+                    "拒否します。",
+                )
+
+        # -- unit #59 (F3): the PLAN's own preflight, before any card ---------
+        #
+        # Per-step params are not the whole of what makes a batch legal. The
+        # step COUNT has a range, two steps may not write the same field of the
+        # same object, and the eligibility rules for a batched tool are
+        # ``batch``'s. Measured in round 1: three malformed plans (a
+        # single-member "trio", an eleven-class group, two steps naming one
+        # input) were built here, shipped to an approval card, and died only
+        # AFTER a human approved them — the reviewer spent their signature on a
+        # plan that could never run.
+        #
+        # ``batch.validate_plan_structure`` is the SHADOW-MODEL-FREE half of the
+        # very check ``apply_edit_plan``'s preflight runs, called here rather
+        # than re-implemented, so the builder and the preflight cannot drift
+        # about what a batch may contain. The network-dependent half (per-step
+        # preflight against the shadow model, the combined-effect pass) still
+        # runs at approval time, where a network exists; this catches only what
+        # is decidable from the plan itself, which is exactly the class of
+        # defect that has no business reaching a human.
+        blocking = [
+            finding
+            for finding in batch.validate_plan_structure(
+                {"tool": "apply_edit_plan", "params": {"steps": steps}}, registry=registry
+            )
+            if finding.tier == "refuse"
+        ]
+        if blocking:
+            reasons = "; ".join(
+                str(finding.messages.get("en") or finding.constraint_id) for finding in blocking
+            )
+            return _refuse(
+                key=key,
+                key_kind=kind,
+                reason_code=GROUP_PLAN_REJECTED_BY_PREFLIGHT,
+                evidence={
+                    **evidence,
+                    "plan_findings": [
+                        {"constraint_id": finding.constraint_id, "messages": dict(finding.messages)}
+                        for finding in blocking
+                    ],
+                },
+                ko=f"차종별 공동 조정 계획({len(steps)}단계)이 일괄 편집의 자체 사전 검사를 통과하지 "
+                f"못했습니다: {reasons}. 승인 화면에 올리지 않고 지금 거부합니다 — 실행될 수 없는 "
+                "계획에 승인을 받는 것은 승인을 무의미하게 만듭니다.",
+                en=f"The joint per-class plan ({len(steps)} steps) does not pass the batch "
+                f"preflight's own structural checks: {reasons}. Refused now rather than shown on "
+                "an approval card — asking a reviewer to approve a plan that cannot run makes the "
+                "approval meaningless.",
+                ja=f"車種別の共同調整計画({len(steps)}ステップ)が一括編集の事前検査を通過しません: "
+                f"{reasons}。承認画面に出さずここで拒否します — 実行できない計画に承認を求めることは、"
+                "承認そのものを無意味にします。",
+            )
+        rendered = ", ".join(
+            f"{row['vehicle_input_no']}: {_fmt(row['current_volume'])} → "
+            f"{_fmt(row['proposed_volume'])}"
+            for row in split
+        )
+        verb = "apply_edit_plan"
+        params: dict[str, Any] = {"steps": steps}
+        split_ko = (
+            f" 이 대상은 차량 인풋 {len(split)}개를 함께 조정하는 것이며, 현재 구성비를 유지한 채 "
+            f"다음과 같이 배분합니다 — {rendered} (합계 {_fmt(new_volume)} veh/h, 배분 규칙 "
+            f"{demand_class_split.SPLIT_RULE}). 전부 적용되거나 전부 취소되며, 일부만 적용되지 "
+            "않습니다."
+        )
+        split_en = (
+            f" This target moves {len(split)} vehicle inputs together, preserving their current "
+            f"mix, split as — {rendered} (summing to {_fmt(new_volume)} veh/h, apportionment "
+            f"{demand_class_split.SPLIT_RULE}). All of it applies or none of it does."
+        )
+        split_ja = (
+            f" この対象は車両インプット{len(split)}件をまとめて調整するもので、現在の構成比を保った"
+            f"まま次のように按分します — {rendered} (合計 {_fmt(new_volume)} veh/h、按分規則 "
+            f"{demand_class_split.SPLIT_RULE})。全て適用されるか全て取り消されるかのいずれかです。"
+        )
+    else:
+        verb = "set_vehicle_input_volume"
+        params = {
+            "input_no": str(input_no),
+            "volume": new_volume,
+            "interval_no": int(interval_no or 1),
+        }
+
     return _emit(
         key=key,
         key_kind=kind,
         scope=DEMAND_LEVEL,
-        verb="set_vehicle_input_volume",
-        params={
-            "input_no": str(input_no),
-            "volume": new_volume,
-            "interval_no": int(interval_no or 1),
-        },
+        verb=verb,
+        params=params,
         evidence=evidence,
         ko=f"노드 {node_id}의 총 교통량 자체가 실측과 어긋납니다: 실측 {_fmt(observed)} vs 모델 "
         f"{_fmt(modelled)}, GEH {_round(node_total_geh)} ≥ 기준 {threshold}. 회전 배분이 아니라 "
-        f"수요(Vehicle Input) 수준의 문제이므로, 차량 입력 {input_no}의 구간 {interval_no} 볼륨을 "
+        f"수요(Vehicle Input) 수준의 문제이므로, 차량 입력 {input_label}의 구간 {interval_no} 볼륨을 "
         f"{_fmt(current_volume)} → {new_volume} veh/h로 조정할 것을 제안합니다({arithmetic}). "
-        "이 값은 해당 차량 입력이 이 노드 총량을 좌우한다는 전제 하에서 정확합니다." + estimate_ko,
+        "이 값은 해당 차량 입력이 이 노드 총량을 좌우한다는 전제 하에서 정확합니다."
+        + split_ko
+        + estimate_ko,
         en=f"Node {node_id}'s TOTAL volume itself misses the observed count: observed "
         f"{_fmt(observed)} vs modelled {_fmt(modelled)}, GEH {_round(node_total_geh)} >= "
         f"threshold {threshold}. That is a demand-level problem (Vehicle Input), not a turn-"
-        f"distribution one, so the proposal is to change vehicle input {input_no}'s interval "
+        f"distribution one, so the proposal is to change vehicle input {input_label}'s interval "
         f"{interval_no} volume from {_fmt(current_volume)} to {new_volume} veh/h ({arithmetic}). "
         "The value is exact under the assumption that this input drives the node's total."
+        + split_en
         + estimate_en,
         ja=f"ノード {node_id} の総交通量自体が実測と乖離しています: 実測 {_fmt(observed)} 対 モデル "
         f"{_fmt(modelled)}、GEH {_round(node_total_geh)} ≥ 閾値 {threshold}。これは回転配分ではなく"
-        f"需要(車両インプット)レベルの問題のため、車両インプット {input_no} の区間 {interval_no} の"
+        f"需要(車両インプット)レベルの問題のため、車両インプット {input_label} の区間 {interval_no} の"
         f"ボリュームを {_fmt(current_volume)} → {new_volume} veh/h に変更することを提案します"
         f"({arithmetic})。この値は当該インプットがノード総量を左右するという前提のもとで正確です。"
+        + split_ja
         + estimate_ja,
         confidence=CONFIDENCE_DEMAND_ESTIMATE,
         assumptions=(
             ASSUME_INPUT_DRIVES_NODE_TOTAL,
             ASSUME_INTERVAL_MATCHES_COUNT_PERIOD,
             ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED,
-        ),
+        )
+        + ((ASSUME_CLASS_MIX_PRESERVED,) if split is not None else ()),
         registry=registry,
     )
 
@@ -2214,7 +3005,17 @@ def _build_latent_demand_overflow_proposal(
     key, kind = "latent_demand_overflow", KEY_CONSTRAINT
     suggested_fix, details = _finding_parts(finding)
     params = dict((action or {}).get("params") or {})
-    input_no = params.get("input_no") or details.get("input_no")
+    # #59 (refuter round 3, R3-3): the SAME rule as every other id this module
+    # reads (:func:`normalize_input_no`). This builder was the second of the two
+    # sibling sites where round 2's fix did not reach: ``"   "`` is truthy, so it
+    # passed the ``in (None, "")`` gate below, rode into ``params["input_no"]``
+    # as a PROPOSAL, and died in ``tools_edit._coerce_id`` on dispatch — after a
+    # human had approved it. ``" 113 "`` was the quieter half of the same defect:
+    # the proposal wrote a padded id while ``evidence.entrance_measurement``
+    # (which normalizes) spelled it ``"113"``, so one evidence block described
+    # the same input two ways.
+    supplied_input_no = params.get("input_no") or details.get("input_no")
+    input_no = normalize_input_no(supplied_input_no)
     interval_no = params.get("interval_no", details.get("interval_no", 1))
     entrance = entrance_measurement(
         # No node evidence exists on this path -- see the docstring. The link
@@ -2225,7 +3026,15 @@ def _build_latent_demand_overflow_proposal(
     )
     evidence: dict[str, Any] = {
         "constraint_id": key,
-        "input_no": input_no,
+        # The NORMALIZED id, and ``None`` when nothing was named — the same
+        # audit rule ``_build_demand_proposal`` states beside its own target
+        # block: what is quoted here is what the plan would actually write.
+        "input_no": input_no or None,
+        # ...and what arrived, beside it (the ``link_no_supplied`` idiom, R3-9).
+        # ``entrance_measurement`` below is handed the NORMALIZED id, so its own
+        # supplied field cannot show the padding any more; this is where the
+        # refusal above is answerable from.
+        "input_no_supplied": None if supplied_input_no is None else str(supplied_input_no),
         "interval_no": interval_no,
         "entrance_measurement": entrance,
         "suggested_fix": dict(suggested_fix) if isinstance(suggested_fix, Mapping) else suggested_fix,
@@ -2275,7 +3084,8 @@ def _build_latent_demand_overflow_proposal(
             "増やす必要があります。",
         )
 
-    if input_no in (None, ""):
+    # ONE falsy test, because there is now ONE spelling (round 3, R3-3).
+    if not input_no:
         return _refuse(
             key=key,
             key_kind=kind,
@@ -3058,6 +3868,7 @@ def build_fix_report(
 
 __all__ = [
     "ANOMALY_ARMING_DRIFTED",
+    "ASSUME_CLASS_MIX_PRESERVED",
     "ASSUME_DECISION_MOVEMENTS_COMPLETE",
     "ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED",
     "ASSUME_INPUT_DRIVES_NODE_TOTAL",
@@ -3083,6 +3894,13 @@ __all__ = [
     "EVIDENCE_CANNOT_DISCRIMINATE",
     "EVIDENCE_INSUFFICIENT",
     "FIX_CANNOT_HELP",
+    "GROUP_AND_INPUT_BOTH_NAMED",
+    "GROUP_HAS_ONE_MEMBER",
+    "GROUP_MEMBER_TOTAL_DISAGREES",
+    "GROUP_PLAN_REJECTED_BY_PREFLIGHT",
+    "GROUP_VOLUMES_ALL_ZERO",
+    "GROUP_VOLUME_NEGATIVE",
+    "MIN_GROUP_MEMBERS",
     "FixMapping",
     "FixProposal",
     "INPUT_VOLUME_IS_OBSERVED_DATA",
@@ -3124,6 +3942,7 @@ __all__ = [
     "movement_from_link",
     "movement_to_link",
     "node_evidence_from_real_counts",
+    "normalize_input_no",
     "preflight_findings",
     "propose_fix",
     "propose_for_finding",

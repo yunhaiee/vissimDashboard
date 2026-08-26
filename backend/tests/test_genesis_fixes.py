@@ -323,6 +323,93 @@ def test_unverified_entrance_with_no_proposed_volume_refuses_rather_than_guess()
     assert proposal.params is None
 
 
+def test_a_whitespace_only_v6_subject_is_refused_by_name_and_never_proposed():
+    """The FIRST sibling site round 2's id normalization did not reach (unit
+    #59, refuter round 3, R3-3).
+
+    MEASURED on the round-3 build, by running this builder with the id
+    normalization reverted to identity: a ``"   "`` subject came back
+    ``PROPOSAL`` carrying ``params={"input_no": "   ", ...}``. Whitespace is
+    truthy, so the old two-valued gate (``in (None, "")``) did not ask, and
+    ``_emit``'s live-schema gate does not catch it either — ``validate_params``
+    accepts that string (measured). It reached an approval card and would have
+    died in ``tools_edit._coerce_id`` on dispatch, after a human signed it:
+    defect D1 itself, one module over.
+
+    The refusal is now NAMED — and it names the RIGHT thing. Round 2's single
+    gate answered "no input" and "no estimate" with one ``EVIDENCE_INSUFFICIENT``
+    sentence, so a target with a perfectly good 450 veh/h estimate and no input
+    number was told no estimate was supplied.
+    """
+    finding = {"code": "v6_input_without_volume", "subject": "   ", "context": {"link": "617"}}
+    proposal = gf.propose_for_gate_finding(
+        finding, targets={"node": None, "proposed_volume": 450.0, "interval_no": 1}
+    )
+
+    assert proposal.outcome == fixes.NO_AUTOMATED_FIX
+    assert proposal.reason_code == fixes.NO_TARGET_OBJECT
+    assert proposal.verb is None
+    assert proposal.params is None
+    # The three spaces never appear as an ID anywhere in the payload -- but they
+    # ARE still recorded as what arrived, which is what makes this refusal
+    # answerable ("why does it say no input was named? because THIS came in").
+    assert proposal.evidence["input_no"] is None
+    assert proposal.evidence["input_no_supplied"] == "   "
+    assert proposal.evidence["target"]["input_no"] is None
+    # ...and the refusal says so in all three languages, not just ko.
+    for language, message in proposal.rationale().items():
+        assert message.strip(), language
+
+    # The estimate WAS supplied here, so the older reason would have been a
+    # false sentence: this is the pin that keeps the two causes apart.
+    no_estimate = gf.propose_for_gate_finding(
+        {"code": "v6_input_without_volume", "subject": "113", "context": {"link": "617"}},
+        targets={"node": None},
+    )
+    assert no_estimate.reason_code == fixes.EVIDENCE_INSUFFICIENT
+
+
+def test_the_v6_builder_goes_THROUGH_fixes_normalize_input_no(monkeypatch):
+    """The delegation, executed — the cross-module half (unit #59, R3-3).
+
+    This module's builder and ``fixes``' two are claimed to spell an input id by
+    ONE rule. A claim like that is worth exactly as much as a test that fails
+    when a ``.strip()`` is re-inlined here, so the rule is replaced with a spy
+    no local copy could consult.
+    """
+    monkeypatch.setattr(fixes, "normalize_input_no", lambda raw: "SPY")
+    proposal = gf.propose_for_gate_finding(
+        {"code": "v6_input_without_volume", "subject": "113", "context": {"link": "617"}},
+        targets={"node": None, "proposed_volume": 450.0, "interval_no": 1},
+    )
+    assert proposal.params["input_no"] == "SPY"
+
+
+def test_a_padded_v6_subject_spells_one_id_one_way_everywhere_it_appears():
+    """The quieter half of the same defect (unit #59, refuter round 3, R3-3).
+
+    MEASURED with the normalization reverted: ``" 113 "`` produced a proposal
+    whose params wrote ``" 113 "`` while the evidence's ``entrance_measurement``
+    block — which has normalized since round 2 — said ``"113"``. One evidence
+    payload, one input, two spellings: whichever a reader believed, the other
+    was a claim about an object that does not exist.
+    """
+    finding = {"code": "v6_input_without_volume", "subject": " 113 ", "context": {"link": "617"}}
+    proposal = gf.propose_for_gate_finding(
+        finding, targets={"node": None, "proposed_volume": 450.0, "interval_no": 1}
+    )
+
+    assert proposal.outcome == fixes.PROPOSAL
+    assert proposal.params == {"input_no": "113", "volume": 450.0, "interval_no": 1}
+    assert proposal.evidence["input_no"] == "113"
+    assert proposal.evidence["target"]["input_no"] == "113"
+    assert proposal.evidence["entrance_measurement"]["input_no"] == "113"
+    # ...and the padding is kept as provenance rather than as an identity.
+    assert proposal.evidence["input_no_supplied"] == " 113 "
+    # The whole payload carries no padded spelling of the id at all.
+    assert " 113 " not in json.dumps(proposal.params or {})
+
+
 def test_v6_input_volume_is_zero_shares_the_same_d4_gate():
     finding = {"code": "v6_input_volume_is_zero", "subject": "113", "context": {"link": "617"}}
     measured = gf.propose_for_gate_finding(

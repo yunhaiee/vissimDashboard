@@ -668,6 +668,12 @@ def _target_less_rung(
     """
     reason = (demand_target_reason or {}).get("reason")
     candidate_count = (demand_target_reason or {}).get("candidate_count")
+    # #59: what the modeller is asked to choose BETWEEN is link-groups, not raw
+    # inputs — the demo's node 8 offers 2 choices over 6 inputs. Absent (an older
+    # caller that threads only #56 (b)'s pair) it falls back to the input count,
+    # which is what this sentence counted before groups existed.
+    group_count = (demand_target_reason or {}).get("candidate_group_count")
+    choice_count = group_count if isinstance(group_count, int) and group_count >= 1 else None
 
     if reason == reality_check_targets.NO_VEHICLE_INPUT_ON_APPROACH:
         return _rung(
@@ -701,26 +707,44 @@ def _target_less_rung(
     if reason == reality_check_targets.MULTIPLE_VEHICLE_INPUT_CANDIDATES and isinstance(
         candidate_count, int
     ) and candidate_count >= 2:
+        # #59: the count that decides the sentence is the number of CHOICES the
+        # picker presents (link-groups). The input count stays in the sentence
+        # rather than being replaced, because "six inputs over two approaches"
+        # is what the reader sees in the model and dropping it would make the
+        # screen's two look like a different network.
+        offered = choice_count if choice_count is not None else candidate_count
+        spread_ko = (
+            "" if choice_count is None or choice_count == candidate_count
+            else f"(차량 인풋 {candidate_count}개가 차종별로 묶여 있습니다) "
+        )
+        spread_en = (
+            "" if choice_count is None or choice_count == candidate_count
+            else f"({candidate_count} vehicle inputs, grouped by vehicle class) "
+        )
+        spread_ja = (
+            "" if choice_count is None or choice_count == candidate_count
+            else f"(車両インプット{candidate_count}件が車種別にまとめられています) "
+        )
         return _rung(
             UNCLASSIFIABLE,
             ko=f"노드 {node_id}의 GEH {_fmt(total_geh)}가 기준 {geh_threshold}를 넘지만, 이 노드의 "
-            f"카운트된 접근로로 유입되는 차량 인풋이 {candidate_count}개 있어 이 제품이 자동으로 "
+            f"카운트된 접근로가 {offered}개 {spread_ko}있어 이 제품이 자동으로 "
             "하나를 고르지 않았습니다. '입구 교통량이 실측인지' 판정은 그 선택 뒤로 미뤄집니다.",
             en=f"Node {node_id} misses (GEH {_fmt(total_geh)} >= {geh_threshold}), and "
-            f"{candidate_count} vehicle inputs feed this node's counted approach links — this "
+            f"{offered} counted approaches {spread_en}feed this node — this "
             "product will not pick one automatically, so whether the entrance is measured data "
             "waits on that choice.",
             ja=f"ノード {node_id} のGEH {_fmt(total_geh)} は閾値 {geh_threshold} を超えますが、この"
-            f"ノードの計上済み流入リンクに車両インプットが{candidate_count}件あり、本製品は自動で"
+            f"ノードの計上済み流入リンクが{offered}件{spread_ja}あり、本製品は自動で"
             "一つを選びません。流入交通量が実測かどうかの判定はその選択待ちです。",
             next_action=_supply_action(
-                ko=f"후보 {candidate_count}개 중 하나를 사람이 지정해야 합니다 — 화면의 '수요 대상 "
+                ko=f"후보 {offered}개 중 하나를 사람이 지정해야 합니다 — 화면의 '수요 대상 "
                 "차량 인풋'에서 지정하거나, get_demand_target_derivation으로 후보를 확인한 뒤 근거를 "
                 "들어 지정하십시오.",
-                en=f"A person must name one of the {candidate_count} candidates — use the screen's "
+                en=f"A person must name one of the {offered} candidates — use the screen's "
                 "demand-target picker, or read the candidates with get_demand_target_derivation and "
                 "name one with a stated reason.",
-                ja=f"候補{candidate_count}件のうち一つを人が指定する必要があります — 画面の「需要"
+                ja=f"候補{offered}件のうち一つを人が指定する必要があります — 画面の「需要"
                 "対象車両インプット」で指定するか、get_demand_target_derivationで候補を確認したうえで"
                 "理由を添えて指定してください。",
             ),
