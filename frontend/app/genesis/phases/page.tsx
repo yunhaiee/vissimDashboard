@@ -83,6 +83,7 @@ import {
   phaseDiagramExportsUrl,
   phaseDiagramImageUrl,
   phaseDiagramTemplateUrl,
+  regenerateGenesisJobWithSideInputs,
   stagePhaseDiagramSignalsInput,
   uploadPhaseDiagramTemplate,
   type GenesisJob,
@@ -245,6 +246,13 @@ function PhaseDiagramReviewPageContent() {
   const [approachRows, setApproachRows] = useState<ApproachRow[]>([]);
   const [planChoice, setPlanChoice] = useState<string>("");
   const [stagedToken, setStagedToken] = useState<string | null>(null);
+  // Unit #69 -- the "재생성" CTA's own result pair, separate
+  // from the page's shared `error` banner: the click's outcome (started, or
+  // refused) has to render WHERE the click happened -- inside the token
+  // panel -- not at the top of a page the user may already have scrolled
+  // past. `null`/`null` is "nothing tried yet since this token was staged".
+  const [signalsRegenerateJob, setSignalsRegenerateJob] = useState<GenesisJob | null>(null);
+  const [signalsRegenerateError, setSignalsRegenerateError] = useState<GenesisError | null>(null);
 
   // -- unit #52: the three ways IN ---------------------------------------
   // `uploadResult` is kept on screen after the upload rather than folded into a
@@ -617,6 +625,11 @@ function PhaseDiagramReviewPageContent() {
       const staged = await stagePhaseDiagramSignalsInput(confirmedIds);
       setStagedToken(staged.token);
       setError(null);
+      // A freshly staged token invalidates whatever the PREVIOUS token's
+      // regenerate CTA showed -- a stale "started job X" or refusal sitting
+      // under a brand new token would read as if it were about this one.
+      setSignalsRegenerateJob(null);
+      setSignalsRegenerateError(null);
     } catch (caught) {
       setStagedToken(null);
       setError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
@@ -625,6 +638,43 @@ function PhaseDiagramReviewPageContent() {
     }
   }, [rows]);
 
+  // Unit #69 -- the CTA itself. An OFFER whose click is the execution: a
+  // regeneration is a job, not a signing act (unlike `confirmPhaseDiagram`
+  // below), so one click may start it with no extra confirmation gate. What
+  // may never happen is SILENCE -- the result (job id, or the server's own
+  // named refusal) has to land in `signalsRegenerateJob`/`signalsRegenerateError`
+  // before this handler returns, whichever branch it takes.
+  const regenerateWithStagedSignals = useCallback(async () => {
+    if (!stagedToken || !jobId || busy) return;
+    setBusy(true);
+    setSignalsRegenerateError(null);
+    try {
+      const job = await regenerateGenesisJobWithSideInputs(jobId, { signals_token: stagedToken });
+      setSignalsRegenerateJob(job);
+    } catch (caught) {
+      setSignalsRegenerateJob(null);
+      setSignalsRegenerateError(caught instanceof GenesisError ? caught : new GenesisError(String(caught), 0));
+    } finally {
+      setBusy(false);
+    }
+  }, [stagedToken, jobId, busy]);
+
+  // Unit #69 refuter finding 1(c) (2026-08-26): a click used to be the ONLY
+  // way to learn the selected 생성 작업 already carries a side input --
+  // discovered as a 409 (`genesis_regenerate_parent_has_side_inputs`) AFTER
+  // the click, the exact "disabled button instead of a named refusal" shape
+  // this codebase refuses everywhere else, just moved one door over. Read
+  // off the SAME `jobs` list the picker below is already filled from, so no
+  // extra fetch is needed to disclose it BEFORE the click.
+  const selectedJob = jobs.find((job) => job.id === jobId) ?? null;
+  const selectedJobHasSideInputs = Boolean(selectedJob?.side_inputs);
+  // Unit #69 -- the CTA's own enablement, named so both the button's
+  // `disabled` and its hint text read off the SAME derived boolean. A token
+  // with no chosen 생성 작업 to regenerate is exactly as inert as no token at
+  // all, and the shape stays `stagedToken && jobId` rather than `Boolean(...)`
+  // collapsing it, so a reader (and a test) can see which half is missing.
+  const canRegenerateWithSignals =
+    Boolean(stagedToken && jobId) && !selectedJobHasSideInputs && !busy;
   const confirmedCount = rows.filter((row) => row.confirmed).length;
   const flags = review?.cross_check?.findings.filter((f) => f.severity === "flag") ?? [];
   const others = review?.cross_check?.findings.filter((f) => f.severity !== "flag") ?? [];
@@ -928,9 +978,107 @@ function PhaseDiagramReviewPageContent() {
               )}
             </button>
             {stagedToken && (
-              <p className="mt-2.5 break-all rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
-                {t("side-input 토큰", "side-input token", "side-inputトークン")}: {stagedToken}
-              </p>
+              <div className="mt-2.5">
+                <p className="break-all rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
+                  {t("side-input 토큰", "side-input token", "side-inputトークン")}: {stagedToken}
+                </p>
+
+                {/* Unit #69 -- "현시도 업뎃이 생기면 자동으로 재생성을 제안하는
+                  * CTA 넣는게 좋지 않을까? 자동으로 현시도 넣어서" (THE USER,
+                  * verbatim). An OFFER, not a second signing act: the click
+                  * itself starts the job (no extra confirm dialog), and
+                  * `confirmPhaseDiagram` below is untouched and remains the
+                  * only signing act on this page. Disabled (never hidden) when
+                  * no 생성 작업 is chosen yet, WITH a hint naming exactly that --
+                  * a greyed-out button with no reason is the "disabled button
+                  * instead of a named refusal" shape this codebase refuses
+                  * everywhere else. */}
+                <button
+                  type="button"
+                  onClick={regenerateWithStagedSignals}
+                  disabled={!canRegenerateWithSignals}
+                  title={
+                    !jobId
+                      ? t(
+                          "아래 네트워크 결박에서 생성 작업을 먼저 선택하세요.",
+                          "Pick a generation in 'Bind to the draft network' below first.",
+                          "先に下の「ネットワーク結縛」で生成ジョブを選んでください。",
+                        )
+                      : selectedJobHasSideInputs
+                        ? t(
+                            "이 생성 작업은 이미 side input을 가지고 있어, 두 번째 층을 추가하는 것은 아직 지원되지 않습니다.",
+                            "This generation already carries a side input -- adding a second layer is not supported yet.",
+                            "この生成ジョブは既にside inputを持っているため、二つ目のレイヤーの追加はまだサポートされていません。",
+                          )
+                        : undefined
+                  }
+                  className="mt-2 w-full rounded-lg bg-slate-900 px-3 py-2 text-[15px] font-semibold text-ink disabled:opacity-40"
+                >
+                  {t("이 signals 입력으로 재생성", "Regenerate with this signals input", "このsignals入力で再生成")}
+                </button>
+                {!jobId ? (
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+                    {t(
+                      "재생성할 생성 작업이 아직 선택되지 않았습니다 — 아래 네트워크 결박에서 고르세요.",
+                      "No generation is chosen to regenerate yet -- pick one in 'Bind to the draft network' below.",
+                      "再生成する生成ジョブがまだ選択されていません — 下の「ネットワーク結縛」で選んでください。",
+                    )}
+                  </p>
+                ) : (
+                  selectedJobHasSideInputs && (
+                    // Unit #69 refuter finding 1(c) (2026-08-26): disclosed
+                    // BEFORE the click, off the same `jobs` list the picker
+                    // already holds -- not learned from a 409 after clicking.
+                    // Composing a SECOND layer onto an already-composed
+                    // generation stays undecided (see the refusal site's own
+                    // comment in genesis_jobs.py); the honest next step is a
+                    // generation that has no side inputs of its own yet.
+                    <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+                      {t(
+                        "선택한 생성 작업은 이미 side input을 가지고 있습니다 — 두 번째 층을 추가하는 방식은 아직 정해지지 않았습니다. side input이 없는 생성 작업을 고르세요.",
+                        "The selected generation already carries a side input -- how a second layer would combine with it is not decided yet. Pick a generation with no side inputs of its own.",
+                        "選択した生成ジョブは既にside inputを持っています — 二つ目のレイヤーの組み合わせ方はまだ決まっていません。side inputのない生成ジョブを選んでください。",
+                      )}
+                    </p>
+                  )
+                )}
+
+                {signalsRegenerateJob && (
+                  <p className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
+                    {t("재생성 시작됨", "Regeneration started", "再生成を開始しました")} — {signalsRegenerateJob.id}
+                    {" · "}
+                    <Link href={`/genesis/jobs/${signalsRegenerateJob.id}`} className="underline">
+                      {t("여기서 확인", "view it here", "ここで確認")}
+                    </Link>
+                  </p>
+                )}
+                {signalsRegenerateError && (
+                  <div className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
+                    <p className="font-semibold">
+                      {refusalHeadline(
+                        signalsRegenerateError.code,
+                        t,
+                        t(
+                          "재생성을 시작하지 못했습니다",
+                          "The regeneration could not be started",
+                          "再生成を開始できませんでした",
+                        ),
+                      )}
+                    </p>
+                    {/* The server's own sentence, verbatim -- never a client
+                      * paraphrase of why a regeneration refused. */}
+                    {signalsRegenerateError.reasons.length > 0 ? (
+                      <ul className="mt-1 list-disc pl-5">
+                        {signalsRegenerateError.reasons.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1">{signalsRegenerateError.message}</p>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </Panel>
         </div>

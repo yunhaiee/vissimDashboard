@@ -91,6 +91,7 @@ import {
   TERMINAL_RECHECK_MS,
   formatTimestamp,
   isTerminal,
+  lineageKindLabel,
   networkScaleLabel,
   statusClasses,
   statusLabel,
@@ -2715,8 +2716,15 @@ export default function GenesisJobDetailPage() {
           {selected.derived_from &&
             ("kind" in selected.derived_from ? (
               <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
+                {/* Refuter finding F3 (2026-08-26): EVERY kind-bearing lineage
+                  * used to render here as a live check -- this branch only
+                  * told a fix lineage (no `kind` at all) apart from the rest,
+                  * and never checked WHICH kind the rest actually was.
+                  * `lineageKindLabel` narrows on the VALUE, so a regenerate,
+                  * a dead-end exclusion and a signals-regeneration each say
+                  * what they are. */}
                 {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
-                {t("실 Vissim 확인", "live check", "実Vissim確認")} ·{" "}
+                {lineageKindLabel(selected.derived_from.kind, t)} ·{" "}
                 {selected.derived_from.requested_by ?? "—"}
               </p>
             ) : (

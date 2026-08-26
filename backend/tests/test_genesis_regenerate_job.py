@@ -306,11 +306,16 @@ def test_a_parent_with_no_source_of_its_own_is_refused_by_name(workspace_root: P
 def test_a_composed_parent_refuses_rather_than_regenerating_thinner(
     tmp_path: Path, workspace_root: Path
 ):
-    """Refuter finding F7 (2026-08-15): a regeneration re-runs the pipeline
-    with side_inputs=None, so regenerating a COMPOSED parent would mint an
-    artifact silently lacking the demand/signals/fleet the parent carried --
-    indistinguishable from a job that never had them. Until a unit decides how
-    side inputs travel through a regeneration, that path refuses by name."""
+    """Refuter finding F7 (2026-08-15), narrowed by unit #69's refuter finding
+    F1 (2026-08-26): a plain regeneration re-runs the pipeline with
+    side_inputs=None, so regenerating a COMPOSED parent through THIS door
+    would mint an artifact silently lacking the demand/signals/fleet the
+    parent carried -- indistinguishable from a job that never had them. Unit
+    #69 decided HALF of "how side inputs travel through a regeneration"
+    (composing a FIRST layer onto a BARE source, through its own door); a
+    SECOND layer onto an already-composed parent stays undecided and this
+    path still refuses by name -- the message just has to say that
+    accurately now, not claim the whole question is unanswered."""
     parent = _pre_fix_parent(tmp_path)
     genesis_jobs._update(parent["id"], side_inputs={"demand": "tok_demand", "signals": "tok_sig"})
     before = set(genesis_jobs.genesis_dir().joinpath("jobs").iterdir())
@@ -320,7 +325,15 @@ def test_a_composed_parent_refuses_rather_than_regenerating_thinner(
     assert excinfo.value.code == "genesis_regenerate_parent_has_side_inputs"
     assert "demand" in excinfo.value.reasons[0]
     assert "signals" in excinfo.value.reasons[0]
-    assert "GEOMETRY ONLY" in excinfo.value.reasons[0]
+    # The rewritten sentence no longer claims the WHOLE question is
+    # undecided -- unit #69 answered the bare-source half -- and names the
+    # SECOND-layer question that is still open, plus the honest workaround.
+    assert "BARE source" in excinfo.value.reasons[0]
+    assert "REPLACE" in excinfo.value.reasons[0] and "MERGED" in excinfo.value.reasons[0]
+    assert "regenerate-with-side-inputs" in excinfo.value.reasons[0]
+    # This parent was generated directly (no lineage), so the workaround
+    # falls to the generic "start fresh" branch, not a named ancestor job.
+    assert "start from (or regenerate) a generation that carries no side inputs" in excinfo.value.reasons[0]
     assert set(genesis_jobs.genesis_dir().joinpath("jobs").iterdir()) == before
 
 

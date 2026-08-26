@@ -594,6 +594,51 @@ export function refusalHeadline(code: string | null, t: Translate, fallback?: st
         "この生成はまだゲートを通過していません",
       );
 
+    // ---- regeneration (unit #38's plain regenerate, unit #42's dead-end
+    // exclusion, and unit #69's regenerate-with-side-inputs -- all three
+    // share `_regeneration_source_preflight`'s four codes) ----
+    case "genesis_regenerate_parent_not_gated":
+      return t(
+        "판정이 끝난 생성만 재생성할 수 있습니다",
+        "Only a generation with a verdict can be regenerated",
+        "判定が終わった生成のみ再生成できます",
+      );
+    case "genesis_regenerate_parent_has_side_inputs":
+      // Refuter finding 1(b) (2026-08-26): the CODE'S headline stays generic
+      // -- the SENTENCE is what carries the case-specific truth (a first
+      // layer onto a bare source vs. a second onto one already composed),
+      // and `.reasons` is rendered verbatim below this headline precisely so
+      // that sentence is never re-worded here.
+      return t(
+        "이미 side input이 있는 생성입니다",
+        "This generation already carries a side input",
+        "既にside inputがある生成です",
+      );
+    case "genesis_regenerate_source_missing":
+      return t(
+        "재생성할 원본 .osm이 이 생성에 없습니다",
+        "This generation has no source .osm of its own to re-derive from",
+        "再生成する元の.osmがこの生成にありません",
+      );
+    case "genesis_regenerate_source_sha_mismatch":
+      return t(
+        "저장된 원본 파일이 기록된 것과 더 이상 일치하지 않습니다",
+        "The stored source file no longer matches its recorded digest",
+        "保存された元ファイルが記録されたものと一致しません",
+      );
+    case "genesis_regenerate_not_eligible":
+      return t(
+        "이 생성의 판정에는 재생성으로 치료할 소견이 없습니다",
+        "This generation's verdict carries no finding treated by regenerating",
+        "この生成の判定には再生成で治療する所見がありません",
+      );
+    case "genesis_regenerate_with_side_inputs_no_token":
+      return t(
+        "demand_token 또는 signals_token 중 하나가 필요합니다",
+        "At least one of demand_token/signals_token is required",
+        "demand_tokenまたはsignals_tokenのいずれかが必要です",
+      );
+
     default:
       return fallback ?? t("요청이 거부되었습니다", "The request was refused", "要求が拒否されました");
   }

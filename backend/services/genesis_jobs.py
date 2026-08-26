@@ -1245,8 +1245,17 @@ def create_genesis_job(
     submitted_by: str | None = None,
     demand_input: Path | None = None,
     signals_input: Path | None = None,
+    derived_from: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Register a generation job WITHOUT starting it.
+
+    ``derived_from`` is ``None`` for every ordinary ``POST /jobs`` caller (the
+    key stays ABSENT from the record, not ``null`` -- ``GenesisFixLineage`` /
+    ``GenesisLiveCheckLineage`` already read "presence is itself the fact" and
+    an always-present ``null`` would break that for every existing reader).
+    It exists so :func:`create_signals_regeneration_job` can reuse this exact
+    copy-and-freeze body (rather than a near-copy of it) while still stamping
+    the lineage a re-derivation-with-new-layers is required to carry.
 
     The workspace is captured HERE, on the submitting (request) thread, and
     stored on the record — ContextVars do not cross ``threading.Thread``
@@ -1328,6 +1337,7 @@ def create_genesis_job(
         "publication": None,
         "refusal": None,
         "error": None,
+        **({"derived_from": derived_from} if derived_from is not None else {}),
     }
     _upsert(record)
     return record
@@ -7531,6 +7541,15 @@ REGENERATE_LINEAGE_KIND = "regenerate"
 #: claims and a reader must never have to infer which one they hold.
 DEAD_END_EXCLUSION_LINEAGE_KIND = "dead_end_exclusion"
 
+#: The lineage ``kind`` on a unit #69 SIGNALS-REGENERATION job — a DIFFERENT
+#: claim from :data:`REGENERATE_LINEAGE_KIND` on purpose, the same reason
+#: :data:`DEAD_END_EXCLUSION_LINEAGE_KIND` is its own kind rather than a flag
+#: on the plain regeneration: "byte-for-byte, geometry only" and "the same
+#: verified source, now composed with a layer the parent never carried" are
+#: two different claims, and a reader must never have to infer which one a
+#: record makes. See :func:`create_signals_regeneration_job`.
+SIGNALS_REGENERATION_LINEAGE_KIND = "signals_regeneration"
+
 
 def _regeneration_source_preflight(parent_job_id: str) -> tuple[dict[str, Any], Path, str]:
     """The four refusals EVERY re-derivation of a parent's own source shares —
@@ -7538,16 +7557,19 @@ def _regeneration_source_preflight(parent_job_id: str) -> tuple[dict[str, Any], 
 
     Extracted (unit #42) from :func:`create_regenerate_job` so its sibling
     :func:`create_dead_end_exclusion_job` obeys the SAME doors rather than
-    growing its own near-copies of them. The refusal codes and their sentences
-    are unit #38's, unchanged and deliberately so: a caller who learned them
-    from the regenerate route reads the identical answer from the exclusion
-    route, and a unit that quietly relaxed one of them for its own path would be
-    exactly the bypass #38's docstring warns about. Each door, and why:
+    growing its own near-copies of them. Unit #69 is a THIRD caller of this
+    same preflight — the codes stay shared across all three deliberately, so a
+    caller who learned one from any door reads the identical answer from the
+    others, and a unit that quietly relaxed one of them for its own path would
+    be exactly the bypass #38's docstring warns about. Each door, and why:
 
     * ``genesis_regenerate_parent_not_gated`` — no verdict, so no finding to treat;
-    * ``genesis_regenerate_parent_has_side_inputs`` — a re-derivation carries
-      GEOMETRY ONLY, and minting a thinner artifact that looks complete is the
-      completed-but-wrong outcome this system exists to refuse;
+    * ``genesis_regenerate_parent_has_side_inputs`` — the parent ALREADY
+      carries a layer. Composing a FIRST layer onto a bare source is unit
+      #69's own supported path (:func:`create_signals_regeneration_job`); this
+      refusal is what still stands for a SECOND layer onto one that already
+      has one — see the refusal site itself for the open decision that keeps
+      it refused, and the honest workaround it names;
     * ``genesis_regenerate_source_missing`` — no stored source bytes to re-read;
     * ``genesis_regenerate_source_sha_mismatch`` — the bytes no longer hash to
       the digest the parent RECORDED, so "the same source" is a claim that would
@@ -7568,22 +7590,51 @@ def _regeneration_source_preflight(parent_job_id: str) -> tuple[dict[str, Any], 
             ],
         )
 
-    # Refuter finding F7 (2026-08-15): a regeneration re-runs osm->draft->emit
-    # with side_inputs=None, so regenerating a COMPOSED parent would mint an
-    # artifact that silently lacks the demand/signals/fleet its parent carried
-    # -- structurally indistinguishable from a job that never had them. Until a
-    # unit decides how side inputs travel through a regeneration, the honest
-    # answer is a refusal that says exactly that.
+    # Refuter finding F7 (2026-08-15), narrowed by unit #69's refuter finding
+    # F1 (2026-08-26): a plain regeneration (unit #38) re-runs osm->draft->emit
+    # with side_inputs=None, so regenerating a COMPOSED parent through THAT
+    # door would mint an artifact that silently lacks the demand/signals/fleet
+    # its parent carried -- structurally indistinguishable from a job that
+    # never had them. Unit #69 answered HALF of "how side inputs travel
+    # through a regeneration": composing a FIRST layer onto a source that
+    # carries NONE of its own is now a decided, supported path
+    # (:func:`create_signals_regeneration_job`, ``POST
+    # .../regenerate-with-side-inputs``). WHAT REMAINS OPEN, and what this
+    # refusal still names when it fires (parent already has >=1 layer,
+    # regardless of which of the three callers above asked): whether a NEW
+    # layer should REPLACE what is there or be MERGED with it, and by what
+    # rule -- a genuine design question (a future unit's job), not an
+    # oversight. Silently picking one would be exactly the completed-but-wrong
+    # outcome this system exists to refuse, so this stays a refusal for an
+    # already-composed parent. The old wording claimed the WHOLE question was
+    # undecided, which unit #69 made false; this rewrite says what actually
+    # remains true.
     if parent.get("side_inputs"):
+        existing = ", ".join(sorted(parent["side_inputs"]))
+        ancestor_id = (parent.get("derived_from") or {}).get("job_id")
+        ancestor_is_bare = False
+        if ancestor_id:
+            try:
+                ancestor_is_bare = not get_job(ancestor_id).get("side_inputs")
+            except GenesisJobNotFoundError:
+                ancestor_is_bare = False
+        workaround = (
+            f"regenerate from job {ancestor_id} instead -- the generation this one was "
+            "itself derived from, which carries no side inputs of its own -- with the "
+            "revised token"
+            if ancestor_is_bare
+            else "start from (or regenerate) a generation that carries no side inputs of "
+            "its own, and compose the revised token there"
+        )
         raise GenesisRefused(
             "genesis_regenerate_parent_has_side_inputs",
             [
-                f"Job {parent_job_id} was composed with side inputs "
-                f"({', '.join(sorted(parent['side_inputs']))}), and a regeneration re-derives "
-                "GEOMETRY ONLY -- the regenerated artifact would silently lack what the "
-                "parent carried. Carrying side inputs through a regeneration is a decision "
-                "no unit has made yet, so this refuses rather than minting a thinner "
-                "artifact that looks complete."
+                f"Job {parent_job_id} was already composed with side inputs ({existing}). "
+                "Composing a layer onto a BARE source (one with none of its own) is "
+                "supported (POST .../regenerate-with-side-inputs) -- but this parent already "
+                "carries one, and whether a new layer should REPLACE it or be MERGED with it "
+                "is a design no unit has made yet, so this refuses rather than silently "
+                f"picking one. For a revised token, {workaround}."
             ],
         )
 
@@ -7847,6 +7898,109 @@ def start_regenerate_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
     artifact is produced by a special path the ordinary one does not have.
     """
     record = create_regenerate_job(parent_job_id, **kwargs)
+    threading.Thread(
+        target=run_genesis_job,
+        args=(record["id"], record["workspace_id"]),
+        daemon=True,
+    ).start()
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Unit #69 — regenerating WITH a newly staged side input (the "이 signals
+# 입력으로 재생성" CTA). A THIRD sibling of unit #38's regeneration, sharing
+# its source-verification doors and none of its "geometry only" invariant.
+# ---------------------------------------------------------------------------
+
+
+def create_signals_regeneration_job(
+    parent_job_id: str,
+    *,
+    demand_input: Path | None = None,
+    signals_input: Path | None = None,
+    requested_by: str | None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Register a NEW generation composed from ``parent_job_id``'s own
+    VERIFIED source .osm plus a freshly staged demand/signals document — the
+    treatment for a phase diagram (or a demand count) that was finished
+    AFTER a generation already ran, and needs its layer carried in without
+    inventing a second, un-auditable channel for it. Does not run it.
+
+    **Why this is not** :func:`create_regenerate_job`. Unit #38's
+    regeneration makes exactly one claim -- "the SAME source, geometry only,
+    through the corrected converter" -- and ``genesis_regenerate_parent_has_
+    side_inputs``/its own request model (``extra="forbid"``, no token field
+    at all) exist precisely to keep that claim from being loosened into
+    something it never verified. Composing a genuinely NEW layer onto a
+    parent's source is a different claim, made honest the same way
+    ``POST /jobs`` already makes it for a fresh upload: the exact same
+    :func:`create_genesis_job` body runs, side inputs and all -- this
+    function's only job is producing the ``osm_path`` that body reads.
+
+    **Source verification is reused, not re-implemented.**
+    :func:`_regeneration_source_preflight` is unit #38's own four doors, and
+    every one of them still applies to a caller here for the SAME reason:
+    * ``genesis_regenerate_parent_not_gated`` -- no verdict, nothing to
+      re-derive against;
+    * ``genesis_regenerate_parent_has_side_inputs`` -- the parent ALREADY
+      carries a layer (demand, fleet or signals). Composing a *second* one
+      here without deciding how the two coexist would silently drop or
+      shadow whichever layer this call did not name -- the exact
+      completed-but-wrong outcome unit #38's refusal exists to block, and
+      that combination is still nobody's decision to make on this caller's
+      behalf;
+    * ``genesis_regenerate_source_missing`` / ``..._source_sha_mismatch`` --
+      the same "the claim is verified, not assumed" doors every re-derivation
+      obeys.
+
+    **One new door.** ``genesis_regenerate_with_side_inputs_no_token`` when
+    the caller names neither ``demand_input`` nor ``signals_input`` -- with
+    nothing to compose, this is exactly unit #38's plain regeneration, which
+    already has its own (differently-gated) door.
+
+    ``derived_from.kind`` is :data:`SIGNALS_REGENERATION_LINEAGE_KIND`, a
+    DIFFERENT lineage than a plain regeneration's -- see that constant for
+    why a reader must be able to tell the two apart on sight.
+    """
+    parent, parent_source, recorded_sha = _regeneration_source_preflight(parent_job_id)
+
+    if demand_input is None and signals_input is None:
+        raise GenesisRefused(
+            "genesis_regenerate_with_side_inputs_no_token",
+            [
+                "Name at least one of demand_token/signals_token -- this route composes a "
+                "NEW layer onto the parent's own verified source. With neither, "
+                "POST .../regenerate is the plain geometry re-derivation instead."
+            ],
+        )
+
+    options = parent.get("options") or {}
+    source_record = parent.get("source_osm") or {}
+    record = create_genesis_job(
+        osm_path=parent_source,
+        name=str(parent.get("name") or "regenerated"),
+        exclude_service=bool(options.get("exclude_service", False)),
+        source_filename=str(source_record.get("filename") or parent_source.name),
+        submitted_by=requested_by,
+        demand_input=demand_input,
+        signals_input=signals_input,
+        derived_from={
+            "kind": SIGNALS_REGENERATION_LINEAGE_KIND,
+            "job_id": parent_job_id,
+            "requested_by": requested_by,
+            "requested_at": _now_iso(),
+            "parent_source_sha256": recorded_sha,
+            "reason": reason,
+        },
+    )
+    return record
+
+
+def start_signals_regeneration_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
+    """:func:`create_signals_regeneration_job`, then run it on a daemon worker
+    thread -- the same split every sibling job in this section keeps."""
+    record = create_signals_regeneration_job(parent_job_id, **kwargs)
     threading.Thread(
         target=run_genesis_job,
         args=(record["id"], record["workspace_id"]),

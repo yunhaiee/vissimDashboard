@@ -4424,6 +4424,168 @@ contractTest("the 현시도 review screen keeps confirmation the only road to si
 });
 
 contractTest(
+  "unit #69: the staged-token panel offers a regenerate CTA, gated on stagedToken && jobId, and never signs anything",
+  (pin) => {
+    const page = read("app/genesis/phases/page.tsx");
+
+    // THE USER'S ASK, verbatim (DECISIONS.md, "2026-08-26 — 사용자 지시 2건
+    // 추가: #69 재생성 CTA"): "현시도 업뎃이 생기면 자동으로 재생성을 제안하는
+    // CTA 넣는게 좋지 않을까? 자동으로 현시도 넣어서." An OFFER whose click IS
+    // the execution -- a regeneration is a job, not a signing act, so one
+    // click may start it with no extra confirmation gate -- but nothing may be
+    // silent: the result has to land where the click happened.
+
+    // 1. THE CTA LIVES INSIDE THE TOKEN-PANEL CONDITIONAL. Single-line markers
+    //    only (a literal embedded "\n" in a marker is the CRLF trap this
+    //    Windows checkout springs -- see functionSource's own note above).
+    const tokenPanel = sliceBetween(page, "{stagedToken && (", "</Panel>");
+    pin.match(tokenPanel, /\S/, "expected to find the token panel's conditional slice (markers moved?)");
+    pin.match(
+      tokenPanel,
+      /이 signals 입력으로 재생성/,
+      "expected the CTA's ko label to live INSIDE the stagedToken-gated block -- it renders only with a token",
+    );
+    // The CTA must not ALSO exist outside that block (a second, ungated
+    // rendering would defeat "renders only with a token").
+    const ctaMentions = (page.match(/이 signals 입력으로 재생성/g) ?? []).length;
+    pin.match(`ctaMentions=${ctaMentions}`, /^ctaMentions=1$/, "expected the CTA's ko label to appear exactly once in the file");
+
+    // 2. ENABLEMENT IS `stagedToken && jobId`, named so a reader (and this
+    //    pin) can see which half is missing -- not folded into a bare
+    //    `Boolean(...)` that hides the shape.
+    pin.match(
+      page,
+      /const canRegenerateWithSignals =\s*\n?\s*Boolean\(stagedToken && jobId\) && !selectedJobHasSideInputs && !busy;/,
+      "expected the CTA's enablement to be the stagedToken && jobId shape, plus the disclosed side-inputs guard and the in-flight guard",
+    );
+    pin.match(
+      tokenPanel,
+      /disabled=\{!canRegenerateWithSignals\}/,
+      "expected the button's disabled state to read off the named enablement constant",
+    );
+    // Refuter finding 1(c) (2026-08-26): the selected 생성 작업's OWN
+    // side_inputs is read off the SAME `jobs` list the picker already holds
+    // -- no second fetch, and the disclosure is derived BEFORE any click.
+    pin.match(
+      page,
+      /const selectedJob = jobs\.find\(\(job\) => job\.id === jobId\) \?\? null;/,
+      "expected the selected job to be read off the existing jobs list, not a fresh fetch",
+    );
+    pin.match(
+      page,
+      /const selectedJobHasSideInputs = Boolean\(selectedJob\?\.side_inputs\);/,
+      "expected the disclosure condition to be named and derived from the selected job's own side_inputs",
+    );
+    // Disabled is never silent: a title names exactly what is missing --
+    // EITHER no job chosen, OR (refuter finding 1(c)) the chosen job already
+    // carries a side input, which used to be discoverable only as a 409
+    // AFTER the click.
+    pin.match(
+      tokenPanel,
+      /title=\{\s*!jobId\s*\?/,
+      "expected the disabled button to carry a title naming the missing jobId, not a bare greyed-out control",
+    );
+    pin.match(
+      tokenPanel,
+      /: selectedJobHasSideInputs\s*\n?\s*\?/,
+      "expected the title to ALSO disclose the already-composed case, not just the no-job-chosen one",
+    );
+    // The disclosure is not just in a hover-only title -- a visible line
+    // says it too, gated on the SAME condition, so it survives on a device
+    // with no hover.
+    pin.match(
+      tokenPanel,
+      /selectedJobHasSideInputs && \(/,
+      "expected a visible disclosure line gated on selectedJobHasSideInputs, not hover-only",
+    );
+
+    // 3. THE CLICK HANDLER CALLS THE REGENERATE API FUNCTION, AND NEITHER OF
+    //    the page's two signing/staging calls (a difference assertion: this
+    //    is not just "confirmPhaseDiagram appears once, file-wide" -- it is
+    //    "THIS handler in particular never reaches either of them").
+    const handler = sliceBetween(
+      page,
+      "const regenerateWithStagedSignals = useCallback(async () => {",
+      "}, [stagedToken, jobId, busy]);",
+    );
+    pin.match(handler, /\S/, "expected to find the regenerate-with-signals handler (markers moved?)");
+    pin.match(
+      handler,
+      /regenerateGenesisJobWithSideInputs\(jobId, \{ signals_token: stagedToken \}\)/,
+      "expected the click to call the typed regenerate-with-side-inputs helper with the parent job and the staged token",
+    );
+    pin.doesNotMatch(
+      handler,
+      /confirmPhaseDiagram\(|stageSignals\(/,
+      "expected the CTA's own handler to call neither the page's signing act nor the plain staging call",
+    );
+    // No double-fire: the handler bails when already busy, and disables via
+    // the shared `busy` flag like every other mutation on this page.
+    pin.match(
+      handler,
+      /if \(!stagedToken \|\| !jobId \|\| busy\) return;/,
+      "expected the handler to refuse to start a second request while one is already in flight",
+    );
+    // GAP D4 (refuter, 2026-08-26): the success state is a LINK the user
+    // clicks, never a redirect the handler fires on their behalf -- a
+    // structural pin over the handler's own source, not just "a Link exists
+    // somewhere in the panel" (pin 4 below), so a future edit that added
+    // `router.push`/`navigate` alongside the Link would still be caught here.
+    pin.doesNotMatch(
+      handler,
+      /router\.push|\bnavigate\(/,
+      "expected the CTA's handler to never auto-navigate -- the started result is a link the user clicks, not a redirect",
+    );
+
+    // 4. RESULT RENDERING IS WHERE THE CLICK HAPPENED, AND VERBATIM.
+    //    Started: names the new job id and points at it -- unit #57's
+    //    detail-carries-nav-target idiom, not a silent redirect.
+    pin.match(
+      tokenPanel,
+      /signalsRegenerateJob && \(/,
+      "expected a started regeneration to render its own result block",
+    );
+    pin.match(
+      tokenPanel,
+      /href=\{`\/genesis\/jobs\/\$\{signalsRegenerateJob\.id\}`\}/,
+      "expected the started result to link to the new job's own detail page, not auto-navigate away from this screen",
+    );
+    // Refused: the server's own sentence, never a client paraphrase. The
+    // reasons array is rendered bare -- `{reason}` -- with no template
+    // literal wrapping it in this client's own words.
+    pin.match(
+      tokenPanel,
+      /signalsRegenerateError\.reasons\.map\(\(reason\) => \(/,
+      "expected the refusal's reasons to be mapped straight off the server's own array",
+    );
+    pin.match(
+      tokenPanel,
+      /<li key=\{reason\}>\{reason\}<\/li>/,
+      "expected each reason to render bare -- verbatim pass-through, never a client-authored paraphrase",
+    );
+    pin.match(
+      tokenPanel,
+      /refusalHeadline\(\s*signalsRegenerateError\.code,/,
+      "expected the refusal headline to translate the server's CODE, not invent new wording",
+    );
+
+    // 5. ko/en/ja TRIPLES.
+    for (const triple of [
+      /t\("이 signals 입력으로 재생성", "Regenerate with this signals input", "このsignals入力で再生成"\)/,
+      /t\(\s*"재생성 시작됨", "Regeneration started", "再生成を開始しました"\s*\)/,
+      /t\(\s*"재생성을 시작하지 못했습니다",\s*"The regeneration could not be started",\s*"再生成を開始できませんでした",?\s*\)/,
+      /t\(\s*"여기서 확인", "view it here", "ここで確認"\s*\)/,
+      // Refuter finding 1(c) (2026-08-26) -- the already-composed disclosure,
+      // in both its forms (the title, and the visible line).
+      /t\(\s*"이 생성 작업은 이미 side input을 가지고 있어, 두 번째 층을 추가하는 것은 아직 지원되지 않습니다\.",\s*\n\s*"This generation already carries a side input -- adding a second layer is not supported yet\.",\s*\n\s*"この生成ジョブは既にside inputを持っているため、二つ目のレイヤーの追加はまだサポートされていません。",\s*\n\s*\)/,
+      /t\(\s*"선택한 생성 작업은 이미 side input을 가지고 있습니다/,
+    ]) {
+      pin.match(page, triple, `expected a real ko/en/ja triple: ${triple}`);
+    }
+  },
+);
+
+contractTest(
   "the reading column carries no CONFIRMATION affordance -- #55 removed that click, and #58's timing entry is not a relocation of it",
   (pin) => {
     const page = read("app/genesis/phases/page.tsx");
@@ -8161,6 +8323,57 @@ contractTest("unit #38: a finding the census cannot correct is treated by regene
   );
 });
 
+contractTest(
+  "unit #69: regenerating WITH a newly staged side input is a DIFFERENT typed call than the plain regeneration",
+  (pin) => {
+    const api = read("lib/api.ts");
+
+    // Measured before this unit was built: unit #38's `POST .../regenerate`
+    // structurally CANNOT carry this call -- its request model forbids every
+    // field but `reason` and its eligibility gate requires an unrelated
+    // REGENERATE_WITH_FIX finding. This is the sibling door instead, sharing
+    // unit #38's source-verification codes and none of its "geometry only"
+    // invariant. Pinned together with the plain route so neither can quietly
+    // become the other.
+    pin.match(
+      api,
+      /export async function regenerateGenesisJobWithSideInputs\(/,
+      "expected a distinctly-named helper -- not an overload of regenerateGenesisJob",
+    );
+    pin.match(
+      api,
+      /export async function regenerateGenesisJobWithSideInputs[\s\S]*?apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/regenerate-with-side-inputs`/,
+      "expected the call to go through apiMutationFetch, against the unit #69 route -- not the plain /regenerate one",
+    );
+    pin.match(
+      api,
+      /apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/regenerate`/,
+      "expected the plain regenerate route to survive beside the side-inputs one -- two different claims, two different doors",
+    );
+    // The body carries only what the server's own request model accepts --
+    // demand_token / signals_token / reason -- and nothing a caller could use
+    // to invent a requester, an option or a source the door does not ask for.
+    pin.match(
+      api,
+      /body: \{ demand_token\?: string \| null; signals_token\?: string \| null; reason\?: string \| null \}/,
+      "expected the body type to name exactly the three fields the server's RegenerateWithSideInputsRequest accepts",
+    );
+    pin.doesNotMatch(
+      functionSource(api, "export async function regenerateGenesisJobWithSideInputs("),
+      /requested_by|exclude_service|options/,
+      "expected the client to send no requester and no options -- both are the parent's own, carried server-side",
+    );
+    // Refusals throw through the same genesisError() every genesis mutation
+    // uses, so `.code`/`.reasons` reach the UI verbatim rather than through a
+    // second, hand-rolled error path.
+    pin.match(
+      functionSource(api, "export async function regenerateGenesisJobWithSideInputs("),
+      /if \(!r\.ok\) throw await genesisError\(r\);/,
+      "expected the same genesisError() translation every genesis mutation uses",
+    );
+  },
+);
+
 contractTest("unit #40: the region hand-off carries ONE shape, through ONE module", (pin) => {
   const page = read("app/genesis/jobs/[id]/page.tsx");
   const region = read("app/genesis/region/page.tsx");
@@ -8548,11 +8761,30 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
     /derived_from\?: GenesisJobLineage;/,
     "expected GenesisJob.derived_from to be optional (key-absent for an ordinary generation), not nullable",
   );
+  // CO-EDITED by unit #69's refuter finding F3 (2026-08-26): the union grew
+  // THREE more kind-bearing lineages (regenerate / dead_end_exclusion /
+  // signals_regeneration) that already existed server-side but were never
+  // typed here -- which is exactly how the page below narrowed on
+  // `"kind" in derived_from` alone and rendered every one of them as a live
+  // check. Pinned as five named members, not a collapsed count, so a future
+  // sixth lineage kind has to be typed here or this pin catches the gap.
   pin.match(
     api,
-    /export type GenesisJobLineage = GenesisFixLineage \| GenesisLiveCheckLineage;/,
-    "expected the two lineage kinds to be a discriminated union, so a live-check job cannot be read as a fix job",
+    /export type GenesisJobLineage =\s*\n\s*\| GenesisFixLineage\s*\n\s*\| GenesisLiveCheckLineage\s*\n\s*\| GenesisRegenerateLineage\s*\n\s*\| GenesisDeadEndExclusionLineage\s*\n\s*\| GenesisSignalsRegenerationLineage;/,
+    "expected the union to name all five lineage kinds, so a live-check job cannot be read as a fix job and a regenerate/dead-end/signals-regeneration job cannot be read as a live check",
   );
+  for (const [kindLiteral, interfaceName] of [
+    ["live_check", "GenesisLiveCheckLineage"],
+    ["regenerate", "GenesisRegenerateLineage"],
+    ["dead_end_exclusion", "GenesisDeadEndExclusionLineage"],
+    ["signals_regeneration", "GenesisSignalsRegenerationLineage"],
+  ] as const) {
+    pin.match(
+      api,
+      new RegExp(`export interface ${interfaceName} \\{\\s*\\n\\s*kind: "${kindLiteral}";`),
+      `expected ${interfaceName} to discriminate on the literal kind "${kindLiteral}"`,
+    );
+  }
 
   // The drawer header line itself: 파생 — {parent id} · {finding_code} · {approved_by},
   // now behind the union's own narrowing.
@@ -8565,6 +8797,50 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
     page,
     /t\("파생", "Derived from", "派生"\)\} — \{selected\.derived_from\.job_id\} ·\{" "\}\s*\n\s*\{selected\.derived_from\.finding_code\} · \{selected\.derived_from\.approved_by \?\? "—"\}/,
     "expected the lineage line to read parent id, finding_code and approved_by, in that order",
+  );
+
+  // FINDING F3, THE FIX ITSELF: the kind-bearing branch narrows on the
+  // ACTUAL VALUE (`lineageKindLabel(selected.derived_from.kind, t)`), never
+  // on a hard-coded ko/en/ja triple that was only ever true for live_check.
+  // The bug this replaces rendered EVERY kind-bearing lineage -- regenerate,
+  // dead_end_exclusion, signals_regeneration included -- as "실 Vissim 확인".
+  pin.doesNotMatch(
+    page,
+    /\("kind" in selected\.derived_from \?[\s\S]{0,40}t\("실 Vissim 확인"/,
+    "expected the kind-bearing branch to narrow by VALUE, not render a hard-coded live-check label for every kind",
+  );
+  pin.match(
+    page,
+    /\{lineageKindLabel\(selected\.derived_from\.kind, t\)\} ·\{" "\}/,
+    "expected the kind-bearing branch to translate the ACTUAL kind value through the shared label helper",
+  );
+  pin.match(
+    page,
+    /lineageKindLabel,\s*\n\s*networkScaleLabel,/,
+    "expected lineageKindLabel to be imported from the shared genesisArtifacts module, not defined locally (a second copy could name a kind differently than the label table other readers use)",
+  );
+
+  // lineageKindLabel ITSELF: every kind gets its OWN sentence, keyed by the
+  // literal switch case -- a `default` fallback alone would let a typo in one
+  // case silently reuse whichever label the switch fell through to.
+  const genesisArtifacts = read("lib/genesisArtifacts.ts");
+  pin.match(
+    genesisArtifacts,
+    /export function lineageKindLabel\(/,
+    "expected lineageKindLabel to live beside statusLabel -- the SAME shared job-record-wording module",
+  );
+  for (const kindCase of [
+    /case "live_check":[\s\S]*?t\("실 Vissim 확인", "live check", "実Vissim確認"\)/,
+    /case "regenerate":[\s\S]*?t\("재생성", "regenerated", "再生成"\)/,
+    /case "dead_end_exclusion":[\s\S]*?t\("막다른 길 제외 재생성", "dead-end exclusion", "行き止まり除外による再生成"\)/,
+    /case "signals_regeneration":[\s\S]*?t\("signals 입력 추가 재생성", "regenerated with an added signals input", "signals入力を追加して再生成"\)/,
+  ]) {
+    pin.match(genesisArtifacts, kindCase, `expected lineageKindLabel's own case: ${kindCase}`);
+  }
+  pin.match(
+    genesisArtifacts,
+    /default:\s*\n\s*return kind;/,
+    "expected an UNRECOGNISED kind to name itself raw, never silently borrow another kind's label",
   );
 
   // The history table grew NO new column for this -- the detail page's own

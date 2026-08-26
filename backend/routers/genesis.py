@@ -354,6 +354,38 @@ class RegenerateJobRequest(BaseModel):
     )
 
 
+class RegenerateWithSideInputsRequest(BaseModel):
+    """Unit #69 — the parent's own verified source, PLUS a freshly staged
+    demand/signals document named here by token.
+
+    The sibling of :class:`RegenerateJobRequest` that request deliberately
+    forbids: a plain regeneration's whole claim is "geometry only, nothing
+    else changed", so it has no field for a token at all. This request is for
+    the opposite case -- a phase diagram (or a demand count) that was staged
+    AFTER the parent generation already ran, and now needs its layer carried
+    into a fresh derivation of that same source. At least one token is
+    required; naming neither is refused by name
+    (``genesis_regenerate_with_side_inputs_no_token``) rather than silently
+    behaving like the plain regenerate route.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    demand_token: str | None = Field(
+        default=None,
+        description="Token from POST /api/genesis/side-inputs?kind=demand.",
+    )
+    signals_token: str | None = Field(
+        default=None,
+        description="Token from POST /api/genesis/side-inputs?kind=signals.",
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Why this generation is being re-derived, for the audit trail.",
+    )
+
+
 class BuildDemandInputRequest(BaseModel):
     """A staged counts token + the one join a human supplies → a ``demand``
     side input.
@@ -987,6 +1019,74 @@ def regenerate_job(
         ) from exc
     logger.info(
         "genesis: %s queued a regeneration of job %s -> job %s",
+        user.get("username"),
+        job_id,
+        record["id"],
+    )
+    return record
+
+
+@router.post("/jobs/{job_id}/regenerate-with-side-inputs", status_code=202)
+def regenerate_job_with_side_inputs(
+    job_id: str,
+    payload: RegenerateWithSideInputsRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Re-derive ``job_id``'s own verified source, PLUS a demand/signals layer
+    staged AFTER that generation already ran. 202. Unit #69.
+
+    The CTA this exists for: a phase diagram gets confirmed (or a demand
+    count gets built) against a generation that already has a verdict, and
+    the natural next step is "rebuild THIS generation with what I just
+    staged" -- not a from-scratch upload. ``job_id`` supplies the geometry
+    (sha-verified against its own recorded digest, exactly as
+    ``POST .../regenerate`` verifies it); ``demand_token``/``signals_token``
+    supply what unit #38's plain regeneration deliberately never carries.
+
+    Refusals are NAMED, never a disabled button (409 with ``{code, reasons}``):
+    unit #38's own ``genesis_regenerate_parent_not_gated``,
+    ``genesis_regenerate_parent_has_side_inputs`` (still refused here --
+    composing a SECOND layer onto a parent that already carries one is a
+    different, undecided question), ``genesis_regenerate_source_missing``,
+    ``genesis_regenerate_source_sha_mismatch``, and this route's own
+    ``genesis_regenerate_with_side_inputs_no_token`` when neither token is
+    named. An unknown token, or one staged as the other kind, refuses with
+    the SAME codes ``POST /jobs`` uses for the same mistake
+    (``genesis_side_input_kind_mismatch`` / 404) -- one caller learns the
+    answer once and reads the same sentence from both doors.
+    """
+    demand_path = _resolve_side_input(payload.demand_token, side_inputs.KIND_DEMAND)
+    signals_path = _resolve_side_input(payload.signals_token, side_inputs.KIND_SIGNALS)
+
+    try:
+        record = genesis_jobs.start_signals_regeneration_job(
+            job_id,
+            demand_input=demand_path,
+            signals_input=signals_path,
+            requested_by=str(user.get("username") or user.get("id") or "unknown"),
+            reason=payload.reason,
+        )
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except genesis_jobs.GenesisRegistryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        # Copying the parent's source is synchronous, request-thread work; a
+        # disk that refuses it is the same "nothing changed, retry" answer
+        # ``POST .../regenerate`` gives for its own clone step.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not prepare the regeneration's work directory. Nothing was started. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    logger.info(
+        "genesis: %s queued a signals-regeneration of job %s -> job %s",
         user.get("username"),
         job_id,
         record["id"],

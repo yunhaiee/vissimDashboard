@@ -1051,6 +1051,16 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       and why, quoted verbatim into the new job's skip ledger. A confirmation
       nobody can be named for is not one, so an anonymous caller cannot make it.
 
+    **Unit #69 adds exactly one: regenerating WITH a newly staged side input.**
+
+    * ``POST /api/genesis/jobs/{job_id}/regenerate-with-side-inputs`` -- the
+      sibling of unit #38's regeneration for the "이 signals 입력으로 재생성"
+      CTA on ``genesis/phases``: re-derives ``job_id``'s own verified source
+      composed with a demand/signals document staged AFTER that generation
+      already ran. Same reason as its sibling above -- it mints and runs a job
+      in the project's tree, and ``derived_from.requested_by`` is stamped from
+      the session precisely so the body cannot claim who asked.
+
     **Unit #52 adds five, and they are the rest of the same sub-tree.**
     현시도 입력 opened three more ways INTO the review store and two ways out of
     it, and every one of them handles the client-confidential material the C1-b
@@ -1189,6 +1199,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs/{job_id}/live-check",
         "/api/genesis/jobs/{job_id}/live-check/run",
         "/api/genesis/jobs/{job_id}/regenerate",
+        "/api/genesis/jobs/{job_id}/regenerate-with-side-inputs",
         "/api/genesis/jobs/{job_id}/dead-end-confirmation",
         "/api/genesis/phase-diagrams",
         "/api/genesis/phase-diagrams/blank",

@@ -4360,7 +4360,48 @@ export interface GenesisLiveCheckLineage {
   parent_sha256: string;
 }
 
-export type GenesisJobLineage = GenesisFixLineage | GenesisLiveCheckLineage;
+/** Present ONLY on a unit #38 REGENERATE job's record -- the SAME source
+ * bytes, geometry only, through the corrected converter. Refuter finding F3
+ * (2026-08-26): every kind-bearing lineage used to be missing from this union
+ * entirely, so `"kind" in derived_from` alone (never the VALUE) was all any
+ * reader could narrow on -- and every kind-bearing lineage rendered as a
+ * live check on `app/genesis/jobs/[id]/page.tsx`. Typed here, minimally: only
+ * the fields that screen actually reads. */
+export interface GenesisRegenerateLineage {
+  kind: "regenerate";
+  job_id: string;
+  requested_by: string | null;
+  requested_at: string;
+}
+
+/** Present ONLY on a unit #42 DEAD-END EXCLUSION job's record -- unit #38's
+ * own regeneration, plus one excluded way. See `GenesisRegenerateLineage`'s
+ * note on why this exists as its own interface now. */
+export interface GenesisDeadEndExclusionLineage {
+  kind: "dead_end_exclusion";
+  job_id: string;
+  requested_by: string | null;
+  requested_at: string;
+}
+
+/** Present ONLY on a unit #69 SIGNALS-REGENERATION job's record -- the
+ * parent's own verified source, composed with a demand/signals document
+ * staged AFTER the parent already ran. A DIFFERENT claim from
+ * `GenesisRegenerateLineage`'s "geometry only, unchanged" -- see
+ * `genesis_jobs.SIGNALS_REGENERATION_LINEAGE_KIND`'s own note. */
+export interface GenesisSignalsRegenerationLineage {
+  kind: "signals_regeneration";
+  job_id: string;
+  requested_by: string | null;
+  requested_at: string;
+}
+
+export type GenesisJobLineage =
+  | GenesisFixLineage
+  | GenesisLiveCheckLineage
+  | GenesisRegenerateLineage
+  | GenesisDeadEndExclusionLineage
+  | GenesisSignalsRegenerationLineage;
 
 /** A LIVE-CHECK job's own result, written by its runner (unit #33). Present
  * only on that job type, and `null` until the probe has answered.
@@ -4412,8 +4453,25 @@ export interface GenesisJob {
   revocation?: GenesisRevocation | null;
   refusal: { code: string; reasons: string[] } | null;
   error: string | null;
-  /** See `GenesisFixLineage` / `GenesisLiveCheckLineage` -- absent means "an
-   * ordinary generation", not "unknown". Narrow with `"kind" in derived_from`. */
+  /** `null` -- not `{}` -- for a job nobody composed any layer onto, so
+   * "geometry-only" and "composed but produced nothing" can never read alike
+   * (`genesis_jobs.create_genesis_job`'s own discipline). Unit #69's own
+   * regenerate-with-side-inputs CTA reads this to warn BEFORE a click that
+   * the selected 생성작업 already carries a layer -- see
+   * `app/genesis/phases/page.tsx`'s `selectedJobHasSideInputs`. */
+  side_inputs?: Record<string, { filename: string; bytes: number; sha256: string; stored_as: string }> | null;
+  /** See `GenesisFixLineage` and its kind-bearing siblings
+   * (`GenesisLiveCheckLineage` / `GenesisRegenerateLineage` /
+   * `GenesisDeadEndExclusionLineage` / `GenesisSignalsRegenerationLineage`).
+   * Absent means "an ordinary generation", not "unknown". Narrowing is TWO
+   * steps, not one: `"kind" in derived_from` tells a fix lineage (which
+   * carries no `kind` at all) apart from every OTHER lineage -- but every one
+   * of those others also carries a `kind`, so a reader must narrow AGAIN on
+   * the actual VALUE (`derived_from.kind === "live_check"`, `"regenerate"`,
+   * `"dead_end_exclusion"`, `"signals_regeneration"`) to know which. Refuter
+   * finding F3 (2026-08-26): this file used to document only the first step,
+   * and `app/genesis/jobs/[id]/page.tsx` took it at its word -- every
+   * kind-bearing lineage rendered as a live check. */
   derived_from?: GenesisJobLineage;
   /** See `GenesisLiveCheckResult` -- present only on a live-check job. */
   live_check?: GenesisLiveCheckResult | null;
@@ -5098,6 +5156,39 @@ export async function regenerateGenesisJob(jobId: string, reason?: string): Prom
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ reason: reason?.trim() || null }),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Unit #69 -- re-derive `jobId`'s own verified source, PLUS a demand/signals
+ * document staged AFTER that generation already ran -> the new job's record
+ * (202). The CTA this backs: `genesis/phases` builds a signals token from a
+ * confirmed phase diagram, bound to a generation that already has a verdict
+ * and (ordinarily) no side inputs of its own -- "이 signals 입력으로 재생성"
+ * starts a fresh derivation of THAT source composed with the new layer.
+ *
+ * Deliberately NOT `regenerateGenesisJob`: unit #38's plain regeneration
+ * forbids every field but `reason` and always re-derives geometry only. This
+ * is its unit #69 sibling -- same source verification, a DIFFERENT lineage
+ * (`derived_from.kind === "signals_regeneration"`), and it refuses BY NAME
+ * (never a disabled button) when the parent already carries a side input of
+ * its own (`genesis_regenerate_parent_has_side_inputs` -- combining an old
+ * layer with a new one is still nobody's decision to make on this client's
+ * behalf) or when neither token is named
+ * (`genesis_regenerate_with_side_inputs_no_token`). */
+export async function regenerateGenesisJobWithSideInputs(
+  jobId: string,
+  body: { demand_token?: string | null; signals_token?: string | null; reason?: string | null },
+): Promise<GenesisJob> {
+  const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/regenerate-with-side-inputs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      demand_token: body.demand_token ?? null,
+      signals_token: body.signals_token ?? null,
+      reason: body.reason?.trim() || null,
+    }),
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();

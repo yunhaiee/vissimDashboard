@@ -737,6 +737,40 @@ export function statusLabel(status: GenesisJobStatus, t: (ko: string, en: string
   }
 }
 
+/** A kind-bearing `derived_from`'s own words for what it is -- refuter
+ * finding F3 (2026-08-26): `app/genesis/jobs/[id]/page.tsx` used to render
+ * EVERY kind-bearing lineage as a live check, because it narrowed only on
+ * `"kind" in derived_from` (true for all four kinds) and never checked the
+ * VALUE. Narrowing here on the literal `kind` string is what makes that bug
+ * structurally impossible to repeat: a switch with no matching case falls to
+ * `default`, which names the raw kind rather than silently reusing another
+ * kind's label. */
+export function lineageKindLabel(
+  kind: "live_check" | "regenerate" | "dead_end_exclusion" | "signals_regeneration",
+  t: (ko: string, en: string, ja: string) => string,
+): string {
+  switch (kind) {
+    case "live_check":
+      // Unit #33's own label, unchanged -- this is the one case the old
+      // (buggy) code actually got right.
+      return t("실 Vissim 확인", "live check", "実Vissim確認");
+    case "regenerate":
+      // Unit #38: the SAME source, geometry only, through the corrected
+      // converter -- a treatment for a finding, not a data addition.
+      return t("재생성", "regenerated", "再生成");
+    case "dead_end_exclusion":
+      // Unit #42: the same regeneration, minus one way a human confirmed the
+      // road really ends at.
+      return t("막다른 길 제외 재생성", "dead-end exclusion", "行き止まり除外による再生成");
+    case "signals_regeneration":
+      // Unit #69: the parent's own verified source, composed with a
+      // demand/signals layer staged after the parent already ran.
+      return t("signals 입력 추가 재생성", "regenerated with an added signals input", "signals入力を追加して再生成");
+    default:
+      return kind;
+  }
+}
+
 /** At most six decimals, trailing zeros dropped — `115.836` stays `115.836`
  * and a float that arrived as `-32.08120000000001` prints as `-32.0812`. Six
  * decimals is ~0.1 m at these latitudes, finer than any region a human drew or
