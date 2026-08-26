@@ -475,16 +475,58 @@ def _valid_hex(value: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
+#: The four *Theme attributes OOXML lets a ``w:rFonts`` element carry beside
+#: its literal siblings (``w:asciiTheme``, ``w:hAnsiTheme``,
+#: ``w:eastAsiaTheme``, ``w:cstheme`` — OOXML §17.3.2.26). MEASURED
+#: (2026-08-26, unit #63b, by unzipping a composed .docx's ``word/styles.xml``
+#: and dissecting the Title style's ``rPr``): Word gives a THEME attribute
+#: precedence over its LITERAL sibling when both sit on one ``w:rFonts`` —
+#: the opposite of what an earlier version of this module's docstrings
+#: claimed. python-docx's default template seeds Title/Heading 1-3/Caption's
+#: ``rPr`` and ``docDefaults``' ``rPrDefault`` with these theme attributes
+#: (pointing at ``word/theme/theme1.xml``'s major/minor font — Calibri-class,
+#: no dependable Korean member); ``Normal`` carries none. Writing a literal
+#: font next to an UNTOUCHED theme attribute is therefore a no-op as far as
+#: Word's rendering goes — exactly the user-reported defect ("제목은 arial
+#: 느낌인데 본문은 아니다"): Normal has no theme attributes so its literal
+#: always won, Title carries all four so its literal always lost.
+_THEME_FONT_ATTRS: tuple[str, ...] = (
+    qn("w:asciiTheme"),
+    qn("w:hAnsiTheme"),
+    qn("w:eastAsiaTheme"),
+    qn("w:cstheme"),
+)
+
+
+def _strip_theme_fonts(rfonts: Any) -> None:
+    """Remove every ``*Theme`` attribute from ONE ``w:rFonts`` element so the
+    literal fonts this module just wrote on it actually govern in Word — see
+    :data:`_THEME_FONT_ATTRS`. Called at every site that writes a literal
+    font, on the SAME element it just wrote to; never on some other style's."""
+    for attr in _THEME_FONT_ATTRS:
+        if attr in rfonts.attrib:
+            del rfonts.attrib[attr]
+
+
 def _set_east_asia(rpr_owner: Any, family: str) -> None:
     """Write ``w:rFonts/@w:eastAsia`` — python-docx's ``font.name`` sets only
     ``w:ascii``/``w:hAnsi``, and R-4 reads the eastAsia slot separately BY
-    DESIGN ("ascii and eastAsia are different fonts", never backfilled)."""
+    DESIGN ("ascii and eastAsia are different fonts", never backfilled).
+
+    This is also the ONE choke point both ``_style_font`` and
+    ``set_run_fonts`` funnel through last, on the exact ``w:rFonts`` element
+    python-docx's own ``font.name`` setter just wrote ``w:ascii``/``w:hAnsi``
+    onto (``get_or_add_rFonts`` reuses the element, never replaces it) — so
+    stripping :data:`_THEME_FONT_ATTRS` here, after setting ``w:eastAsia``,
+    covers all three literal slots this module ever writes in one place.
+    """
     rpr = rpr_owner.get_or_add_rPr()
     rfonts = rpr.find(qn("w:rFonts"))
     if rfonts is None:
         rfonts = OxmlElement("w:rFonts")
         rpr.insert(0, rfonts)
     rfonts.set(qn("w:eastAsia"), family)
+    _strip_theme_fonts(rfonts)
 
 
 def _style_font(style: Any, *, ascii_family: str, east_asia: str, size_pt: float, color_hex: str) -> None:
@@ -526,9 +568,11 @@ def _set_doc_defaults_fonts(document: Any, *, ascii_family: str, east_asia: str)
     style and every direct run write this module and the typesetter make),
     so it is not expected to fire for output this codebase produces — it is
     a floor against any run this unit forgets to font explicitly, not the
-    primary fix. Literal ``w:ascii``/``w:eastAsia`` attributes win over their
-    ``*Theme`` siblings when both are present on one ``w:rFonts``, so the
-    theme attributes are left in place rather than removed.
+    primary fix. MEASURED (unit #63b): a THEME attribute wins over its
+    literal sibling when both sit on one ``w:rFonts`` — the opposite of what
+    an earlier version of this docstring claimed — so the theme attributes
+    are stripped here (:func:`_strip_theme_fonts`) rather than left beside
+    the literal.
     """
     styles_element = document.styles.element
     doc_defaults = styles_element.find(qn("w:docDefaults"))
@@ -550,6 +594,7 @@ def _set_doc_defaults_fonts(document: Any, *, ascii_family: str, east_asia: str)
     rfonts.set(qn("w:ascii"), ascii_family)
     rfonts.set(qn("w:hAnsi"), ascii_family)
     rfonts.set(qn("w:eastAsia"), east_asia)
+    _strip_theme_fonts(rfonts)
 
 
 def _paragraph_bottom_rule(paragraph: Any, color_hex: str, width_pt: float) -> None:

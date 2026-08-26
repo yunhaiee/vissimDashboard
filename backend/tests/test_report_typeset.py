@@ -62,6 +62,7 @@ from typing import Any
 
 import docx
 import pytest
+from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from fastapi.testclient import TestClient
 
@@ -1414,15 +1415,48 @@ _HANGUL_RE = re.compile(r"[가-힣]")
 _HEADING_STYLE_NAMES = {"Title", "Heading 1", "Heading 2", "Heading 3"}
 
 
+#: A theme-shadowed literal resolves to this sentinel (``"theme:<theme
+#: name>"``) rather than to the literal ``w:eastAsia`` value -- see
+#: :func:`_effective_rfonts_east_asia`. Exported (no leading underscore) so a
+#: caller can name the exact shape without re-deriving the ``"theme:"``
+#: prefix.
+THEME_SENTINEL_PREFIX = "theme:"
+
+
+def _effective_rfonts_east_asia(rfonts: Any) -> str | None:
+    """The eastAsia font a real OOXML consumer resolves off ONE ``w:rFonts``
+    element, modeling Word's REAL precedence rather than the naive "read the
+    literal attribute" a first-pass walker would do.
+
+    MEASURED (unit #63b, unzipping a composed .docx's ``word/styles.xml`` and
+    dissecting the Title style's ``rPr``): ``w:eastAsiaTheme`` -- when
+    present -- wins over its literal ``w:eastAsia`` sibling in Word's own
+    rendering (OOXML §17.3.2.26), the opposite of what an earlier version of
+    ``style_apply``'s own docstrings claimed. A walker that read only the
+    literal (this function's pre-#63b shape) would report the CORRECT font
+    for a style whose theme attribute silently overrode it -- passing on
+    exactly the defect the user reported. Modeling the override here means
+    the pre-fix state (theme left beside the literal) resolves to a
+    ``"theme:<theme-name>"`` sentinel that can never equal a real font-family
+    string, so a test comparing against the profile's actual family FAILS on
+    unfixed output instead of passing by accident.
+    """
+    theme = rfonts.get(qn("w:eastAsiaTheme"))
+    if theme:
+        return f"{THEME_SENTINEL_PREFIX}{theme}"
+    return rfonts.get(qn("w:eastAsia"))
+
+
 def _style_own_east_asia(style: Any) -> str | None:
-    """ONE style's OWN ``w:rFonts/@w:eastAsia`` -- NOT its basedOn chain."""
+    """ONE style's OWN effective eastAsia (theme-aware) -- NOT its basedOn
+    chain."""
     rpr = style.element.find(qn("w:rPr"))
     if rpr is None:
         return None
     rfonts = rpr.find(qn("w:rFonts"))
     if rfonts is None:
         return None
-    return rfonts.get(qn("w:eastAsia"))
+    return _effective_rfonts_east_asia(rfonts)
 
 
 def _style_chain_east_asia(style: Any) -> str | None:
@@ -1458,7 +1492,7 @@ def _doc_defaults_east_asia(document: Any) -> str | None:
     rfonts = rpr.find(qn("w:rFonts"))
     if rfonts is None:
         return None
-    return rfonts.get(qn("w:eastAsia"))
+    return _effective_rfonts_east_asia(rfonts)
 
 
 def effective_east_asia_font(document: Any, run: Any, paragraph: Any) -> tuple[str | None, str]:
@@ -1474,6 +1508,12 @@ def effective_east_asia_font(document: Any, run: Any, paragraph: Any) -> tuple[s
     floor. No character-style (``w:rStyle``) step -- nothing this codebase
     writes ever applies one to a run.
 
+    Theme-aware at every step (:func:`_effective_rfonts_east_asia`): a slot
+    shadowed by ``w:eastAsiaTheme`` resolves to the ``"theme:..."`` sentinel
+    rather than the literal beside it, so this walker models Word's actual
+    precedence instead of the naive "a literal attribute is present, so it
+    must be what renders" assumption the pre-#63b walker made.
+
     Exported (no leading underscore) so a future report unit can reuse this
     exact walker rather than re-measuring the same resolution order.
     """
@@ -1481,7 +1521,7 @@ def effective_east_asia_font(document: Any, run: Any, paragraph: Any) -> tuple[s
     if rpr is not None:
         rfonts = rpr.find(qn("w:rFonts"))
         if rfonts is not None:
-            direct = rfonts.get(qn("w:eastAsia"))
+            direct = _effective_rfonts_east_asia(rfonts)
             if direct:
                 return direct, "run-direct"
     style = paragraph.style
@@ -1607,11 +1647,131 @@ def test_doc_defaults_are_floored_to_the_profiles_body_family() -> None:
     assert rfonts.get(qn("w:ascii")) == "Times New Roman"
     assert rfonts.get(qn("w:hAnsi")) == "Times New Roman"
     assert rfonts.get(qn("w:eastAsia")) == "궁서"
-    # The theme references are LEFT IN PLACE, not removed -- literal
-    # w:ascii/w:eastAsia win over their *Theme siblings when both are
-    # present on one w:rFonts, per OOXML §17.3.2.26.
-    assert rfonts.get(qn("w:asciiTheme")) == "minorHAnsi"
-    assert rfonts.get(qn("w:eastAsiaTheme")) == "minorEastAsia"
+    # MEASURED (unit #63b): a THEME attribute wins over its literal sibling
+    # in Word's own rendering when both are present on one w:rFonts (OOXML
+    # §17.3.2.26) -- the opposite of what an earlier version of this test and
+    # style_apply's own docstrings claimed. python-docx's template seeds this
+    # exact element with w:asciiTheme="minorHAnsi"/w:eastAsiaTheme=
+    # "minorEastAsia"; style_apply._set_doc_defaults_fonts now strips all
+    # four *Theme attributes (style_apply._strip_theme_fonts) so the literal
+    # fonts just asserted above actually govern instead of losing silently.
+    assert rfonts.get(qn("w:asciiTheme")) is None
+    assert rfonts.get(qn("w:hAnsiTheme")) is None
+    assert rfonts.get(qn("w:eastAsiaTheme")) is None
+    assert rfonts.get(qn("w:cstheme")) is None
+
+
+# =============================================================================
+# 10a2. THEME-ATTRIBUTE PRECEDENCE -- unit #63b
+#
+# The user-reported defect this unit fixes: the composed report's TITLE
+# renders sans ("arial 느낌") while the body renders serif. MEASURED (by
+# unzipping a composed .docx's word/styles.xml and dissecting the Title
+# style's rPr): python-docx's default template seeds Title/Heading 1-3/
+# Caption's rPr AND docDefaults' rPrDefault with *Theme attributes
+# (w:asciiTheme, w:hAnsiTheme, w:eastAsiaTheme, w:cstheme); Normal carries
+# none. Word gives a THEME attribute precedence over its literal sibling
+# when both sit on one w:rFonts (OOXML §17.3.2.26) -- the opposite of what
+# an earlier version of style_apply's own docstrings (and section 10a's test
+# above, before this unit) claimed. So Normal's literal always won (no theme
+# attribute to lose to) and Title's always lost (all four present) -- one
+# style rendering correctly and the other not, exactly the asymmetry the
+# user reported. style_apply._strip_theme_fonts (called from every literal
+# font write site) is the fix; these two tests are its regression net.
+# =============================================================================
+
+_RFONTS_THEME_LITERAL_SLOT_PAIRS: tuple[tuple[str, str], ...] = (
+    ("ascii", "asciiTheme"),
+    ("hAnsi", "hAnsiTheme"),
+    ("eastAsia", "eastAsiaTheme"),
+    ("cs", "cstheme"),
+)
+
+
+def test_no_rfonts_element_carries_both_a_literal_and_a_theme_font_for_one_slot(
+    fixed_figures: None,
+) -> None:
+    """The class-closing net, not a Title-only spot check: scan EVERY
+    ``w:rFonts`` element in the composed archive's document/styles/header/
+    footer parts and fail if any ONE of them carries both a literal font
+    attribute (``w:ascii``, ``w:hAnsi``, ``w:eastAsia``, ``w:cs``) and its
+    THEME sibling (``w:asciiTheme``, ``w:hAnsiTheme``, ``w:eastAsiaTheme``,
+    ``w:cstheme``) for the SAME slot -- the exact shape MEASURED as this
+    unit's defect.
+
+    Scanning the whole archive rather than pinning the four sites this unit
+    happened to measure (Title/Heading 1-3/Caption/docDefaults) means a
+    FUTURE style python-docx seeds with theme attributes -- one this unit
+    never saw -- is caught here too, without anyone writing it a dedicated
+    test.
+    """
+    content, _manifest = typeset.compose_report(
+        style_profile=FONT_WALKER_PROFILE, profile_name="테마 속성 전수 검사"
+    )
+
+    archive = zipfile.ZipFile(io.BytesIO(content))
+    part_names = ("word/document.xml", "word/styles.xml", "word/header1.xml", "word/footer1.xml")
+    violations: list[tuple[str, str, str]] = []
+    checked_parts = 0
+    total_rfonts = 0
+    for name in part_names:
+        assert name in archive.namelist(), f"expected part {name} in the composed archive"
+        checked_parts += 1
+        root = parse_xml(archive.read(name))
+        for rfonts in root.iter(qn("w:rFonts")):
+            total_rfonts += 1
+            for literal_attr, theme_attr in _RFONTS_THEME_LITERAL_SLOT_PAIRS:
+                literal_value = rfonts.get(qn(f"w:{literal_attr}"))
+                theme_value = rfonts.get(qn(f"w:{theme_attr}"))
+                if literal_value and theme_value:
+                    violations.append((name, literal_attr, theme_attr))
+
+    assert checked_parts == len(part_names), f"expected all {len(part_names)} parts, checked {checked_parts}"
+    assert total_rfonts >= 10, "too few w:rFonts elements scanned for this to be a meaningful net"
+    assert not violations, (
+        "rFonts element(s) carry BOTH a literal font and its theme sibling for the same slot -- "
+        f"the theme silently wins in Word's own rendering, overriding the literal: {violations}"
+    )
+
+
+def test_title_paragraph_resolves_the_heading_family_not_a_shadowed_theme(fixed_figures: None) -> None:
+    """THE user-reported defect, pinned directly on the Title paragraph
+    rather than swept in with every other Hangul run: the front matter's
+    Title run must resolve, through the theme-aware
+    :func:`effective_east_asia_font` walker, to the profile's HEADING
+    eastAsia family -- never to a ``"theme:..."`` sentinel, which is what
+    the walker reports when a theme attribute still shadows the literal (see
+    :data:`THEME_SENTINEL_PREFIX`). The sentinel can never equal a real
+    font-family string, so this assertion fails outright on unfixed output
+    instead of silently passing by resolving to python-docx's Calibri-class
+    theme default.
+    """
+    content, _manifest = typeset.compose_report(
+        style_profile=FONT_WALKER_PROFILE, profile_name="타이틀 폰트 검사"
+    )
+    document = _open(content)
+
+    title_paragraphs = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.style is not None and paragraph.style.name == "Title"
+    ]
+    assert title_paragraphs, "no Title-styled paragraph found in the composed document"
+    title_paragraph = title_paragraphs[0]
+    runs = [run for run in title_paragraph.runs if (run.text or "").strip()]
+    assert runs, "the Title paragraph carries no non-empty run to resolve a font from"
+
+    heading_east = FONT_WALKER_PROFILE["fonts"]["heading_family"]["eastAsia"]
+    for run in runs:
+        resolved, source = effective_east_asia_font(document, run, title_paragraph)
+        assert not str(resolved or "").startswith(THEME_SENTINEL_PREFIX), (
+            f"Title run {run.text!r} resolved to {resolved!r} via {source} -- a theme attribute is "
+            "still shadowing the literal heading font"
+        )
+        assert resolved == heading_east, (
+            f"Title run {run.text!r} resolved eastAsia to {resolved!r} via {source} -- expected the "
+            f"profile's heading family {heading_east!r}"
+        )
 
 
 # =============================================================================
