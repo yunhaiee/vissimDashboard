@@ -687,6 +687,12 @@ export default function CalibrationWorkspacePage() {
       {/* the NEXT chip and the proposal badge wear (the rail's three-colour */}
       {/* rule). `text-sky-600`, never 700: globals.css remaps the sky text  */}
       {/* ramp only to 600, and a 700 here would land dark-blue-on-navy.     */}
+      {/*                                                                   */}
+      {/* EXCEPTION (unit #67): the zero-runs branch below wears bg-accent,  */}
+      {/* not sky. It is the one of these four states where clicking IS the */}
+      {/* fix for the absence just named, not a prompt toward a choice still */}
+      {/* to make -- so it earns ConfirmDialog's stronger filled idiom       */}
+      {/* instead of the rail's sky "do this one" mark.                     */}
       {/* ---------------------------------------------------------------- */}
       {!scenarioId ? (
         // #65: "zero runs" is a fact only the RESOLVED, ERROR-FREE fetch gets to
@@ -708,9 +714,16 @@ export default function CalibrationWorkspacePage() {
             )}
           </div>
         ) : scenariosEmpty ? (
+          // Unit #67 (2026-08-26 DECISIONS): a filled CTA, not the neutral
+          // outline the "choose a run" and "do this now" branches below keep
+          // -- this is the one branch where clicking is the actual fix for
+          // the absence just named, so it wears the same
+          // bg-accent/hover:bg-accent-deep/text-white idiom ConfirmDialog's
+          // primary action and the floating assistant's launcher use. A
+          // reader should not have to guess that a sentence is a button.
           <Link
             href="/simulation"
-            className="flex w-full items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-sky-600 transition hover:border-sky-400"
+            className="flex w-full items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-left text-[17px] font-semibold leading-7 text-white shadow-sm transition hover:bg-accent-deep"
           >
             {t(
               "이 데이터셋에는 완료된 실행이 없습니다 — ③ 시뮬레이션에서 먼저 실행하세요",
@@ -744,7 +757,7 @@ export default function CalibrationWorkspacePage() {
       {/* ---------------------------------------------------------------- */}
       <section className="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-surface px-4 py-3">
         <div className="flex flex-col gap-0.5">
-          <span className="text-[14px] font-semibold text-slate-600">
+          <span className="whitespace-nowrap text-[14px] font-semibold text-slate-600">
             {t("데이터셋", "Dataset", "データセット")}
           </span>
           {/* The dataset's NAME stays on the surface and got bigger: it is the

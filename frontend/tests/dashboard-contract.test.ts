@@ -549,7 +549,15 @@ contractTest("app shell exposes the merged dashboard routes", (pin) => {
     /vissim:assistant-simulation-complete/,
     "expected floating assistant to notify dashboard pages after prompt-run simulations",
   );
-  pin.doesNotMatch(shell, /href: "\/simulation"/, "expected simulation route to be hidden from top navigation");
+  // RE-PINNED, unit #67 (2026-08-26 DECISIONS): /simulation is listed in top
+  // navigation for the FIRST time -- not "back". It was never there before
+  // (git -S 'href: "/simulation"' on this file turns up nothing before this
+  // unit's own commit; only the doesNotMatch pin this replaces existed,
+  // since the initial import). It lands as ③'s own first row -- where a run
+  // actually gets created -- and #65's zero-runs banner on /calibration now
+  // sends readers here by name, so a hidden nav entry and a named CTA target
+  // would disagree about how to find this screen.
+  pin.match(shell, /href: "\/simulation"/, "expected simulation route to be present in top navigation");
   pin.match(simulationPage, /SimulationPage/, "expected simulation page implementation to remain available in the codebase");
   pin.doesNotMatch(shell, /Intersection Comparison/, "expected separate intersection comparison label to be removed");
   // RE-PINNED, unit #50: the row this label named is now 보정 / Calibration,
@@ -659,12 +667,48 @@ contractTest("#18: the sidebar is the pipeline — selector on top, four numbere
   pin.match(dataGroup, /실측 관측/, "expected the observations row to carry its Korean label");
 
   const simGroup = sliceBetween(shell, 'ordinal: "③"', 'ordinal: "④"');
-  // RE-PINNED, unit #50 (user decision, 2026-08-19): ③ is exactly two rows now
-  // -- 대시보드 and 보정. 베이스모델 검증 became 보정's scoring station and
-  // 모델 검진 moved up to ①, both pinned in their new homes above.
+  // RE-PINNED, unit #50 (user decision, 2026-08-19): 베이스모델 검증 became 보정's
+  // scoring station and 모델 검진 moved up to ①, both pinned in their new homes
+  // above. RE-PINNED AGAIN, unit #67 (2026-08-26 DECISIONS): ③ is three rows
+  // now, not two -- /simulation joins the sidebar for the first time (it was
+  // never here before, see the ROUTE_STAGE comment on AppShell.tsx), as its
+  // own first row, pipeline order (실행 -> 조회 -> 채점) ahead of 대시보드 and
+  // 보정, both of which need a completed run to already exist.
+  pin.match(simGroup, /href: "\/simulation"/, "expected the simulation runner under ③ 시뮬·보정");
   pin.match(simGroup, /href: "\/dashboard"/, "expected the dashboard under ③ 시뮬·보정");
   pin.match(simGroup, /href: "\/calibration"/, "expected the calibration workspace under ③ 시뮬·보정");
   pin.doesNotMatch(simGroup, /href: "\/health"/, "expected 모델 검진 to have moved out of ③ into ① 네트워크");
+  // Unit #67 (D4 fix): the LABEL, not just the route, in all three languages --
+  // #65's zero-runs CTA sends readers here by the name "③ 시뮬레이션", so the
+  // row's own label drifting away from that name (while its href stays put)
+  // would leave the CTA pointing at a name nothing in the sidebar carries any
+  // more. Same idiom the source itself uses (`label: t(ko, en, ja)`).
+  pin.match(
+    simGroup,
+    /label: t\("시뮬레이션", "Simulation", "シミュレーション"\)/,
+    "expected the simulation row's label to read 시뮬레이션 / Simulation / シミュレーション, byte-exact in all three languages",
+  );
+  // RE-PINNED as a computed-value pin (unit #67 fix, D2): the previous plain
+  // `assert.ok` here is exactly the trap CLAUDE.md names -- a bare assert
+  // throws on the first failure and hides every pin after it in this same
+  // test (2026-08-05 precedent: one stale pin like it hid 2 broken + 53
+  // healthy ones). Worse, `.indexOf` returns -1 for a MISSING href, and -1 is
+  // less than any real index, so the old ordering check `simIdx < dashIdx`
+  // silently PASSED when the /simulation row was deleted outright -- fail-
+  // open, not fail-closed. `inOrder` below requires all three indices to be
+  // non-negative AND increasing, so a deleted or reordered row shows up as
+  // `inOrder=false` in the pin's own output rather than as a false pass, and
+  // `pin.match` reports it alongside every other pin above instead of
+  // aborting the test.
+  const simIdx = simGroup.indexOf('href: "/simulation"');
+  const dashIdx = simGroup.indexOf('href: "/dashboard"');
+  const calIdx = simGroup.indexOf('href: "/calibration"');
+  const inOrder = simIdx >= 0 && dashIdx >= 0 && calIdx >= 0 && simIdx < dashIdx && dashIdx < calIdx;
+  pin.match(
+    `simIdx=${simIdx} dashIdx=${dashIdx} calIdx=${calIdx} inOrder=${inOrder}`,
+    /inOrder=true$/,
+    "expected ③'s rows in pipeline order: 시뮬레이션, then 대시보드, then 보정 (all three present, in order)",
+  );
 
   const reportGroup = sliceBetween(shell, 'ordinal: "④"', "// Unit P④");
   pin.match(reportGroup, /href: "\/report"/, "expected the report builder under ④ 보고서");
@@ -17248,7 +17292,15 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
     "expected 'zero runs' to require a RESOLVED, error-free fetch -- loading and a failed fetch must not read as absence",
   );
 
-  const banner = sliceBetween(page, "{!scenarioId ? (", ") : nextStep ? (");
+  // Unit #67 fix (D1): sliced from `surface` (comment-stripped), not raw
+  // `page`. The style pins below this point assert real CSS classes appear
+  // (or don't) in this branch's JSX -- but #67's own doc comment on the CTA
+  // branch NAMES those exact classes in prose ("bg-accent/hover:bg-accent-
+  // deep/text-white"), so a slice of raw `page` let the comment satisfy the
+  // `pin.match`es on its own, with the actual `className` never inspected
+  // (measured: removing the CTA classes entirely, or reverting the whole
+  // branch to its pre-#67 bytes, left all four pins green either way).
+  const banner = sliceBetween(surface, "{!scenarioId ? (", ") : nextStep ? (");
   pin.match(banner, /\S/, "expected to find the #65 banner's own source slice (markers moved?)");
 
   // FOUR STATES, not three (orchestrator correction, 2026-08-26): a fetch that
@@ -17262,8 +17314,21 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
   const errorBranchStart = banner.indexOf("scenariosError ? (");
   const zeroBranchStart = banner.indexOf("scenariosEmpty ? (", errorBranchStart);
   const zeroBranchEnd = banner.indexOf(") : (", zeroBranchStart);
-  assert.ok(
-    errorBranchStart > -1 && zeroBranchStart > errorBranchStart && zeroBranchEnd > zeroBranchStart,
+  // RE-PINNED as a computed-value pin (unit #67 fix round 2, mirrors #18's D2):
+  // the previous plain `assert.ok` here is exactly the trap CLAUDE.md names --
+  // a bare assert throws on the first failure and hides every pin after it in
+  // this same test, including all four CTA pins and the D5 refusal pin below
+  // (refuter M6, measured: swapping the branch condition order left only ONE
+  // failing message visible instead of the whole set). `inOrder` requires all
+  // three marker indices to be non-negative AND strictly increasing -- the
+  // exact same boolean this assert guarded, unweakened -- so a moved or
+  // reordered marker shows up as `inOrder=false` in the pin's own output
+  // instead of aborting the test.
+  const inOrder =
+    errorBranchStart > -1 && zeroBranchStart > errorBranchStart && zeroBranchEnd > zeroBranchStart;
+  pin.match(
+    `errorBranchStart=${errorBranchStart} zeroBranchStart=${zeroBranchStart} zeroBranchEnd=${zeroBranchEnd} inOrder=${inOrder}`,
+    /inOrder=true$/,
     "expected the banner's error/zero-runs/neutral ternary chain to be found, in that order (markers moved?)",
   );
   const errorBranch = banner.slice(errorBranchStart, zeroBranchStart);
@@ -17307,6 +17372,37 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
     "expected the zero-runs banner to send the user to /simulation, not focus a selector it just said is empty",
   );
 
+  // (e) THE ZERO-STATE LINK IS A REAL CTA BUTTON (unit #67, 2026-08-26
+  // DECISIONS): a sentence that merely happens to be clickable is not
+  // obviously clickable, so this branch wears the same filled
+  // bg-accent/hover:bg-accent-deep/text-white idiom ConfirmDialog's primary
+  // action button uses, instead of the neutral outline the "choose a run"
+  // and "do this now" prompts wear. It must NOT keep the old neutral-banner
+  // look, or a reader has no visual reason to believe this text is a button.
+  // FIX (refuter round 2, M2): `\b` fires at a hyphen too (word char -> non-word
+  // char), so `/bg-accent\b/` also matched INSIDE `hover:bg-accent-deep` --
+  // a mutation that deleted the plain `bg-accent` fill and kept only the hover
+  // variant (white text stranded on a white/transparent surface until hover)
+  // left this pin green either way (measured). The negative lookahead requires
+  // `bg-accent` NOT be followed by `-` or a word character, so it no longer
+  // matches inside `bg-accent-deep` and only fires on the standalone fill class.
+  pin.match(zeroBranch, /bg-accent(?![-\w])/, "expected the zero-runs banner to wear the filled CTA background");
+  pin.match(zeroBranch, /hover:bg-accent-deep/, "expected the zero-runs banner's hover state to deepen the CTA fill");
+  pin.match(zeroBranch, /text-white/, "expected the zero-runs banner's text to sit on the filled CTA background");
+  // Unit #67 fix (D1, cause 2): the neutral outline's className never actually
+  // contained `border-sky-300 bg-sky-50 text-sky-600` as one contiguous run --
+  // `px-4 py-2.5 text-left text-[17px] font-semibold leading-7` always sat
+  // between `bg-sky-50` and `text-sky-600` (see the "do this now" and "choose
+  // a run" buttons below, unchanged) -- so that exact string never fired and
+  // never could. `border-sky-` alone is what the neutral outline idiom is
+  // built from anywhere in this file; its absence is what "no longer wears
+  // the neutral outline" actually means.
+  pin.doesNotMatch(
+    zeroBranch,
+    /border-sky-/,
+    "expected the zero-runs banner to no longer wear the neutral outline treatment -- it reads as a button now, not a prompt",
+  );
+
   // (d) THE FAILURE SENTENCE -- names the fetch FAILING, distinct from "zero
   // runs" -- byte-exact in all three languages, and present ONLY in the branch
   // that fires on a resolved, FAILED fetch. This is the orchestrator's own
@@ -17333,6 +17429,14 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
     /<Link\b|onClick=/,
     "expected the error branch to offer no navigation or click action -- there is nothing that fixes a fetch failure by clicking",
   );
+  // Unit #67 fix (D5): the failure branch must not smuggle the CTA fill
+  // either. It already has no click action (pin above), but a refusal that
+  // LOOKS like a filled action button is its own lie -- a reader would
+  // reasonably expect a filled button to do something. `errorBranch` is not
+  // built from `withoutComments`-free source (it slices `banner`, itself
+  // sliced from `surface`), so this one line is sound on real markup, not a
+  // comment.
+  pin.doesNotMatch(errorBranch, /bg-accent/, "a refusal is never a button");
   // ...and it must not fall back to claiming "choose a run" either -- that
   // sentence implies options exist to choose from, which a failed fetch never
   // established one way or the other.

@@ -21,12 +21,13 @@ type NavIconName =
   | "report"
   | "health"
   | "admin"
-  | "overview";
+  | "overview"
+  | "simulation";
 
 type Translate = (ko: string, en: string, ja?: string) => string;
 
 function NavIcon({ name }: { name: NavIconName }) {
-  const paths: Record<string, React.ReactNode> = {
+  const paths: Record<NavIconName, React.ReactNode> = {
     dashboard: (
       <>
         <path d="M3 10.5 12 3l9 7.5" />
@@ -113,6 +114,21 @@ function NavIcon({ name }: { name: NavIconName }) {
         <path d="M15.3 8.7 13 13l-4.3 2.3L11 11Z" />
       </>
     ),
+    // A play triangle, standing alone rather than boxed in a circle: this is
+    // the screen that actually RUNS the simulation (POST /api/simulations
+    // through the job queue), so the mark is "execute", not "inspect" --
+    // distinct from validation's checkmark shield and health's heartbeat
+    // (both read a RESULT rather than start a job), and, just as much, from
+    // /overview's own circle. The first draft of this glyph reused
+    // /overview's exact cx=12 cy=12 r=8.5 ring and differed only in the
+    // inner mark -- which the no-collision rule stated on /overview's own
+    // comment above does not allow. The round line-join every glyph in this
+    // set already draws with rounds this triangle's three corners for free.
+    simulation: (
+      <>
+        <path d="M6.5 4.3 19 12 6.5 19.7Z" />
+      </>
+    ),
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -184,9 +200,20 @@ const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = {
   // it moved to the ① 네트워크 group -- and the stepper must agree with the
   // sidebar, or the two disagree about where the user is.
   "/health": "network",
-  // Hidden from the sidebar since the assistant went floating, but the
-  // dashboard itself cross-links it as "고급: 시뮬레이션 실행기" -- a screen the
-  // app presents as an extension of ③ belongs to ③, menu entry or not.
+  // Unit #67 (2026-08-26 DECISIONS, user-ordered): added to the sidebar for
+  // the FIRST time -- not "back", it never had a row here before (git -S on
+  // this file's own href for /simulation turns up nothing before this unit;
+  // only the doesNotMatch pin that used to forbid it did). It lands as ③'s
+  // own first row (see the `sim` group below): it is where a run actually
+  // gets created, and #65's zero-runs banner on /calibration now sends
+  // readers here by name. The dashboard's own "고급: 시뮬레이션 실행기"
+  // cross-link is unrelated leftover convenience for a reader already on
+  // that screen, not the only way in any more.
+  //
+  // The #18 judgment this route leaned on while it had no menu entry of its
+  // own -- "a screen the app presents as an extension of ③ belongs to ③,
+  // menu entry or not" -- still holds; /genesis/region above is the same
+  // idea, still applied the other way, for a route this unit did not touch.
   "/simulation": "sim",
   "/report": "report",
   "/downloads": "report",
@@ -279,12 +306,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       stage: "sim",
       ordinal: "③",
       title: t("시뮬·보정", "Simulate & Calibrate", "シミュ・補正"),
-      // Unit #50 (the user's 2026-08-19 page-cleanup decision): ③ is two rows
-      // now. 베이스모델 검증 stopped being its own destination -- it IS the
-      // scoring station of 보정, so the screen moved inside /calibration and
-      // /base-model 308s there (next.config.ts) rather than 404ing a bookmark.
-      // 모델 검진 moved up to ① for the reason stated on its new row.
+      // Unit #50 (the user's 2026-08-19 page-cleanup decision): ③ is three
+      // rows now (updated again by unit #67 below -- it was two rows here
+      // between #50 and #67). 베이스모델 검증 stopped being its own
+      // destination -- it IS the scoring station of 보정, so the screen
+      // moved inside /calibration and /base-model 308s there (next.config.ts)
+      // rather than 404ing a bookmark. 모델 검진 moved up to ① for the reason
+      // stated on its new row.
+      //
+      // Unit #67: /simulation joins as the FIRST row. It is where a run is
+      // actually created (POST /api/simulations through the job queue), and
+      // both 대시보드 (replays a run's trajectories) and 보정 (scores a run
+      // against real counts) need one to already exist -- #65's own zero-runs
+      // banner sends the reader here for exactly that reason. Pipeline order,
+      // not alphabetical: 실행 -> 조회 -> 채점.
       links: [
+        { href: "/simulation", label: t("시뮬레이션", "Simulation", "シミュレーション"), icon: "simulation" },
         { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
         { href: "/calibration", label: t("보정", "Calibration", "補正"), icon: "validation" },
       ],
