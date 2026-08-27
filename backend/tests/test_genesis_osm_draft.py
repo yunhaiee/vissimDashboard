@@ -574,6 +574,224 @@ def test_a_missing_or_malformed_osm_file_is_refused_not_raised(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# 1b. Node box geometry (#74) — deterministic non-overlapping node boxes
+#
+# 2026-08-27, docs/phase2/DECISIONS.md "라이브 완주 검증 적발 2호": a UI default
+# run on a real 71-node Daejeon draft (SIM_bba7f4eb) died with Vissim COM "The
+# simulation could not be continued" — the .err was full of "Nodes N: ... and
+# M: ... are overlapping.". Every node got a fixed NODE_HALF_SIZE_M (15 m)
+# half-size box; real dense OSM junctions sit closer than 30 m apart (measured
+# minimum nearest-neighbour spacing in that extract: 7.4 m), so the boxes
+# overlapped and Vissim refused the whole run. draft._node_half_sizes shrinks
+# each node's box below the ceiling whenever its nearest neighbour is close
+# enough that the full box would risk it; see NODE_HALF_SIZE_SHRINK's own
+# docstring for the pairwise non-overlap proof.
+# ---------------------------------------------------------------------------
+
+
+def double_tee_osm(mid_delta_lon: float) -> str:
+    """Two junctions on one main street, ``mid_delta_lon`` degrees of
+    longitude apart — a "dense junction pair" the way the real Daejeon extract
+    has many of, in miniature. Node 2 and node 3 are each shared by the main
+    street and their own side street, so both are intersections; the segment
+    between them is the short middle span whose length this fixture's caller
+    controls.
+
+    * way 201 "Main St", nodes 1-2-3-4, ``highway=secondary``, ``lanes=4``
+      (two-way, even total ⇒ 2 lanes each direction).
+    * way 202 "A St", nodes 2-5 (north from node 2), ``highway=residential``.
+    * way 203 "B St", nodes 3-6 (north from node 3), ``highway=residential``.
+    """
+    lon2 = LON0
+    lon3 = LON0 + mid_delta_lon
+    return _osm_text(
+        [
+            (1, LAT0, lon2 - 0.003),
+            (2, LAT0, lon2),
+            (3, LAT0, lon3),
+            (4, LAT0, lon3 + 0.003),
+            (5, LAT0 + 0.002, lon2),
+            (6, LAT0 + 0.002, lon3),
+        ],
+        [
+            (201, [1, 2, 3, 4], {"highway": "secondary", "name": "Main St", "lanes": "4"}),
+            (202, [2, 5], {"highway": "residential", "name": "A St"}),
+            (203, [3, 6], {"highway": "residential", "name": "B St"}),
+        ],
+    )
+
+
+#: Degrees of longitude for ~10 m at LAT0, from this file's own X_AT_0_003_LON
+#: derivation: 283.26 m / 0.003° ≈ 94420 m/°, so 10 m ≈ 10 / 94420 ≈
+#: 0.0001059°. The test below reads the ACTUAL projected distance back off the
+#: built draft rather than trusting this arithmetic to land on exactly 10.000,
+#: so a small projection residual cannot make the test flaky.
+_MID_DELTA_LON_DENSE = 0.0001059
+
+#: Degrees of longitude for a sparse ~283 m gap — literally X_AT_0_003_LON's
+#: own 0.003°, reused so the "sparse pair" case is anchored on a distance this
+#: file already derives by hand elsewhere.
+_MID_DELTA_LON_SPARSE = 0.003
+
+
+def _built_pair(tmp_path: Path, name: str, mid_delta_lon: float):
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, name, double_tee_osm(mid_delta_lon))), name=name
+    )
+    assert not draft.refused
+    assert {node.osm_id for node in draft.nodes} == {2, 3}
+    by_id = {node.osm_id: node for node in draft.nodes}
+    return by_id[2], by_id[3]
+
+
+def _chebyshev_span(node_a, node_b) -> float:
+    return max(abs(node_a.x - node_b.x), abs(node_a.y - node_b.y))
+
+
+def _half_size_of(node) -> float:
+    """A square DraftNode.polygon's own half-size, read back from its corners
+    rather than assumed — the same number of metres from centre to any edge on
+    both axes, since every node box this generator emits is a square centred
+    on (node.x, node.y)."""
+    xs = [p[0] - node.x for p in node.polygon]
+    ys = [p[1] - node.y for p in node.polygon]
+    half_x = (max(xs) - min(xs)) / 2.0
+    half_y = (max(ys) - min(ys)) / 2.0
+    assert abs(half_x - half_y) < 1e-6, "node box is not square"
+    return half_x
+
+
+def test_dense_node_pair_gets_disjoint_boxes_below_the_ceiling(tmp_path: Path):
+    """The regression case: two junctions ~10 m apart must not get the fixed
+    15 m half-size (which would make boxes 20 m apart from overlapping) —
+    each shrinks, and the resulting boxes stay pairwise disjoint."""
+    node2, node3 = _built_pair(tmp_path, "dense.osm", _MID_DELTA_LON_DENSE)
+    distance = math.hypot(node3.x - node2.x, node3.y - node2.y)
+    assert 5.0 < distance < 20.0, f"fixture did not land near 10 m apart: {distance}"
+
+    half2, half3 = _half_size_of(node2), _half_size_of(node3)
+    assert half2 < draft_module.NODE_HALF_SIZE_M
+    assert half3 < draft_module.NODE_HALF_SIZE_M
+    assert half2 == pytest.approx(draft_module.NODE_HALF_SIZE_SHRINK * distance, abs=1e-2)
+    assert half3 == pytest.approx(draft_module.NODE_HALF_SIZE_SHRINK * distance, abs=1e-2)
+
+    span = _chebyshev_span(node2, node3)
+    assert half2 + half3 < span, "shrunk boxes must stay pairwise disjoint (Chebyshev)"
+
+
+def test_sparse_node_pair_keeps_the_full_ceiling(tmp_path: Path):
+    """Two junctions ~283 m apart (this file's own X_AT_0_003_LON distance) —
+    far past where shrinking is needed — must keep the full 15 m half-size,
+    unchanged from the generator's behaviour before this fix."""
+    node2, node3 = _built_pair(tmp_path, "sparse.osm", _MID_DELTA_LON_SPARSE)
+    assert _half_size_of(node2) == pytest.approx(draft_module.NODE_HALF_SIZE_M, abs=1e-3)
+    assert _half_size_of(node3) == pytest.approx(draft_module.NODE_HALF_SIZE_M, abs=1e-3)
+
+
+def test_a_single_node_draft_is_unaffected_by_the_shrink(tmp_path: Path):
+    """The sparse demo-crossroads case (one node, no other node to be near)
+    this generator was originally proven against: no neighbour means
+    d_nearest is infinite, so the node keeps the full ceiling exactly as
+    before #74."""
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "single.osm", crossroads_osm())), name="single"
+    )
+    assert len(draft.nodes) == 1
+    assert _half_size_of(draft.nodes[0]) == pytest.approx(draft_module.NODE_HALF_SIZE_M, abs=1e-3)
+    assert draft.metadata["node_boxes_shrunk"] == []
+    assert draft.metadata["node_boxes_overlapping_at_floor"] == []
+
+
+def test_node_half_sizes_is_deterministic_regardless_of_input_order():
+    """Same (node, position) set, two different dict/iteration orders ->
+    identical half-sizes. There is no tie-breaking here to get wrong."""
+    projected = {1: (0.0, 0.0), 2: (10.0, 0.0), 3: (10.0, 3.0), 4: (500.0, 500.0)}
+    forward = draft_module._node_half_sizes([1, 2, 3, 4], projected)
+    backward = draft_module._node_half_sizes([4, 3, 2, 1], projected)
+    assert forward == backward
+
+
+def test_node_half_sizes_pathological_pair_floors_and_is_named_overlapping():
+    """Two nodes 3 m apart (well under the ~4.243 m the floor can safely
+    cover) both floor at NODE_HALF_SIZE_FLOOR_M, and the resulting boxes DO
+    still overlap — this is the named-not-silent pathology the task
+    description calls out, not a bug in the shrink formula: merging nodes
+    this close is out of scope, so it is emitted with the floor and reported
+    rather than crashing Vissim OR silently passing."""
+    projected = {10: (0.0, 0.0), 11: (3.0, 0.0)}
+    half_sizes = draft_module._node_half_sizes([10, 11], projected)
+    assert half_sizes[10] == draft_module.NODE_HALF_SIZE_FLOOR_M == 1.5
+    assert half_sizes[11] == draft_module.NODE_HALF_SIZE_FLOOR_M
+
+    findings = draft_module._overlapping_node_pairs([10, 11], projected, half_sizes)
+    assert findings == [
+        {"osm_ids": [10, 11], "chebyshev_span_m": 3.0, "half_sizes_m": [1.5, 1.5]}
+    ]
+
+
+def test_node_half_sizes_just_above_the_floor_safe_distance_does_not_overlap():
+    """The floor's own safe-distance boundary from NODE_HALF_SIZE_FLOOR_M's
+    docstring: 2 * 1.5 * sqrt(2) ~= 4.2426 m. A pair just past it must NOT be
+    named as overlapping -- the floor is a safety net for genuine pathologies,
+    not a blanket flag on every close pair."""
+    safe_distance = 2 * draft_module.NODE_HALF_SIZE_FLOOR_M * math.sqrt(2) + 0.01
+    projected = {20: (0.0, 0.0), 21: (safe_distance, 0.0)}
+    half_sizes = draft_module._node_half_sizes([20, 21], projected)
+    findings = draft_module._overlapping_node_pairs([20, 21], projected, half_sizes)
+    assert findings == []
+
+
+def test_node_half_sizes_diagonal_dense_pair_stays_disjoint_at_the_proof_worst_case():
+    """The proof's own worst case (NODE_HALF_SIZE_SHRINK's docstring): a
+    DIAGONAL pair (dx = dy), where the Chebyshev separation
+    ``max(|dx|, |dy|) = d / sqrt(2)`` is the SMALLEST it can be for a given
+    Euclidean distance ``d`` -- i.e. the tightest the non-overlap guarantee
+    ever has to clear.
+
+    The other dense-pair tests in this file (``double_tee_osm``-based) put
+    both junctions on the SAME latitude, so ``dy ~= 0`` and
+    ``max(|dx|, |dy|) ~= d`` -- the LOOSEST case a shrink factor could be
+    checked against. A shrink big enough to still pass there (e.g. 0.45:
+    axis-aligned ``h1+h2 = 0.9d < d`` holds) is provably unsafe on the
+    diagonal (``0.9d > d/sqrt(2) ~= 0.7071d``), and only a test built on the
+    diagonal geometry can catch that. d=10 m here, split evenly across both
+    axes: (0,0) and (10/sqrt(2), 10/sqrt(2))."""
+    d = 10.0
+    offset = d / math.sqrt(2)
+    projected = {1: (0.0, 0.0), 2: (offset, offset)}
+
+    half_sizes = draft_module._node_half_sizes([1, 2], projected)
+    span = max(
+        abs(projected[1][0] - projected[2][0]), abs(projected[1][1] - projected[2][1])
+    )
+    assert span == pytest.approx(offset, abs=1e-9)
+
+    total = half_sizes[1] + half_sizes[2]
+    assert total < span, (
+        f"boxes are not Chebyshev-disjoint on the diagonal worst case: "
+        f"h1+h2={total} >= span={span}"
+    )
+    assert draft_module._overlapping_node_pairs([1, 2], projected, half_sizes) == []
+
+
+def test_dense_draft_names_its_shrunk_nodes_in_metadata(tmp_path: Path):
+    """metadata['node_boxes_shrunk'] is the transparency half of the fix: a
+    reader of the compliance report can see the network was denser than the
+    generator's own 15 m default assumes, rather than the box size silently
+    changing underneath them."""
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "dense2.osm", double_tee_osm(_MID_DELTA_LON_DENSE))),
+        name="dense2",
+    )
+    shrunk = {entry["osm_id"]: entry["half_size_m"] for entry in draft.metadata["node_boxes_shrunk"]}
+    assert shrunk == {
+        2: pytest.approx(_half_size_of([n for n in draft.nodes if n.osm_id == 2][0]), abs=1e-3),
+        3: pytest.approx(_half_size_of([n for n in draft.nodes if n.osm_id == 3][0]), abs=1e-3),
+    }
+    assert draft.metadata["node_boxes_overlapping_at_floor"] == []
+
+
+# ---------------------------------------------------------------------------
 # 2. Left-hand traffic — the silent-mirror bug, asserted by sign
 #
 # MRWA §5.2.1.1 (doc p.180): "Left-hand traffic should be adopted for Traffic

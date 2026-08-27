@@ -222,10 +222,51 @@ LANE_WIDTH_M = 3.5
 #: reversed link.
 INTERSECTION_SETBACK_M = 12.0
 
-#: Half-width of the square node polygon written for each intersection, metres.
-#: §5 states no node box size; ``data/practice.inpx`` — the only .inpx exemplar
-#: on this machine — uses a 30 m box, which is where this number comes from.
+#: Half-width of the square node polygon written for each intersection, metres
+#: — the CEILING every node box is entitled to. §5 states no node box size;
+#: ``data/practice.inpx`` — the only .inpx exemplar on this machine — uses a
+#: 30 m box, which is where this number comes from. A real dense OSM extract
+#: routinely places junctions closer than 30 m apart (2026-08-27, live run
+#: SIM_bba7f4eb: 71-node Daejeon extraction, nearest-neighbour node spacing as
+#: low as 7.4 m) — at this fixed half-size their boxes overlap and Vissim
+#: refuses the whole run ("Nodes N: ... and M: ... are overlapping.",
+#: docs/phase2/DECISIONS.md "2026-08-27 — 라이브 완주 검증 적발 2호: 밀집 정션의
+#: 노드 박스 겹침"). :func:`_node_half_sizes` shrinks each node's OWN half-size
+#: below this ceiling whenever its nearest neighbour is close enough that the
+#: full box would risk an overlap; see that function for the proof.
 NODE_HALF_SIZE_M = 15.0
+
+#: The shrink factor :func:`_node_half_sizes` applies to a node's distance to
+#: its NEAREST other emitted node, to get that node's own half-size.
+#:
+#: Two square boxes of half-size h1, h2 centred d_ij apart (Euclidean) do NOT
+#: overlap iff ``h1 + h2 < max(|dx|, |dy|)`` (Chebyshev separation — overlap on
+#: BOTH axes is required for the squares to intersect). The worst case for that
+#: right-hand side is a node pair on the diagonal (|dx| = |dy|), where
+#: ``max(|dx|, |dy|) = d_ij / sqrt(2)``.
+#:
+#: Setting each node's half-size to ``SHRINK * d_nearest(node)`` (its distance
+#: to its own closest neighbour) gives, for ANY pair i, j (not just mutual
+#: nearest neighbours — d_nearest(i) <= d_ij and d_nearest(j) <= d_ij by
+#: definition of "nearest"):
+#:
+#:     h_i + h_j <= SHRINK * d_nearest(i) + SHRINK * d_nearest(j)
+#:               <= SHRINK * d_ij + SHRINK * d_ij = 2 * SHRINK * d_ij
+#:
+#: which is < max(|dx|, |dy|) whenever ``2 * SHRINK * d_ij < d_ij / sqrt(2)``,
+#: i.e. whenever ``SHRINK < 1 / (2 * sqrt(2)) = 0.5 / sqrt(2) ~= 0.35355``.
+#: 0.34 clears that with margin (2 * 0.34 = 0.68 < 1/sqrt(2) ~= 0.70711) rather
+#: than sitting on the edge of a bound obtained from float arithmetic.
+NODE_HALF_SIZE_SHRINK = 0.34
+
+#: Hard floor on a node's half-size, metres, so a very tight cluster of nodes
+#: never degenerates to a zero- or near-zero-area box (which would in turn
+#: starve the node's own connectors of room). Below this floor the pairwise
+#: non-overlap proof above no longer applies — see
+#: :func:`_overlapping_node_pairs`, which checks the ACTUAL emitted boxes
+#: rather than trusting the proof once the floor is in play, and names any
+#: pair the floor could not save rather than emitting silent overlap.
+NODE_HALF_SIZE_FLOOR_M = 1.5
 
 #: Below this a link is not worth emitting at all, metres.
 MIN_LINK_LENGTH_M = 2.0
@@ -1334,6 +1375,84 @@ def _round_point(point: tuple[float, float]) -> tuple[float, float]:
     return round(point[0], COORD_DECIMALS), round(point[1], COORD_DECIMALS)
 
 
+def _node_half_sizes(
+    node_ids: Sequence[int], projected: dict[int, tuple[float, float]]
+) -> dict[int, float]:
+    """Each emitted node's own half-size, metres — see :data:`NODE_HALF_SIZE_SHRINK`
+    for the non-overlap proof.
+
+    ``d_nearest(node)`` is computed over the EMITTED node set only (``node_ids``
+    — the intersections this draft actually kept, not every OSM node the
+    extract touched), so a node dropped for having no surviving links cannot
+    still be shrinking its neighbours' boxes. A single-node draft has no other
+    node to be near, so ``d_nearest`` is ``math.inf`` and the node keeps the
+    full :data:`NODE_HALF_SIZE_M` ceiling — the sparse demo-crossroads case
+    this generator was originally proven against is unchanged by this
+    function.
+
+    Deterministic: the result depends only on the (node, distance) pairs, never
+    on iteration order — there is no tie-breaking here for two equally-near
+    neighbours to get wrong.
+    """
+    half_sizes: dict[int, float] = {}
+    for osm_id in node_ids:
+        x0, y0 = projected[osm_id]
+        nearest = math.inf
+        for other_id in node_ids:
+            if other_id == osm_id:
+                continue
+            x1, y1 = projected[other_id]
+            distance = math.hypot(x1 - x0, y1 - y0)
+            if distance < nearest:
+                nearest = distance
+        raw = NODE_HALF_SIZE_SHRINK * nearest  # inf * finite SHRINK stays inf
+        half_sizes[osm_id] = max(NODE_HALF_SIZE_FLOOR_M, min(NODE_HALF_SIZE_M, raw))
+    return half_sizes
+
+
+def _overlapping_node_pairs(
+    node_ids: Sequence[int],
+    projected: dict[int, tuple[float, float]],
+    half_sizes: dict[int, float],
+) -> list[dict]:
+    """Node pairs whose ACTUAL emitted boxes still overlap (or exactly touch),
+    checked directly rather than trusted from the proof — the proof in
+    :data:`NODE_HALF_SIZE_SHRINK` covers every pair EXCEPT where
+    :data:`NODE_HALF_SIZE_FLOOR_M` overrode the shrunk half-size upward for one
+    or both nodes. That can only happen for a pair closer than
+    ``2 * NODE_HALF_SIZE_FLOOR_M * sqrt(2)`` (~4.24 m at the current floor) —
+    real geometry this dense is a pathology this generator does not attempt to
+    merge away (out of scope), so it is emitted with the floor applied and
+    named here rather than left to fail silently inside Vissim the way the
+    original 30 m-box overlap did.
+
+    Two boxes of half-size h1, h2 centred ``(dx, dy)`` apart do not overlap iff
+    ``h1 + h2 < max(|dx|, |dy|)`` (Chebyshev); this returns the pairs for which
+    that is FALSE, i.e. ``h1 + h2 >= max(|dx|, |dy|)`` — touching counted as a
+    finding too, since Vissim's own tolerance at the boundary is unverified and
+    a false-positive named finding costs nothing here, unlike a silent one.
+    """
+    findings: list[dict] = []
+    ids = list(node_ids)
+    for i, node_a in enumerate(ids):
+        xa, ya = projected[node_a]
+        ha = half_sizes[node_a]
+        for node_b in ids[i + 1 :]:
+            xb, yb = projected[node_b]
+            hb = half_sizes[node_b]
+            span = max(abs(xa - xb), abs(ya - yb))
+            if ha + hb >= span:
+                findings.append(
+                    {
+                        "osm_ids": sorted((node_a, node_b)),
+                        "chebyshev_span_m": round(span, COORD_DECIMALS),
+                        "half_sizes_m": [round(ha, COORD_DECIMALS), round(hb, COORD_DECIMALS)],
+                    }
+                )
+    findings.sort(key=lambda f: f["osm_ids"])
+    return findings
+
+
 def _offset_polyline(
     points: list[tuple[float, float]], offset_m: float
 ) -> list[tuple[float, float]]:
@@ -2117,6 +2236,11 @@ def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
     # --- nodes -------------------------------------------------------------
     touched = {link.from_node_osm_id for link in links} | {link.to_node_osm_id for link in links}
     node_ids = sorted(nid for nid in intersections if nid in touched)
+    # Per-node half-size, shrunk from the NODE_HALF_SIZE_M ceiling so no two
+    # boxes can overlap — see NODE_HALF_SIZE_SHRINK's docstring for the proof.
+    # The sparse single-node case (e.g. the demo crossroads) is unaffected: with
+    # no other node to be near, every node keeps the full ceiling.
+    node_half_sizes = _node_half_sizes(node_ids, projected)
     draft.nodes = [
         DraftNode(
             id=index + 1,
@@ -2127,16 +2251,31 @@ def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
             polygon=[
                 _round_point((projected[osm_id][0] + dx, projected[osm_id][1] + dy))
                 for dx, dy in (
-                    (-NODE_HALF_SIZE_M, -NODE_HALF_SIZE_M),
-                    (NODE_HALF_SIZE_M, -NODE_HALF_SIZE_M),
-                    (NODE_HALF_SIZE_M, NODE_HALF_SIZE_M),
-                    (-NODE_HALF_SIZE_M, NODE_HALF_SIZE_M),
+                    (-node_half_sizes[osm_id], -node_half_sizes[osm_id]),
+                    (node_half_sizes[osm_id], -node_half_sizes[osm_id]),
+                    (node_half_sizes[osm_id], node_half_sizes[osm_id]),
+                    (-node_half_sizes[osm_id], node_half_sizes[osm_id]),
                 )
             ],
         )
         for index, osm_id in enumerate(node_ids)
     ]
     node_index = {node.osm_id: node.id for node in draft.nodes}
+    # Named rather than silent: nodes whose box the ceiling had to give up (so a
+    # reader of the compliance report can see the network is denser than the
+    # generator's own default assumes), and — separately — any pair the floor
+    # could not save from an actual overlap (see _overlapping_node_pairs).
+    draft.metadata["node_boxes_shrunk"] = [
+        {
+            "osm_id": osm_id,
+            "half_size_m": round(node_half_sizes[osm_id], COORD_DECIMALS),
+        }
+        for osm_id in node_ids
+        if node_half_sizes[osm_id] < NODE_HALF_SIZE_M
+    ]
+    draft.metadata["node_boxes_overlapping_at_floor"] = _overlapping_node_pairs(
+        node_ids, projected, node_half_sizes
+    )
 
     # --- connectors --------------------------------------------------------
     connectors: list[DraftConnector] = []
@@ -2807,7 +2946,32 @@ def _assumptions() -> list[GeneratorAssumption]:
             value=NODE_HALF_SIZE_M,
             basis=(
                 "§5 states no node box size. data/practice.inpx — the only .inpx exemplar on "
-                "this machine — uses a 30 m square, i.e. this half-size."
+                "this machine — uses a 30 m square, i.e. this half-size. This is a CEILING: a "
+                "node closer to another emitted node than NODE_HALF_SIZE_SHRINK allows gets a "
+                "smaller box so no two node boxes can overlap (Vissim refuses to run a network "
+                "with overlapping node boxes)."
+            ),
+        ),
+        GeneratorAssumption(
+            id="NODE_HALF_SIZE_SHRINK",
+            value=NODE_HALF_SIZE_SHRINK,
+            unit="ratio",
+            basis=(
+                "§5 states no node box size or overlap rule. The factor applied to a node's "
+                "distance to its nearest other emitted node to get that node's own half-size; "
+                "proven in code (draft.py, NODE_HALF_SIZE_SHRINK docstring) to keep every pair "
+                "of node boxes disjoint regardless of local node density."
+            ),
+        ),
+        GeneratorAssumption(
+            id="NODE_HALF_SIZE_FLOOR_M",
+            value=NODE_HALF_SIZE_FLOOR_M,
+            basis=(
+                "§5 states no node box size. The minimum half-size a shrunk node box is allowed "
+                "to fall to, so a very tight cluster of nodes does not collapse to a "
+                "zero-area box. Below the floor the non-overlap guarantee no longer holds by "
+                "construction; any pair it fails to save is named in "
+                "metadata['node_boxes_overlapping_at_floor'] rather than shipped silently."
             ),
         ),
         GeneratorAssumption(

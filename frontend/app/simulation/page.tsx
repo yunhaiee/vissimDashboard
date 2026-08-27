@@ -551,7 +551,13 @@ export default function SimulationPage() {
       </section>
 
       {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-[15px] font-medium text-rose-700">
+        // #74 fix (2): a failed run's error can now carry the .inpx's own
+        // .err content (path + Error lines) appended after a blank line --
+        // whitespace-pre-wrap so those line breaks and the .err path survive
+        // instead of collapsing into one run-on line (default `white-space:
+        // normal`), while long individual lines still wrap instead of
+        // forcing horizontal scroll.
+        <div className="whitespace-pre-wrap rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-[15px] font-medium text-rose-700">
           {error}
         </div>
       )}
@@ -1165,7 +1171,11 @@ function JobRow({ job }: { job: SimulationJob }) {
           )}
         </p>
       )}
-      {job.error && <p className="mt-2 text-[13px] text-rose-700">{job.error}</p>}
+      {job.error && (
+        // Same #74 fix (2) as the top error banner above -- this per-job
+        // history card renders the identical job.error field.
+        <p className="mt-2 whitespace-pre-wrap text-[13px] text-rose-700">{job.error}</p>
+      )}
     </div>
   );
 }

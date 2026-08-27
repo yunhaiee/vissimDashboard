@@ -233,6 +233,10 @@ def _run_simulation_locked(job_id: str, params: SimParams, source_inpx: Path):
     import pythoncom
 
     ctrl = None
+    # Bound before the try so the except block below can always reach it, even
+    # for a failure (e.g. FileNotFoundError) that happens before
+    # build_simulation_network ever runs -- see _err_context_for_job.
+    runtime_network_path: Path | None = None
     try:
         from services.vissim_com import VissimController
         from services.simulation_network_builder import build_simulation_network
@@ -343,7 +347,7 @@ def _run_simulation_locked(job_id: str, params: SimParams, source_inpx: Path):
             job_id,
             status="error",
             phase="error",
-            error=_format_simulation_error(exc),
+            error=_format_simulation_error(exc, runtime_network_path),
             last_update_at=_utc_now_iso(),
         )
     finally:
@@ -554,31 +558,110 @@ def _job_snapshot(job_id: str) -> dict | None:
     return get_job_record(job_id)
 
 
-def _format_simulation_error(exc: Exception) -> str:
+#: How many of a failed run's own .err "Error"/"critical error" lines to fold
+#: into the job's error field. The rest stay on disk at the path this quotes —
+#: named rather than reproduced in full, the same "count the rest, never hide
+#: it" rule this codebase already applies to skipped ways / duplicate OSM ways
+#: (services/genesis/draft.py).
+MAX_ERR_LINES_IN_JOB_ERROR = 20
+
+
+def _err_error_lines(text: str) -> list[str]:
+    """The lines of an .err PTV Vissim marks as a failure.
+
+    Every line observed in a real .err (2026-08-27, SIM_bba7f4eb: 59 ``Error``
+    lines plus one ``critical error`` summary line — see
+    runtime/simulations/bba7f4eb/current.bba7f4eb.interactive_001.err) carries
+    its severity as the first tab-separated field, right-padded with spaces.
+    Matched on that field ending in "error" (case-insensitive) rather than on
+    the whole line, so a stray ``Warning`` row — which did not stop the run —
+    is not folded in here and does not bury the lines that did.
+    """
+    out = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        head = stripped.split("\t", 1)[0].strip().lower()
+        if head.endswith("error"):
+            out.append(stripped)
+    return out
+
+
+def _err_context_for_job(network_path: Path | None) -> str:
+    """The failed run's own .err content, formatted for the job error field —
+    or ``""`` when there is nothing to attach (no working network path yet,
+    directory unreadable, no .err beside it, or an .err with no Error line in
+    it).
+
+    This is the ONLY consumer of the .err for an interactive run today: before
+    this, the job's error field carried nothing but the raw COM exception text
+    (``_format_simulation_error``), and the .err PTV Vissim itself writes
+    beside the working .inpx — which names the actual reason, e.g. "Nodes 1:
+    ... and 65: ... are overlapping." for a dense draft's node boxes — was
+    silently discarded (2026-08-27, docs/phase2/DECISIONS.md "라이브 완주 검증
+    적발 2호"). Reuses services.vissim_open_probe.read_err_files, the same
+    verbatim-.err reader V1's LoadOracle probe already relies on, rather than a
+    second .err reader that could drift from it.
+    """
+    if network_path is None:
+        return ""
+    directory = network_path.parent
+    if not directory.is_dir():
+        return ""
+    from services.vissim_open_probe import read_err_files
+
+    found = read_err_files(directory, pre_existing=set())
+    stem = network_path.stem
+    blocks: list[str] = []
+    for entry in found.get("files", []):
+        name = str(entry.get("name", ""))
+        # Vissim names a run's .err "<network stem>_NNN.err" (NNN = run
+        # number, always "001" for the single-seed runs this job type ever
+        # submits) — restrict to files that are plausibly THIS run's, so an
+        # unrelated .err left in the same job directory by an earlier attempt
+        # is never attributed to this one.
+        if not (name.startswith(f"{stem}_") and name.endswith(".err")):
+            continue
+        lines = _err_error_lines(str(entry.get("text", "")))
+        if not lines:
+            continue
+        shown = lines[:MAX_ERR_LINES_IN_JOB_ERROR]
+        remaining = len(lines) - len(shown)
+        header = f"VISSIM error log ({name}, {directory / name}):"
+        body = "\n".join(f"  {line}" for line in shown)
+        block = f"{header}\n{body}"
+        if remaining > 0:
+            block += f"\n  ... and {remaining} more line(s) in the file above."
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
+def _format_simulation_error(exc: Exception, network_path: Path | None = None) -> str:
     message = str(exc)
     lowered = message.lower()
 
     if isinstance(exc, SimulationParameterError) or exc.__class__.__name__ == "VissimObjectNotFoundError":
-        return message
-
-    if "scenario management" in lowered and "edit scenario" in lowered:
-        return (
+        formatted = message
+    elif "scenario management" in lowered and "edit scenario" in lowered:
+        formatted = (
             "VISSIM still detected scenario-management mode in the generated runtime INPX. "
             "This source network likely requires a manually exported standalone scenario INPX. "
             "Point VISSIM_SIMULATION_INPX_PATH to that exported file if the problem continues. "
             f"Current simulation path: {_simulation_source_inpx()}"
         )
-
-    if isinstance(exc, FileNotFoundError):
-        return message
-
-    if "itembykey" in lowered and "object does not exist" in lowered:
-        return (
+    elif isinstance(exc, FileNotFoundError):
+        formatted = message
+    elif "itembykey" in lowered and "object does not exist" in lowered:
+        formatted = (
             "The prompt referenced a VISSIM object number that does not exist in the loaded network. "
             "Ask for the current VISSIM COM status or use one of the available vehicle input or signal controller numbers."
         )
+    else:
+        formatted = f"Simulation failed: {message}"
 
-    return f"Simulation failed: {message}"
+    err_context = _err_context_for_job(network_path)
+    return f"{formatted}\n\n{err_context}" if err_context else formatted
 
 
 # ---------------------------------------------------------------------------
