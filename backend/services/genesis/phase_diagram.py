@@ -2257,6 +2257,48 @@ class PhaseDiagramStore:
         render = self.render(review_id)
         return parse_sheet_text(self.sheet_text(review_id), source_file=render.source_file)
 
+    def intersection_name_for_binding(self, review_id: str) -> str | None:
+        """This review's own 교차로명, for the CANDIDATE ranking's name signal
+        ONLY -- never the full parsed sheet (unit #73).
+
+        ``get_phase_diagram_candidates`` used to call :meth:`sheet` just to
+        read ``.intersection_name`` off the result, which drags in
+        :meth:`sheet_text`'s unconditional demand for ``sheet.txt``. That file
+        is written ONLY by :meth:`put_render` (the pdf_band / 대전-PDF path);
+        :meth:`put_manual_review` (``excel_upload``/``blank_entry`` -- the
+        template-upload path, the product's primary from-scratch route) never
+        writes one, by construction -- the review's own screen already says
+        "이미지 없음 — 엑셀 업로드로 만든 검토입니다". Calling :meth:`sheet`
+        unconditionally therefore 409'd every template review at the binding
+        step, the product's #62 candidate map included, even though the name
+        the ranking actually needs was sitting right there in the review's own
+        stored record the whole time.
+
+        This delegates to :meth:`sheet_summary`, which already branches on
+        ``render.medium`` correctly: a manual review's summary reads its own
+        stored ``intersection_name`` straight off disk (no ``sheet_text()``
+        touched at all), and a pdf_band review's summary still goes through
+        the full parse -- so a 대전-PDF review's returned name is the exact
+        same string :meth:`sheet` always gave it, unchanged.
+
+        A refusal here (missing/unparsable sheet text on a pdf_band review, or
+        any other reason the name cannot be produced) is swallowed to
+        ``None`` -- the same tolerance :meth:`index_payload` already applies
+        for the review list's own name column. This is deliberate, not lossy:
+        since #62, ``node_candidates`` given an empty target honestly returns
+        EVERY node with a named match reason, which is exactly the right
+        answer to "no name signal available," not a 409 the reviewer has no
+        action for. An UNKNOWN review still raises -- :meth:`render` below is
+        called outside the swallow, so ``phase_diagram_unknown_review`` still
+        reaches the caller as the 404 it always was.
+        """
+        self.render(review_id)  # unknown review still raises -- not swallowed
+        try:
+            name = self.sheet_summary(review_id).get("intersection_name")
+        except (PhaseDiagramRefused, OSError, ValueError):
+            return None
+        return str(name) if name else None
+
     def manual_sheet(self, review_id: str) -> dict[str, Any] | None:
         """What a no-image review knows about its intersection, or ``None``."""
         path = self.review_dir(review_id) / MANUAL_SHEET_FILENAME

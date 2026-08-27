@@ -35,6 +35,7 @@ import inspect
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,6 +52,10 @@ from services.genesis.gate import CheckState, run_gate
 from services.genesis.side_inputs import compose_from_documents, parse_side_input
 
 from tests.test_genesis_signals_daejeon import crossroads  # noqa: F401  (pytest fixture)
+# unit #73 -- the real template-upload door's workbook builder, reused rather
+# than re-invented, so the fixture below exercises the SAME parse_template +
+# /phase-diagrams/upload path the product's browser client uses.
+from tests.test_genesis_phase_template import UPLOAD_ROUTE, workbook as _template_workbook
 
 FIXTURES = Path(__file__).parent / "fixtures" / "daejeon_signal"
 
@@ -1365,6 +1370,248 @@ def test_the_candidate_route_discloses_no_truncation_when_the_signal_cannot_disc
     assert payload["total_nodes"] == 25
     assert payload["returned_nodes"] == 25
     assert len(payload["candidates"]) == 25
+
+
+def test_the_candidate_route_names_the_intersection_for_a_daejeon_pdf_review(
+    client, headers, seeded, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression pin (unit #73): a 대전-PDF review's ``intersection_name`` on
+    this route is still read off the FULL parsed sheet, byte-identical to what
+    ``store.sheet(review_id).intersection_name`` always returned -- the fix
+    must not change this medium's behaviour at all, only add a second one."""
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    assert store.sheet(seeded).intersection_name == "가상감응네거리"
+
+    nodes = _osm_style_nodes(3)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    census_path = tmp_path / "osm.genesis.json"
+    census_path.write_text(draft.model_dump_json(), encoding="utf-8")
+
+    def fake_artifact_path(job_id: str, kind: str) -> Path:
+        return census_path
+
+    monkeypatch.setattr(genesis_jobs, "artifact_path", fake_artifact_path)
+
+    response = client.get(
+        f"/api/genesis/phase-diagrams/{seeded}/network-candidates",
+        headers=headers,
+        params={"job_id": "does-not-need-to-exist"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["intersection_name"] == "가상감응네거리"
+
+
+def test_the_candidate_route_404s_an_unknown_review_unchanged(client, headers):
+    """The fix must not weaken review-id validation -- an unknown review still
+    404s with the same code, whether or not it ever had sheet text."""
+    response = client.get(
+        f"/api/genesis/phase-diagrams/{'0' * 16}/network-candidates",
+        headers=headers,
+        params={"job_id": "does-not-need-to-exist"},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "phase_diagram_unknown_review"
+
+
+@pytest.fixture()
+def template_review(client, headers) -> str:
+    """One review created through the REAL template-upload door -- the same
+    ``parse_template`` + ``POST /phase-diagrams/upload`` path the product's
+    browser client uses, and the exact path unit #73's live measurement used
+    (엑셀 리뷰). ``excel_upload`` medium: no image, no ``sheet.txt`` -- this is
+    the review kind that 409'd on network-candidates before the fix.
+    """
+    rows = [
+        ["1522", "원신흥네거리", "Φ1", "가상접근로1", "직진", 3.0, "", ""],
+        ["1522", "원신흥네거리", "Φ2", "가상접근로2", "좌회전", "", "", ""],
+    ]
+    content = _template_workbook(rows)
+    response = client.post(
+        f"{UPLOAD_ROUTE}?filename={quote('현시도.xlsx', safe='')}",
+        headers=headers,
+        content=content,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["refusals"] == []
+    return body["created"][0]["review_id"]
+
+
+def test_the_candidate_route_works_for_a_template_review_with_no_sheet_text(
+    client, headers, template_review, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """THE regression this unit fixes (measured live 2026-08-27, DECISIONS.md
+    '라이브 완주 검증이 적발'): an excel-template review has no ``sheet.txt`` BY
+    CONSTRUCTION, yet the candidate route used to call ``store.sheet()``
+    unconditionally and 409 ``phase_diagram_no_sheet_text`` -- unreachable
+    binding on the product's primary from-scratch path. It must now return
+    200 with the review's own stored name and the same #62 disclosure shape a
+    대전-PDF review gets.
+    """
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    # `sheet()`/`sheet_text()` themselves still guard -- unchanged. A template
+    # review never gets a free pass around the gate; the CANDIDATE ROUTE just
+    # no longer needs to pass through it.
+    with pytest.raises(pd.PhaseDiagramRefused) as excinfo:
+        store.sheet_text(template_review)
+    assert excinfo.value.code == "phase_diagram_no_sheet_text"
+
+    nodes = [
+        DraftNode(id=1, name="원신흥네거리", osm_id=1, x=0.0, y=0.0, polygon=[]),
+    ] + _osm_style_nodes(7, start_id=2)
+    draft = DraftNetwork(name="mixed", source_osm="mixed.osm", nodes=nodes)
+    census_path = tmp_path / "mixed.genesis.json"
+    census_path.write_text(draft.model_dump_json(), encoding="utf-8")
+
+    def fake_artifact_path(job_id: str, kind: str) -> Path:
+        return census_path
+
+    monkeypatch.setattr(genesis_jobs, "artifact_path", fake_artifact_path)
+
+    response = client.get(
+        f"/api/genesis/phase-diagrams/{template_review}/network-candidates",
+        headers=headers,
+        params={"job_id": "does-not-need-to-exist"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["intersection_name"] == "원신흥네거리"
+    assert payload["total_nodes"] == 8
+    # the name signal DOES discriminate (one exact match among 7 OSM-style
+    # nodes), so node 1 is ranked first with a real match reason -- the same
+    # #62 disclosure shape a 대전-PDF review gets, not a degraded one.
+    assert payload["candidates"][0]["node_id"] == 1
+    assert payload["candidates"][0]["match_reason"]
+    assert payload["returned_nodes"] == len(payload["candidates"])
+
+
+def test_the_candidate_route_honestly_returns_every_node_when_a_manual_reviews_name_is_absent(
+    client, headers, workspace_root, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """The OTHER half of #73's guidance: when even the name is genuinely
+    absent, the route passes ``None`` rather than refusing -- #62's
+    non-discriminating ranking then honestly returns every node, which is
+    the right answer to "no name signal", not a 409 the reviewer cannot act
+    on. Built directly at the store layer (rather than a door) because every
+    shipped door requires a non-empty name; this proves the ACCESSOR itself
+    degrades gracefully for a record that somehow carries none.
+    """
+    store = pd.PhaseDiagramStore(genesis_jobs.genesis_dir() / "phase-diagrams")
+    review_id = pd.review_id_for("이름없음")
+    store.put_manual_review(
+        review_id,
+        pd.manual_render(
+            medium="blank_entry",
+            source_file="이름없음",
+            source_sha256=pd.sha256_hex(b"no-name"),
+        ),
+        sheet={"intersection_name": None, "intersection_no": None, "phase_ids": []},
+    )
+    assert store.intersection_name_for_binding(review_id) is None
+
+    nodes = _osm_style_nodes(5)
+    draft = DraftNetwork(name="osm-draft", source_osm="region.osm", nodes=nodes)
+    census_path = tmp_path / "osm.genesis.json"
+    census_path.write_text(draft.model_dump_json(), encoding="utf-8")
+
+    def fake_artifact_path(job_id: str, kind: str) -> Path:
+        return census_path
+
+    monkeypatch.setattr(genesis_jobs, "artifact_path", fake_artifact_path)
+
+    response = client.get(
+        f"/api/genesis/phase-diagrams/{review_id}/network-candidates",
+        headers=headers,
+        params={"job_id": "does-not-need-to-exist"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["intersection_name"] is None
+    assert payload["total_nodes"] == 5
+    assert payload["returned_nodes"] == 5, "no name signal -- nothing is cut, per #62"
+
+
+def test_intersection_name_for_binding_matches_sheet_for_a_daejeon_pdf_review(tmp_path, render):
+    """Same value :meth:`PhaseDiagramStore.sheet` always gave for this medium
+    -- the new accessor changes NOTHING for the path that already worked."""
+    png, record = render
+    store = pd.PhaseDiagramStore(tmp_path / "reviews")
+    review_id = store.put_render(png, record, sheet_text=sheet_text())
+    assert (
+        store.intersection_name_for_binding(review_id)
+        == store.sheet(review_id).intersection_name
+        == "가상감응네거리"
+    )
+
+
+def test_intersection_name_for_binding_is_none_when_a_pdf_reviews_sheet_text_is_gone(
+    tmp_path, render
+):
+    """A pdf_band review's ``sheet.txt`` is written atomically with its render
+    by :meth:`put_render`, so it is missing only in a genuinely broken state
+    (disk trouble, manual tampering) -- unlike a template review, this is not
+    the CONSTRUCTION of the record. Even so, the binding accessor degrades to
+    ``None`` rather than raising: #73 asked that a name the route cannot
+    produce become an honest "no signal", never a 409 the reviewer cannot act
+    on -- for every medium, not just the one that is missing sheet text by
+    design. ``sheet()``/``sheet_text()`` themselves still raise, unchanged --
+    only this accessor swallows it."""
+    png, record = render
+    store = pd.PhaseDiagramStore(tmp_path / "reviews")
+    review_id = store.put_render(png, record, sheet_text=sheet_text())
+    (store.review_dir(review_id) / pd.SHEET_TEXT_FILENAME).unlink()
+
+    with pytest.raises(pd.PhaseDiagramRefused) as excinfo:
+        store.sheet_text(review_id)
+    assert excinfo.value.code == "phase_diagram_no_sheet_text"
+
+    assert store.intersection_name_for_binding(review_id) is None
+
+
+def test_intersection_name_for_binding_still_404s_an_unknown_review(tmp_path):
+    store = pd.PhaseDiagramStore(tmp_path / "reviews")
+    with pytest.raises(pd.PhaseDiagramRefused) as excinfo:
+        store.intersection_name_for_binding("0" * 16)
+    assert excinfo.value.code == "phase_diagram_unknown_review"
+
+
+def test_sheet_text_gate_still_guards_the_paths_that_build_an_actual_plan(tmp_path, render):
+    """Unit #73's OTHER half: naming the callers that legitimately still need
+    the FULL sheet text, so the fix does not quietly weaken them along with
+    the candidate route. All four apply only to ``pdf_band`` reviews -- the
+    medium that a 대전 sheet's own timing arithmetic is derived from, which no
+    accessor can substitute a bare name for:
+
+    * :meth:`PhaseDiagramStore.timing_plans` -- the confirm screen's 신호 시간
+      table, for a pdf_band review, is `phase_template.daejeon_timing_payload`
+      applied to the parsed sheet;
+    * :meth:`PhaseDiagramStore.sheet_summary` -- a pdf_band review's phase and
+      movement disclosure (``_sheet_summary``) IS the parsed sheet;
+    * ``routers.genesis._export_entry`` -- a pdf_band review's exported timing
+      rows come from the same `daejeon_timing_payload(store.sheet(...))` call;
+    * :meth:`PhaseDiagramStore.confirmed_mapping` -- the LAST step, building
+      the actual signals document a pdf_band confirmation emits, needs the raw
+      sheet text itself (`ConfirmedMapping(sheet_text=...)`).
+
+    This test pins the confirmation step itself: :meth:`put_attestation` reads
+    :meth:`sheet_summary` to validate the plan being confirmed
+    (``_refuse_unknown_plan``/``_refuse_stale_amber``), which for a pdf_band
+    review means the FULL parse -- so a pdf_band review missing its sheet text
+    cannot even be confirmed, let alone reach :meth:`confirmed_mapping`'s own
+    sheet-text read at the end of the chain. The other three call sites named
+    above are exercised elsewhere in this file (`test_a_confirmed_review_...`
+    in `test_genesis_phase_template.py`, `test_the_daejeon_round_trip_...`)
+    and stay green unmodified by this change.
+    """
+    png, record = render
+    store = pd.PhaseDiagramStore(tmp_path / "reviews")
+    review_id = store.put_render(png, record, sheet_text=sheet_text())
+    declare_amber(store, review_id)
+    (store.review_dir(review_id) / pd.SHEET_TEXT_FILENAME).unlink()
+
+    with pytest.raises(pd.PhaseDiagramRefused) as excinfo:
+        store.put_attestation(review_id, attestation_for(record, proposal_outcome="none"))
+    assert excinfo.value.code == "phase_diagram_no_sheet_text"
 
 
 def _confirmation_body(record: pd.DiagramRender, **overrides: Any) -> dict[str, Any]:

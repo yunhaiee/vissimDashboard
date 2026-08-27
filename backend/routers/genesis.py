@@ -2719,8 +2719,16 @@ def get_phase_diagram_candidates(
     from services.genesis.draft import DraftNetwork
 
     store = _phase_diagram_store()
+    # unit #73 -- this route only ever needs the NAME for the ranking's name
+    # signal, never the full parsed sheet, so it must not demand `sheet_text`
+    # the way `store.sheet()` unconditionally does. An excel_upload/blank_entry
+    # (template) review never has a sheet.txt by construction; the accessor
+    # below reads that review's own stored name instead and returns None
+    # (never a 409) when no name is available at all -- `node_candidates`
+    # honestly returns every node in that case. An unknown review_id still
+    # 404s, unchanged.
     try:
-        sheet = store.sheet(review_id)
+        intersection_name = store.intersection_name_for_binding(review_id)
     except phase_diagram.PhaseDiagramRefused as exc:
         raise _phase_diagram_refusal(exc) from exc
     try:
@@ -2736,11 +2744,11 @@ def get_phase_diagram_candidates(
             status_code=409,
             detail=f"That generation's draft could not be read. [{type(exc).__name__}: {exc}]",
         ) from exc
-    candidates = phase_diagram.node_candidates(draft, intersection_name=sheet.intersection_name)
+    candidates = phase_diagram.node_candidates(draft, intersection_name=intersection_name)
     return {
         "review_id": review_id,
         "job_id": job_id,
-        "intersection_name": sheet.intersection_name,
+        "intersection_name": intersection_name,
         "candidates": candidates,
         # unit #62 -- ADDITIVE disclosure fields. `node_candidates` truncates
         # ONLY when its name ranking actually discriminates, but even then a
