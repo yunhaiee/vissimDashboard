@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 620" width="1280" height="620" font-family="Pretendard, 'Segoe UI', 'Noto Sans KR', sans-serif">
+  <rect width="1280" height="620" fill="#1a1a19"/>
+
+  <text x="64" y="70" fill="#ffffff" font-size="30" font-family="'Iowan Old Style', Palatino, Georgia, serif">The validation layer is four surfaces, not one</text>
+  <text x="64" y="102" fill="#898781" font-size="16">Each one guards a different moment. The V1–V9 gate is the third of them — it guards what is built, not what is edited.</text>
+
+  <!-- timeline spine -->
+  <line x1="64" y1="164" x2="1216" y2="164" stroke="rgba(255,255,255,0.07)"/>
+  <text x="64" y="146" fill="#6a6862" font-size="12" letter-spacing="1.4">WHEN</text>
+
+  <text x="152" y="146" fill="#6a6862" font-size="12">before an edit</text>
+  <text x="452" y="146" fill="#6a6862" font-size="12">after a write</text>
+  <text x="742" y="146" fill="#6a6862" font-size="12">before publishing a build</text>
+  <text x="1042" y="146" fill="#6a6862" font-size="12">after a run</text>
+
+  <!-- 1 constraint catalogue -->
+  <rect x="64" y="196" width="272" height="286" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="88" y="230" fill="#6a6862" font-size="12" letter-spacing="1.4">01</text>
+  <text x="88" y="260" fill="#ffffff" font-size="19">Constraint catalogue</text>
+  <text x="88" y="292" fill="#898781" font-size="13.5">Checks a proposed edit before</text>
+  <text x="88" y="312" fill="#898781" font-size="13.5">Vissim is touched at all.</text>
+  <text x="88" y="348" fill="#4c8dff" font-size="26">117</text>
+  <text x="88" y="372" fill="#6a6862" font-size="12.5">named messages, in three languages</text>
+  <text x="88" y="410" fill="#c3c2b7" font-size="13">Includes reference integrity:</text>
+  <text x="88" y="430" fill="#c3c2b7" font-size="13">a link still referenced by</text>
+  <text x="88" y="450" fill="#c3c2b7" font-size="13">connectors cannot be removed.</text>
+
+  <!-- 2 read-back -->
+  <rect x="364" y="196" width="272" height="286" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="388" y="230" fill="#6a6862" font-size="12" letter-spacing="1.4">02</text>
+  <text x="388" y="260" fill="#ffffff" font-size="19">Read-back verification</text>
+  <text x="388" y="292" fill="#898781" font-size="13.5">The value written is compared</text>
+  <text x="388" y="312" fill="#898781" font-size="13.5">against the value Vissim reports.</text>
+  <text x="388" y="356" fill="#c3c2b7" font-size="13">This is the check neither prior</text>
+  <text x="388" y="376" fill="#c3c2b7" font-size="13">SUMO agent performs — and the</text>
+  <text x="388" y="396" fill="#c3c2b7" font-size="13">one a silent simulator requires.</text>
+  <text x="388" y="436" fill="#898781" font-size="13">Backed by a shadow model, an</text>
+  <text x="388" y="456" fill="#898781" font-size="13">append-only trace, and rollback.</text>
+
+  <!-- 3 the gate  (highlighted) -->
+  <rect x="664" y="196" width="272" height="286" rx="12" fill="rgba(224,133,119,0.10)" stroke="rgba(224,133,119,0.35)"/>
+  <text x="688" y="230" fill="#e49787" font-size="12" letter-spacing="1.4">03</text>
+  <text x="688" y="260" fill="#ffffff" font-size="19">Generation gate</text>
+  <text x="688" y="284" fill="#e49787" font-size="15" font-family="'JetBrains Mono', Consolas, monospace">V1 – V9</text>
+  <text x="688" y="316" fill="#c3c2b7" font-size="13.5">Judges a network the system</text>
+  <text x="688" y="336" fill="#c3c2b7" font-size="13.5">generated, before it is published.</text>
+  <text x="688" y="380" fill="#e49787" font-size="26">78</text>
+  <text x="688" y="404" fill="#6a6862" font-size="12.5">finding codes across nine checks</text>
+  <text x="688" y="440" fill="#c3c2b7" font-size="13">Six checks can refuse;</text>
+  <text x="688" y="460" fill="#c3c2b7" font-size="13">three can only annotate.</text>
+
+  <!-- 4 reality check -->
+  <rect x="964" y="196" width="252" height="286" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="988" y="230" fill="#6a6862" font-size="12" letter-spacing="1.4">04</text>
+  <text x="988" y="260" fill="#ffffff" font-size="19">Reality check</text>
+  <text x="988" y="292" fill="#898781" font-size="13.5">Model volumes against</text>
+  <text x="988" y="312" fill="#898781" font-size="13.5">observed counts.</text>
+  <text x="988" y="356" fill="#4c8dff" font-size="26">GEH 5</text>
+  <text x="988" y="380" fill="#6a6862" font-size="12.5">threshold, per movement and node</text>
+  <text x="988" y="416" fill="#c3c2b7" font-size="13">A check that cannot run</text>
+  <text x="988" y="436" fill="#c3c2b7" font-size="13">reports NOT_CHECKABLE</text>
+  <text x="988" y="456" fill="#c3c2b7" font-size="13">with its reason.</text>
+
+  <!-- closing -->
+  <line x1="64" y1="524" x2="1216" y2="524" stroke="rgba(255,255,255,0.07)"/>
+  <text x="64" y="562" fill="#ffffff" font-size="19">Each surface answers a different question, and each one is allowed to say no.</text>
+  <text x="64" y="590" fill="#898781" font-size="14">Is this edit legal · did it actually take effect · is this network sound · does the model match reality</text>
+</svg>

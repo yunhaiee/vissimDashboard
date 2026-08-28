@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720" font-family="Pretendard, 'Segoe UI', 'Noto Sans KR', sans-serif">
+  <rect width="1280" height="720" fill="#1a1a19"/>
+
+  <text x="64" y="70" fill="#ffffff" font-size="30" font-family="'Iowan Old Style', Palatino, Georgia, serif">The generation gate — V1 to V9</text>
+  <text x="64" y="102" fill="#898781" font-size="16">Nine checks in a fixed order, split into two tiers. Six can stop a network; three can only annotate it.</text>
+
+  <!-- ================= REFUSE TIER ================= -->
+  <rect x="64" y="134" width="700" height="446" rx="12" fill="rgba(224,133,119,0.10)" stroke="rgba(224,133,119,0.35)"/>
+  <text x="88" y="168" fill="#e49787" font-size="15" letter-spacing="0.6">REFUSE TIER — a fault here blocks publication</text>
+
+  <line x1="88" y1="184" x2="740" y2="184" stroke="rgba(224,133,119,0.35)"/>
+
+  <text x="88" y="216" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V1</text>
+  <text x="140" y="216" fill="#ffffff" font-size="17">Load oracle</text>
+  <text x="140" y="238" fill="#c3c2b7" font-size="13">A real PTV Vissim opens the file — the only check that can prove it.</text>
+
+  <text x="88" y="282" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V2</text>
+  <text x="140" y="282" fill="#ffffff" font-size="17">Reference integrity</text>
+  <text x="140" y="304" fill="#c3c2b7" font-size="13">Every id points at an object that exists, in the id space it belongs to.</text>
+
+  <text x="88" y="348" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V3</text>
+  <text x="140" y="348" fill="#ffffff" font-size="17">Connectivity</text>
+  <text x="140" y="370" fill="#c3c2b7" font-size="13">Traffic can enter and leave every region — no isolated pockets.</text>
+
+  <text x="88" y="414" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V4</text>
+  <text x="140" y="414" fill="#ffffff" font-size="17">Lane continuity</text>
+  <text x="140" y="436" fill="#c3c2b7" font-size="13">Lane counts stay consistent across every connection; no distance is invented.</text>
+
+  <text x="88" y="480" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V5</text>
+  <text x="140" y="480" fill="#ffffff" font-size="17">Signal and geometry consistency</text>
+  <text x="140" y="502" fill="#c3c2b7" font-size="13">Every signal head, group and controller resolves to real geometry.</text>
+
+  <text x="88" y="546" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V6</text>
+  <text x="140" y="546" fill="#ffffff" font-size="17">Demand coverage</text>
+  <text x="140" y="568" fill="#c3c2b7" font-size="13">Structure must cover the network it claims; capacity is a warning, not a refusal.</text>
+
+  <!-- ================= WARN TIER ================= -->
+  <rect x="796" y="134" width="420" height="262" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="820" y="168" fill="#898781" font-size="15" letter-spacing="0.6">WARN TIER — named, never silent, never blocking</text>
+  <line x1="820" y1="184" x2="1192" y2="184" stroke="rgba(255,255,255,0.07)"/>
+
+  <text x="820" y="220" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V7</text>
+  <text x="872" y="220" fill="#ffffff" font-size="16">Geometry sanity</text>
+
+  <text x="820" y="268" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V8</text>
+  <text x="872" y="268" fill="#ffffff" font-size="16">Conflict coverage</text>
+
+  <text x="820" y="316" fill="#ffffff" font-size="17" font-family="'JetBrains Mono', Consolas, monospace">V9</text>
+  <text x="872" y="316" fill="#ffffff" font-size="16">Measurement readiness</text>
+
+  <text x="820" y="362" fill="#898781" font-size="13">A warning is written down with its reason.</text>
+  <text x="820" y="382" fill="#898781" font-size="13">Discarding something unnamed is what is forbidden.</text>
+
+  <!-- ================= VERDICT ================= -->
+  <rect x="796" y="420" width="420" height="160" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="820" y="452" fill="#4c8dff" font-size="15" letter-spacing="0.6">ONE VERDICT, THREE VALUES</text>
+
+  <text x="820" y="486" fill="#ffffff" font-size="13" font-family="'JetBrains Mono', Consolas, monospace">PASS</text>
+  <text x="924" y="486" fill="#898781" font-size="13">every refuse-tier check genuinely passed</text>
+
+  <text x="820" y="516" fill="#e49787" font-size="13" font-family="'JetBrains Mono', Consolas, monospace">REFUSED</text>
+  <text x="924" y="516" fill="#898781" font-size="13">a refuse-tier check proved a fault</text>
+
+  <text x="820" y="546" fill="#e49787" font-size="13" font-family="'JetBrains Mono', Consolas, monospace">INCOMPLETE</text>
+  <text x="924" y="546" fill="#898781" font-size="13">no fault, but a check could not run</text>
+
+  <!-- closing line -->
+  <line x1="64" y1="616" x2="1216" y2="616" stroke="rgba(255,255,255,0.07)"/>
+  <text x="64" y="652" fill="#ffffff" font-size="19">A check that could not run is never a pass.</text>
+  <text x="64" y="680" fill="#898781" font-size="14">Without V1's live evidence the verdict is INCOMPLETE with V1 named — not a green light. 78 distinct finding codes across the nine checks.</text>
+</svg>

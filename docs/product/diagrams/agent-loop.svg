@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720" font-family="Pretendard, 'Segoe UI', 'Noto Sans KR', sans-serif">
+  <rect width="1280" height="720" fill="#1a1a19"/>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="rgba(255,255,255,0.35)"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e49787"/>
+    </marker>
+  </defs>
+
+  <text x="64" y="72" fill="#ffffff" font-size="30" font-family="'Iowan Old Style', Palatino, Georgia, serif">How one edit reaches Vissim</text>
+  <text x="64" y="104" fill="#898781" font-size="16">Every write passes all six stages. Two of them can stop it — and stopping is a result, not a failure.</text>
+
+  <!-- 1 Plan -->
+  <rect x="64" y="164" width="228" height="128" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="86" y="196" fill="#6a6862" font-size="12" letter-spacing="1.4">01</text>
+  <text x="86" y="224" fill="#ffffff" font-size="18">Plan</text>
+  <text x="86" y="252" fill="#898781" font-size="13">The model reads the network</text>
+  <text x="86" y="272" fill="#898781" font-size="13">before proposing anything.</text>
+
+  <!-- 2 Tool call -->
+  <rect x="332" y="164" width="228" height="128" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="354" y="196" fill="#6a6862" font-size="12" letter-spacing="1.4">02</text>
+  <text x="354" y="224" fill="#ffffff" font-size="18">Tool call</text>
+  <text x="354" y="252" fill="#898781" font-size="13">87 registered tools,</text>
+  <text x="354" y="272" fill="#898781" font-size="13">typed schemas, strict dispatch.</text>
+
+  <!-- 3 Constraint check -->
+  <rect x="600" y="164" width="228" height="128" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="622" y="196" fill="#6a6862" font-size="12" letter-spacing="1.4">03</text>
+  <text x="622" y="224" fill="#ffffff" font-size="18">Constraint check</text>
+  <text x="622" y="252" fill="#898781" font-size="13">117 named messages,</text>
+  <text x="622" y="272" fill="#898781" font-size="13">checked before Vissim is touched.</text>
+
+  <!-- 4 Human approval -->
+  <rect x="868" y="164" width="228" height="128" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="890" y="196" fill="#6a6862" font-size="12" letter-spacing="1.4">04</text>
+  <text x="890" y="224" fill="#ffffff" font-size="18">Human approval</text>
+  <text x="890" y="252" fill="#898781" font-size="13">Who approved, and why.</text>
+  <text x="890" y="272" fill="#898781" font-size="13">The reason enters the audit file.</text>
+
+  <line x1="292" y1="228" x2="326" y2="228" stroke="rgba(255,255,255,0.35)" marker-end="url(#a)"/>
+  <line x1="560" y1="228" x2="594" y2="228" stroke="rgba(255,255,255,0.35)" marker-end="url(#a)"/>
+  <line x1="828" y1="228" x2="862" y2="228" stroke="rgba(255,255,255,0.35)" marker-end="url(#a)"/>
+
+  <!-- down to apply -->
+  <path d="M982,292 L982,344 L640,344 L640,384" fill="none" stroke="rgba(255,255,255,0.35)" marker-end="url(#a)"/>
+
+  <!-- 5 Apply + read back -->
+  <rect x="412" y="384" width="456" height="128" rx="12" fill="rgba(76,141,255,0.16)" stroke="#4c8dff"/>
+  <text x="436" y="416" fill="#4c8dff" font-size="12" letter-spacing="1.4">05</text>
+  <text x="436" y="444" fill="#ffffff" font-size="18">Apply over COM, then read back</text>
+  <text x="436" y="472" fill="#c3c2b7" font-size="13">The value written is compared against the value Vissim reports.</text>
+  <text x="436" y="492" fill="#c3c2b7" font-size="13">A silent disagreement is the failure mode this exists to catch.</text>
+
+  <!-- 6 Trace + rollback -->
+  <rect x="412" y="556" width="456" height="112" rx="12" fill="none" stroke="rgba(255,255,255,0.10)"/>
+  <text x="436" y="588" fill="#6a6862" font-size="12" letter-spacing="1.4">06</text>
+  <text x="436" y="616" fill="#ffffff" font-size="18">Trace and rollback</text>
+  <text x="436" y="644" fill="#898781" font-size="13">Append-only log, shadow model, versioned artifacts, rollback_last_edit.</text>
+  <line x1="640" y1="512" x2="640" y2="550" stroke="rgba(255,255,255,0.35)" marker-end="url(#a)"/>
+
+  <!-- Refusal branch -->
+  <path d="M714,292 L714,330 L1148,330 L1148,384" fill="none" stroke="#e49787" stroke-dasharray="4 4" marker-end="url(#ar)"/>
+  <rect x="928" y="384" width="288" height="300" rx="12" fill="rgba(224,133,119,0.10)" stroke="rgba(224,133,119,0.35)"/>
+  <text x="952" y="418" fill="#e49787" font-size="18">Refused, with a reason</text>
+  <text x="952" y="446" fill="#c3c2b7" font-size="13">Not a silent failure and not a</text>
+  <text x="952" y="466" fill="#c3c2b7" font-size="13">guess. A named, machine-readable</text>
+  <text x="952" y="486" fill="#c3c2b7" font-size="13">code, in three languages.</text>
+  <text x="952" y="528" fill="#898781" font-size="12" font-family="'JetBrains Mono', Consolas, monospace">NO_TARGET_OBJECT</text>
+  <text x="952" y="554" fill="#898781" font-size="12" font-family="'JetBrains Mono', Consolas, monospace">MODEL_REPRODUCES_OBSERVED</text>
+  <text x="952" y="580" fill="#898781" font-size="12" font-family="'JetBrains Mono', Consolas, monospace">INPUT_VOLUME_IS_OBSERVED_DATA</text>
+  <text x="952" y="606" fill="#898781" font-size="12" font-family="'JetBrains Mono', Consolas, monospace">NOT_CHECKABLE</text>
+  <line x1="952" y1="626" x2="1192" y2="626" stroke="rgba(224,133,119,0.35)"/>
+  <text x="952" y="652" fill="#c3c2b7" font-size="12.5">A refusal costs one message.</text>
+  <text x="952" y="672" fill="#c3c2b7" font-size="12.5">A wrong edit costs a study.</text>
+
+  <text x="736" y="322" fill="#e49787" font-size="12">stopped at 03 or 04</text>
+</svg>
