@@ -54,7 +54,7 @@ export default function ComparisonChart({ scenarios, selected, results }: Props)
         <h3 className="text-[15px] font-semibold text-slate-600 mb-3">지표별 비교 (막대)</h3>
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={barData} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#33332f" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
             <XAxis dataKey="metric" tick={{ fontSize: 11 }} />
             <YAxis tick={{ fontSize: 11 }} />
             <Tooltip />
@@ -70,7 +70,7 @@ export default function ComparisonChart({ scenarios, selected, results }: Props)
         <h3 className="text-[15px] font-semibold text-slate-600 mb-3">다지표 레이더 (정규화 0-100)</h3>
         <ResponsiveContainer width="100%" height={280}>
           <RadarChart data={radarData}>
-            <PolarGrid stroke="#33332f" />
+            <PolarGrid stroke="var(--chart-grid)" />
             <PolarAngleAxis dataKey="metric" tick={{ fontSize: 11 }} />
             {activeMetas.map((s) => (
               <Radar key={s.id} name={s.name} dataKey={s.name} stroke={s.color} fill={s.color} fillOpacity={0.18} />

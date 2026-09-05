@@ -10,6 +10,20 @@ on screen anymore.
 Ranks refer to the original audit numbering. File refs may drift as `dashboard/page.tsx` evolves —
 re-grep the quoted identifiers rather than trusting line numbers.
 
+## 2026-09-04 — the palette lock has two members now
+
+User-directed: a **light theme** ("L2 Console white", chosen over a warm-ivory L1 from a
+side-by-side mockup) joins the locked dark one. Toggle = the sun/moon button in the topbar
+(`components/AppShell.tsx` `ThemeToggle`), preference in localStorage `vissim-theme`, stamped
+pre-paint by `public/theme-init.js`, tokens in `app/globals.css` under `html[data-theme="light"]`.
+Every "palette/theme frozen" note below still holds — for BOTH palettes; adjust in globals.css,
+never inline. Scope shipped: shell, tokens, the inverted Tailwind remap mirrored, chart grids and
+axes, CARTO basemap `dark_all`/`light_all`, white-alpha fills swept to slate tokens.
+**Deferred (S2):** the ~120 dark-tuned feature-colour literals in the nine Leaflet/d3 map
+components (`MapViewer`, `DashboardMap`, `BaseValidationMap`, `NetworkViewer`, genesis maps,
+`ApprovalFocusMap`) and a light-background contrast pass on `lib/scenarioPalette.ts` — they read
+on light tiles today but were never measured against them.
+
 ## 2026-08-12 user intake — awaiting elaboration (do not spec yet)
 
 Direct user feedback, recorded verbatim in intent, details to follow from the user:

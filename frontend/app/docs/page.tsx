@@ -88,7 +88,7 @@ export default function DocsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
       <header className="mb-10">
-        <h1 className="text-[22px] font-semibold tracking-tight text-white">
+        <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
           {t("문서", "Documentation", "ドキュメント")}
         </h1>
         <p className="mt-2 text-[15px] leading-relaxed text-slate-500">

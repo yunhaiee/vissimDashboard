@@ -152,7 +152,11 @@ AI의 능력이 아니라 **검증 계층이 제품의 본체**입니다. 편집
 
 ## 로컬 실행
 
-Python 3.11+ 와 Node.js가 필요합니다. 터미널 두 개로 백엔드·프론트엔드를 각각 실행합니다.
+Python 3.11+ 와 Node.js 22+ 가 필요합니다. 터미널 두 개로 백엔드·프론트엔드를 각각 실행합니다.
+
+> **Windows + Vissim PC에 처음 설치한다면** `scripts/windows/01-setup.cmd` 부터 `06-create-admin.cmd` 까지
+> 더블클릭 순서로 끝납니다. 단계별 안내(KO/EN)와 데모 진행 순서는
+> [`docs/handover/demo-handover-guide.md`](docs/handover/demo-handover-guide.md) 를 보세요.
 
 ```powershell
 # 터미널 1: 백엔드

@@ -1026,7 +1026,7 @@ export default function DashboardPage() {
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-[22px] font-semibold tracking-tight text-white">
+            <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
               {t("교통 운영 분석", "Traffic Operations Analysis")}
             </h1>
             <p className="text-[15px] text-slate-600">
@@ -1563,7 +1563,7 @@ function DashboardUploadRequiredPanel() {
       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-[15px] font-black text-amber-600">
         DATA
       </div>
-      <h2 className="mt-4 text-[15px] font-semibold text-white">
+      <h2 className="mt-4 text-[15px] font-semibold text-slate-900">
         {t("업로드한 VISSIM 데이터셋이 필요합니다", "Uploaded VISSIM Dataset Required")}
       </h2>
       <p className="mx-auto mt-2 max-w-2xl text-[15px] leading-relaxed text-slate-600">
@@ -1739,7 +1739,7 @@ function IntersectionMetricBars({
           return (
             <div key={item.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
               <span className="truncate text-[13px] font-semibold text-slate-700">{item.nodeName}</span>
-              <span className="h-3 overflow-hidden bg-white/[0.05]">
+              <span className="h-3 overflow-hidden bg-slate-100">
                 {item.value != null && (
                   <span className="block h-full" style={{ width: `${width}%`, backgroundColor: METRIC_BAR_COLOR }} />
                 )}
@@ -1800,14 +1800,14 @@ function DirectionDelayChart({
           <div className="mt-4 grid h-32 grid-cols-4 items-end gap-2 border-b border-slate-200 pb-2">
             {values.map(({ direction, value, los }) => {
               const height = value != null ? Math.max(10, (value / maxValue) * 100) : 0;
-              const color = los ? LOS_COLORS[los] : "#45443f";
+              const color = los ? LOS_COLORS[los] : "var(--chart-axis-line)";
 
               return (
                 <div key={direction} className="flex h-full flex-col items-center justify-end gap-1">
                   <span className="text-[12px] font-bold tabular-nums text-slate-800">
                     {value != null ? `${formatNumber(value, value < 10 ? 1 : 0)}${delayUnit}` : "-"}
                   </span>
-                  <div className="flex h-[86px] w-full max-w-[42px] items-end bg-white/[0.04] px-1 py-1">
+                  <div className="flex h-[86px] w-full max-w-[42px] items-end bg-slate-100 px-1 py-1">
                     {value != null && (
                       <span className="block w-full" style={{ height: `${height}%`, backgroundColor: color }} />
                     )}
@@ -1861,7 +1861,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
         {cards.map((card) => (
           <div key={card.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
             <span className="truncate text-[13px] font-semibold text-slate-700">{card.nodeName}</span>
-            <div className="h-4 overflow-hidden bg-white/[0.05]">
+            <div className="h-4 overflow-hidden bg-slate-100">
               {card.volumeTotal != null && card.volumeTotal > 0 && (
                 <div className="flex h-full" style={{ width: `${Math.max(8, (card.volumeTotal / maxTotal) * 100)}%` }}>
                   {DIRECTION_ORDER.map((direction) => {
@@ -1899,7 +1899,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
         {DIRECTION_ORDER.map((direction) => (
           <span
             key={direction}
-            className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2 py-1 text-[13px] font-medium text-slate-700"
+            className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-[13px] font-medium text-slate-700"
           >
             <span className="h-3 w-3 rounded-sm" style={{ backgroundColor: DIRECTION_COLORS[direction] }} />
             {t(DIRECTION_LABELS[direction].ko, DIRECTION_LABELS[direction].en)}
@@ -1989,16 +1989,16 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
             const labelValue = maxValue - ratio * valueSpan;
             return (
               <g key={ratio}>
-                <line x1={left} x2={width - right} y1={y} y2={y} stroke="#33332f" strokeDasharray="4 5" />
-                <text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#898781">
+                <line x1={left} x2={width - right} y1={y} y2={y} stroke="var(--chart-grid)" strokeDasharray="4 5" />
+                <text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="var(--chart-axis)">
                   {formatNumber(labelValue, 0)}
                 </text>
               </g>
             );
           })}
 
-          <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#45443f" />
-          <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#45443f" />
+          <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="var(--chart-axis-line)" />
+          <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="var(--chart-axis-line)" />
 
           {labels.map((label, index) =>
             index % tickStride === 0 ? (
@@ -2008,7 +2008,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
                 y={height - bottom + 16}
                 textAnchor="end"
                 fontSize="9.5"
-                fill="#898781"
+                fill="var(--chart-axis)"
                 transform={`rotate(-38 ${xForIndex(index)} ${height - bottom + 16})`}
               >
                 {label.length > 12 ? `${label.slice(0, 11)}…` : label}
@@ -2049,12 +2049,12 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
             );
           })}
 
-          <text x={left} y={20} fontSize="10" fill="#898781">
+          <text x={left} y={20} fontSize="10" fill="var(--chart-axis)">
             {useSectionLabels
               ? t("측정 구간별 통행시간", "Travel time by measurement section")
               : t("시간 간격별 통행시간", "Travel time by time interval")}
           </text>
-          <text x={left - 34} y={top - 8} fontSize="10" fill="#898781">
+          <text x={left - 34} y={top - 8} fontSize="10" fill="var(--chart-axis)">
             sec
           </text>
         </svg>
@@ -2374,7 +2374,7 @@ function KpiCard({
                   )}
                 </div>
               </div>
-              <div className="relative flex h-24 w-7 items-end overflow-hidden border border-slate-200 bg-white/[0.04]">
+              <div className="relative flex h-24 w-7 items-end overflow-hidden border border-slate-200 bg-slate-100">
                 <div
                   className="w-full transition-all duration-500"
                   style={{ height: `${Math.max(pct, 8)}%`, backgroundColor: scenarioColor }}
@@ -2414,7 +2414,7 @@ function KpiCard({
 function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div>
-      <h2 className="text-[15px] font-semibold text-white">{title}</h2>
+      <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
       <p className="mt-0.5 text-[15px] text-slate-600">{subtitle}</p>
     </div>
   );
@@ -2447,7 +2447,7 @@ function MapViewToggle({
             aria-pressed={active}
             onClick={() => onChange(option.key)}
             className={`flex h-full items-center rounded-md px-3 transition-colors ${
-              active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+              active ? "bg-slate-200 text-slate-900" : "text-slate-500 hover:text-slate-800"
             }`}
           >
             {option.label}
@@ -2680,7 +2680,7 @@ function VehicleReplaySection({
                       aria-pressed={active}
                       onClick={() => playbackEngine.setSpeed(option)}
                       className={`flex h-full items-center rounded-md px-3 transition-colors ${
-                        active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+                        active ? "bg-slate-200 text-slate-900" : "text-slate-500 hover:text-slate-800"
                       }`}
                     >
                       ×{option}
@@ -2757,14 +2757,14 @@ function DashboardScenarioPicker({
               onClick={() => toggle(scenario.id)}
               className={`group flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors duration-150 ${
                 active
-                  ? "border-slate-300 bg-white/[0.06]"
-                  : "border-slate-200 bg-transparent hover:border-slate-300 hover:bg-white/[0.03]"
+                  ? "border-slate-300 bg-slate-100"
+                  : "border-slate-200 bg-transparent hover:border-slate-300 hover:bg-slate-50"
               }`}
             >
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: active ? scenarioColor : "#45443f" }}
+                  style={{ backgroundColor: active ? scenarioColor : "var(--chart-axis-line)" }}
                 />
                 <div className="min-w-0">
                   <p className={`truncate text-[15px] font-medium ${active ? "text-slate-900" : "text-slate-500"}`}>
@@ -2777,7 +2777,7 @@ function DashboardScenarioPicker({
               </div>
               <span
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[13px] font-semibold ${
-                  active ? "bg-white/10 text-white" : "bg-slate-100 text-slate-400"
+                  active ? "bg-slate-200 text-slate-900" : "bg-slate-100 text-slate-400"
                 }`}
               >
                 {active ? order : "+"}

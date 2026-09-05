@@ -196,7 +196,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
                 onClick={() => setActiveSegmentId(row.segmentId)}
                 className={`rounded-full border px-3 py-1 text-[14px] font-semibold transition ${
                   activeSegmentId === row.segmentId
-                    ? "border-amber-500 bg-amber-500 text-white"
+                    ? "border-amber-500 bg-amber-500 text-ink"
                     : "border-amber-200 bg-surface text-amber-700 hover:border-amber-300"
                 }`}
               >

@@ -5,7 +5,12 @@ python-docx==1.2.0
 matplotlib==3.10.6
 pywin32
 anthropic
-python-dotenv==310; platform_system == "Windows"
+# Loads backend/.env (ANTHROPIC_API_KEY) -- config.py tolerates its absence,
+# which is exactly why a broken pin here was invisible: the old line pinned
+# `310`, a version that does not exist on PyPI, behind a Windows-only marker,
+# so `pip install -r requirements.txt` failed on every fresh Windows box and
+# anyone who deleted the line got a backend that silently never read .env.
+python-dotenv==1.2.3
 scikit-learn==1.7.2
 PyYAML>=6.0
 # Text-layer extraction for the 대전 signal sheets

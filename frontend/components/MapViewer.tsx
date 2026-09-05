@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
-import type { CircleMarker, LayerGroup, LeafletMouseEvent, Map as LeafletMap, Polyline } from "leaflet";
+import type { CircleMarker, LayerGroup, LeafletMouseEvent, Map as LeafletMap, Polyline, TileLayer } from "leaflet";
+
+import { useTheme } from "@/components/ThemeProvider";
+import { basemapTileUrl } from "@/lib/basemap";
 
 import { apiFetch } from "@/lib/api";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -95,7 +98,6 @@ const NODE_FILL = "#5f718b";
 const NODE_STROKE = "#d8e1ef";
 const NODE_SELECTED = "#f8b45a";
 const LINK_SELECTED = "#7dd3fc";
-const GRAPH_TILE = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const ENDPOINT_CLUSTER_DISTANCE_METERS = 35;
 export default function MapViewer({
   onLinkClick,
@@ -114,6 +116,19 @@ export default function MapViewer({
   const { t } = useLanguage();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const { theme } = useTheme();
+  const tileUrl = basemapTileUrl(theme);
+  const tileUrlRef = useRef(tileUrl);
+  const tileLayerRef = useRef<TileLayer | null>(null);
+
+  // The basemap follows the theme without remounting the map: swapping the
+  // URL on the live layer is a Leaflet primitive (TileLayer#setUrl), and the
+  // ref lets a mount still awaiting the leaflet import pick up the latest
+  // choice instead of the one captured when the effect was scheduled.
+  useEffect(() => {
+    tileUrlRef.current = tileUrl;
+    tileLayerRef.current?.setUrl(tileUrl);
+  }, [tileUrl]);
   const linksLayerRef = useRef<LayerGroup | null>(null);
   const nodesLayerRef = useRef<LayerGroup | null>(null);
   const viewportInitializedRef = useRef(false);
@@ -174,7 +189,7 @@ export default function MapViewer({
         setHoveredLinkId(null);
       });
 
-      L.tileLayer(GRAPH_TILE, {
+      tileLayerRef.current = L.tileLayer(tileUrlRef.current, {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; CARTO',
         maxZoom: 20,
       }).addTo(map);

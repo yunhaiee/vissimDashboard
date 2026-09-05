@@ -297,7 +297,7 @@ export default function HealthCheckPage() {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
       <header className="mb-6">
-        <h1 className="text-[22px] font-semibold tracking-tight text-white">
+        <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
           {t("모델 검진", "Model Health Check", "モデル検診")}
         </h1>
         <p className="mt-1 text-[15px] text-slate-600">

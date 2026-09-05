@@ -551,7 +551,7 @@ function NetworkPageContent() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-[22px] font-semibold tracking-tight text-white">
+              <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
                 {t("네트워크 프리뷰", "Network Preview")}
               </h1>
               {network?.source?.view === "working" && (

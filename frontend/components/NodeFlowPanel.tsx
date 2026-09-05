@@ -121,7 +121,7 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
               onClick={() => setActiveId(id)}
               className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[14px] font-medium transition-colors ${
                 active
-                  ? "border-slate-300 bg-white/[0.06] text-white"
+                  ? "border-slate-300 bg-slate-100 text-slate-900"
                   : "border-slate-200 text-slate-500 hover:text-slate-800"
               }`}
             >
@@ -260,7 +260,7 @@ function SignalPhasePanelContent({
                   key={`signal-phase-${id}`}
                   onClick={() => onChangeActiveId(id)}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[12px] font-medium transition-colors ${
-                    active ? "border-slate-300 bg-white/[0.06] text-white" : "border-slate-200 text-slate-500 hover:text-slate-800"
+                    active ? "border-slate-300 bg-slate-100 text-slate-900" : "border-slate-200 text-slate-500 hover:text-slate-800"
                   }`}
                 >
                   <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: scenarioColor }} />
@@ -504,7 +504,7 @@ function DetailedCompass({
         <div className="relative flex items-center justify-center rounded-xl bg-slate-900 p-2 text-center text-ink">
           <div>
             <p className="text-[12px] font-semibold text-slate-300">{t("교차로", "Node")}</p>
-            <p className="mt-0.5 text-[14px] font-bold text-white">{nodeName}</p>
+            <p className="mt-0.5 text-[14px] font-bold text-slate-900">{nodeName}</p>
             <p className="mt-0.5 text-[13px] text-slate-200">{Math.round(total).toLocaleString()} {t("대", "veh")}</p>
           </div>
         </div>

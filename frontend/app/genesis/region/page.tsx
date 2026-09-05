@@ -831,7 +831,7 @@ export default function GenesisRegionPage() {
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <header className="mb-6">
-        <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-white">
+        <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-slate-900">
           {t("영역에서 네트워크 추출", "Extract a region", "領域からネットワークを抽出")}
         </h1>
         <p className="mt-1 text-[15px] text-slate-600">
@@ -1190,7 +1190,7 @@ export default function GenesisRegionPage() {
                   )}
                 </p>
                 <p className="font-semibold">{t("보낸 질의", "The query sent", "送信した問い合わせ")}</p>
-                <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-white/[0.04] px-2.5 py-2 font-mono text-[14px]">
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-slate-100 px-2.5 py-2 font-mono text-[14px]">
                   {selected.provenance.query}
                 </pre>
               </div>

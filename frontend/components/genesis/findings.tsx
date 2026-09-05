@@ -484,7 +484,7 @@ export function FindingsDetailPanel({
               {t("링크", "Links", "リンク")} {selected.zone.links} · {t("OSM way", "OSM ways", "OSM way")} {selected.zone.ways}
             </p>
             <p className="mt-1">{selected.zone.street_names.join(", ")}</p>
-            <p className="mt-1.5 rounded border border-slate-300 bg-white/[0.04] px-1.5 py-1 text-[14px] text-slate-600">
+            <p className="mt-1.5 rounded border border-slate-300 bg-slate-100 px-1.5 py-1 text-[14px] text-slate-600">
               {t(
                 "이 구역은 최종 좌표가 확정되기 전에 제외되어, 지도에 그릴 좌표가 없습니다.",
                 "This zone was excluded before the final coordinates were fixed -- it has no coordinates left to draw.",
@@ -547,7 +547,7 @@ export function FindingsDetailPanel({
                 <button
                   type="button"
                   onClick={() => onSelectUnresolved(ref)}
-                  className="w-full truncate rounded border border-slate-400 bg-white/[0.04] px-2 py-1 text-left text-[14px]"
+                  className="w-full truncate rounded border border-slate-400 bg-slate-100 px-2 py-1 text-left text-[14px]"
                 >
                   {ref.checkId} · <SubjectLabel subject={ref.finding.subject} className="text-[14px]" />
                 </button>

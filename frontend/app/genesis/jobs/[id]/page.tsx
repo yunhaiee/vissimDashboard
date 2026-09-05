@@ -1233,7 +1233,7 @@ function FixFindingRow({
                           "例: 2026-08-10 現地確認 — 道路は実際に続いています",
                         )
                   }
-                  className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
+                  className="rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-[15px] text-slate-900"
                 />
               </label>
               {/* Unit #41 -- the consent line a reader must meet BEFORE the
@@ -1363,7 +1363,7 @@ function FixFindingRow({
             className={`w-fit rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${
               fixIsDemandEstimateFraming(disposition)
                 ? "border-2 border-slate-400 bg-slate-100 text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"
-                : "border-slate-300 bg-white/[0.06] text-slate-600"
+                : "border-slate-300 bg-slate-100 text-slate-600"
             }`}
           >
             {fixConfidenceLabel(disposition.confidence, t)}
@@ -1423,7 +1423,7 @@ function FixFindingRow({
                       onChange={(event) =>
                         setRequiredValues((current) => ({ ...current, [field]: event.target.value }))
                       }
-                      className="w-32 rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[14px] text-slate-900"
+                      className="w-32 rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-[14px] text-slate-900"
                     />
                   </label>
                 );
@@ -1476,7 +1476,7 @@ function FixFindingRow({
               value={approvalRationale}
               onChange={(event) => setApprovalRationale(event.target.value)}
               maxLength={600}
-              className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
+              className="rounded-md border border-slate-300 bg-slate-100 px-2 py-1 text-[15px] text-slate-900"
             />
           </label>
 
@@ -2694,7 +2694,7 @@ export default function GenesisJobDetailPage() {
       <div className="mt-4 flex flex-col gap-4 border-b border-slate-200 pb-6 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="truncate text-[20px] font-semibold text-white">{selected.name}</h1>
+            <h1 className="truncate text-[20px] font-semibold text-slate-900">{selected.name}</h1>
             <span
               className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[14px] font-semibold ${statusClasses(selected.status)}`}
             >
@@ -2927,7 +2927,7 @@ export default function GenesisJobDetailPage() {
           {report ? (
             <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} selectionRequest={mapRequest} onPlaceableChange={handlePlaceableChange} onRequestedPolygonChange={handleRequestedPolygonChange} />
           ) : (
-            <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-10 text-center">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-6 py-10 text-center">
               <p className="text-[15px] text-slate-500">
                 {t(
                   "아직 판정이 없어 지도를 표시할 수 없습니다.",

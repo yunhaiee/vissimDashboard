@@ -324,7 +324,7 @@ export default function LegacyReportBuilder() {
 
       {/* meta */}
       <section className="rounded-xl border border-slate-200 p-5">
-        <h2 className="mb-3 text-[15px] font-semibold text-white">{t("표지 정보", "Cover info", "表紙情報")}</h2>
+        <h2 className="mb-3 text-[15px] font-semibold text-slate-900">{t("표지 정보", "Cover info", "表紙情報")}</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {field("title", t("제목", "Title", "タイトル"), t("예: Murdoch Drive 모델 검증 보고서", "e.g. Murdoch Drive validation report"))}
           {field("subtitle", t("부제", "Subtitle", "サブタイトル"))}
@@ -346,7 +346,7 @@ export default function LegacyReportBuilder() {
 
       {/* palette */}
       <section className="rounded-xl border border-slate-200 p-5">
-        <h2 className="mb-3 text-[15px] font-semibold text-white">{t("섹션 추가", "Add section", "セクション追加")}</h2>
+        <h2 className="mb-3 text-[15px] font-semibold text-slate-900">{t("섹션 추가", "Add section", "セクション追加")}</h2>
         <div className="flex flex-wrap gap-2">
           {PALETTE.map((p) => (
             <button
@@ -354,7 +354,7 @@ export default function LegacyReportBuilder() {
               type="button"
               onClick={() => addBlock(p.type)}
               title={p.desc[L]}
-              className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-[14px] font-medium text-slate-700 transition hover:bg-slate-200 hover:text-white"
+              className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-[14px] font-medium text-slate-700 transition hover:bg-slate-200 hover:text-slate-900"
             >
               + {p.label[L]}
             </button>
@@ -364,7 +364,7 @@ export default function LegacyReportBuilder() {
 
       {/* block list */}
       <section className="rounded-xl border border-slate-200 p-5">
-        <h2 className="mb-3 text-[15px] font-semibold text-white">
+        <h2 className="mb-3 text-[15px] font-semibold text-slate-900">
           {t("보고서 구성", "Report outline", "レポート構成")} ({blocks.length})
         </h2>
         {blocks.length === 0 ? (
@@ -389,7 +389,7 @@ export default function LegacyReportBuilder() {
                           "Download the data rendered in this section as CSV.",
                           "このセクションに表示されるデータをCSVでダウンロードします。",
                         )}
-                        className="rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 hover:text-white disabled:cursor-wait disabled:opacity-50"
+                        className="rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-wait disabled:opacity-50"
                       >
                         {dataBusyKey === b.type
                           ? t("내보내는 중…", "Exporting…", "エクスポート中…")
@@ -400,8 +400,8 @@ export default function LegacyReportBuilder() {
                               : t("데이터 내보내기", "Export data", "データ出力")}
                       </button>
                     )}
-                    <button type="button" onClick={() => move(b.id, -1)} disabled={i === 0} className="rounded-md border border-slate-200 px-2 py-1 text-[14px] text-slate-600 transition hover:border-slate-300 hover:text-white disabled:opacity-40">↑</button>
-                    <button type="button" onClick={() => move(b.id, 1)} disabled={i === blocks.length - 1} className="rounded-md border border-slate-200 px-2 py-1 text-[14px] text-slate-600 transition hover:border-slate-300 hover:text-white disabled:opacity-40">↓</button>
+                    <button type="button" onClick={() => move(b.id, -1)} disabled={i === 0} className="rounded-md border border-slate-200 px-2 py-1 text-[14px] text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:opacity-40">↑</button>
+                    <button type="button" onClick={() => move(b.id, 1)} disabled={i === blocks.length - 1} className="rounded-md border border-slate-200 px-2 py-1 text-[14px] text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:opacity-40">↓</button>
                     <button type="button" onClick={() => removeBlock(b.id)} className="rounded-md border border-slate-200 px-2 py-1 text-[14px] text-rose-600 transition hover:border-rose-300">✕</button>
                   </div>
                 </div>
@@ -431,7 +431,7 @@ export default function LegacyReportBuilder() {
       <section className="rounded-xl border border-slate-200 p-5">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-[15px] font-semibold text-white">{t("회사 스타일", "Company style", "会社スタイル")}</h2>
+            <h2 className="text-[15px] font-semibold text-slate-900">{t("회사 스타일", "Company style", "会社スタイル")}</h2>
             <p className="mt-0.5 text-[14px] text-slate-500">
               {t(
                 "차트 색상·폰트·그림 크기를 지정해 보고서에 회사 스타일을 적용합니다. 설정하지 않으면 기본 모양 그대로 생성됩니다.",

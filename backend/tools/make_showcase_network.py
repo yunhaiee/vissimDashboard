@@ -20,9 +20,16 @@ itself is what's committed).
 from __future__ import annotations
 
 import argparse
+import sys
 from math import cos, sin, pi
 from pathlib import Path
 from xml.sax.saxutils import escape
+
+# Runnable from anywhere, like make_demo_data.py: the `services` import in
+# __main__ resolves against backend/ whichever directory the shell is in.
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 

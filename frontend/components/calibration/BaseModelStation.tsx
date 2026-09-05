@@ -680,7 +680,7 @@ export default function BaseModelStation() {
           <div>
             {/* What this tab validates was an ⓘ here until #50-d — background a
                 reader needs once, now at /docs (calibrationHelpEntries). */}
-            <h1 className="text-[22px] font-semibold tracking-tight text-white">
+            <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
               {t("베이스모델 검증", "Base Model Validation")}
             </h1>
           </div>
@@ -710,7 +710,7 @@ export default function BaseModelStation() {
         {/* fold to reach is a threshold nobody checks.                          */}
         {/* ------------------------------------------------------------------ */}
         <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
-          <h2 className="text-[15px] font-semibold text-white">
+          <h2 className="text-[15px] font-semibold text-slate-900">
             {t("종합 판정", "Overall verdict", "総合判定")}
           </h2>
           <ValidationCategorySelector category={category} onChange={handleCategoryChange} t={t} />
@@ -945,14 +945,14 @@ export default function BaseModelStation() {
           ) : (
             <ResponsiveContainer width="100%" height={420}>
               <ScatterChart margin={{ top: 16, right: 32, left: 16, bottom: 28 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#33332f" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis
                   type="number"
                   dataKey="x"
                   name={t("실측", "Observed")}
                   domain={[0, rSquaredData.axisMax]}
                   tick={{ fontSize: 11 }}
-                  label={{ value: "Observed", position: "insideBottom", offset: -10, style: { fontSize: 11, fill: "#898781" } }}
+                  label={{ value: "Observed", position: "insideBottom", offset: -10, style: { fontSize: 11, fill: "var(--chart-axis)" } }}
                 />
                 <YAxis
                   type="number"
@@ -960,7 +960,7 @@ export default function BaseModelStation() {
                   name={t("모델", "Modelled")}
                   domain={[0, rSquaredData.axisMax]}
                   tick={{ fontSize: 11 }}
-                  label={{ value: "Modelled", angle: -90, position: "insideLeft", offset: 10, style: { fontSize: 11, fill: "#898781" } }}
+                  label={{ value: "Modelled", angle: -90, position: "insideLeft", offset: 10, style: { fontSize: 11, fill: "var(--chart-axis)" } }}
                 />
                 <ZAxis range={[36, 36]} />
                 <Tooltip
@@ -1024,7 +1024,7 @@ export default function BaseModelStation() {
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart data={pointsToCumulativeChartRows(route.points)} margin={{ top: 8, right: 24, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#33332f" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                   <XAxis
                     dataKey="dist"
                     type="number"
@@ -1035,7 +1035,7 @@ export default function BaseModelStation() {
                       value: t("시작점부터의 거리(km)", "Distance from start (km)"),
                       position: "insideBottom",
                       offset: -4,
-                      style: { fontSize: 11, fill: "#898781" },
+                      style: { fontSize: 11, fill: "var(--chart-axis)" },
                     }}
                   />
                   <YAxis
@@ -1045,15 +1045,15 @@ export default function BaseModelStation() {
                       value: t("누적 통행시간(분)", "Cumulative travel time (min)"),
                       angle: -90,
                       position: "insideLeft",
-                      style: { fontSize: 11, fill: "#898781" },
+                      style: { fontSize: 11, fill: "var(--chart-axis)" },
                     }}
                   />
                   <Tooltip formatter={(value) => `${formatNumber(Number(value), 1)} min`} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   <Line type="monotone" dataKey="observed" name={t("실측", "Observed")} stroke="#6da7ec" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
                   <Line type="monotone" dataKey="model" name={t("예측", "Predicted")} stroke="#e4574d" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
-                  <Line type="monotone" dataKey="upper" name={`+${activeProfile.travelTolerancePct}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="lower" name={`-${activeProfile.travelTolerancePct}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="upper" name={`+${activeProfile.travelTolerancePct}%`} stroke="var(--chart-band)" strokeDasharray="6 6" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="lower" name={`-${activeProfile.travelTolerancePct}%`} stroke="var(--chart-band)" strokeDasharray="6 6" dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1115,7 +1115,7 @@ function ControlField({ label, children }: { label: string; children: React.Reac
 function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <div>
-      <h2 className="text-[15px] font-semibold text-white">{title}</h2>
+      <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
       {subtitle && <p className="mt-0.5 text-[15px] text-slate-600">{subtitle}</p>}
     </div>
   );
@@ -1843,10 +1843,10 @@ function ValidationIssueListItem({
       }`}
       onClick={() => onClick(group.nodeId, group.nodeName)}
     >
-      <span className={`text-[14px] font-bold tabular-nums ${active ? "text-white/70" : "text-slate-400"}`}>{rank}</span>
+      <span className={`text-[14px] font-bold tabular-nums ${active ? "text-ink/70" : "text-slate-400"}`}>{rank}</span>
       <span className="min-w-0">
         <span className="block truncate text-[14px] font-bold">{group.nodeName}</span>
-        <span className={`mt-0.5 block text-[12px] ${active ? "text-white/60" : "text-slate-500"}`}>
+        <span className={`mt-0.5 block text-[12px] ${active ? "text-ink/60" : "text-slate-500"}`}>
           {t("노드", "Node")} {group.nodeId} · {group.validCount}/{group.rows.length}
         </span>
       </span>
@@ -1856,7 +1856,7 @@ function ValidationIssueListItem({
         </span>
         <span className="inline-flex items-center gap-1 text-[12px] font-bold tabular-nums">
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${toneDotClass(errorTone(group.averageAbsPctError))}`} />
-          <span className={active ? "text-white/85" : toneTextClass(errorTone(group.averageAbsPctError))}>
+          <span className={active ? "text-ink/85" : toneTextClass(errorTone(group.averageAbsPctError))}>
             {group.averageAbsPctError == null ? "-" : formatPct(group.averageAbsPctError)}
           </span>
         </span>
