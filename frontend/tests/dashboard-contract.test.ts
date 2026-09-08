@@ -1363,8 +1363,52 @@ contractTest("intersection comparison is merged into the main dashboard", (pin) 
   pin.match(page, /buildCalibrationReportMarkdown/, "expected report markdown generator in overall analysis");
   pin.match(page, /handleDownloadWordReport/, "expected Word report download handler");
   pin.match(page, /base-model-calibration-validation-\$\{stamp\}\.doc/, "expected generated Word report filename");
-  pin.match(proxy, /matcher: "\/intersections\/:path\*"/, "expected old intersections route to redirect");
+  // The matcher was widened to "/:path*" so the remote-demo gate can cover the
+  // whole origin (pinned by the next contract below), which turned the legacy
+  // redirect from a matcher into a pathname test inside `proxy`. Same route,
+  // same destination -- pinned where it now lives.
+  pin.match(proxy, /const LEGACY_INTERSECTIONS_PATH = "\/intersections"/, "expected the old intersections path to still be recognised");
+  pin.match(proxy, /isLegacyIntersectionsPath\(request\.nextUrl\.pathname\)/, "expected old intersections route to redirect");
   pin.match(proxy, /NextResponse\.redirect\(new URL\("\/dashboard", request\.url\)\)/, "expected redirect to the merged dashboard");
+});
+
+contractTest("the remote demo gate covers the whole origin and stays default-off", (pin) => {
+  // `scripts/share_demo.py` puts the dev stack on a public Cloudflare URL, and
+  // this gate is the only thing in front of it -- including the `/api/*`
+  // rewrites and the agent endpoints behind them, which spend
+  // ANTHROPIC_API_KEY. Every property below is load-bearing for that.
+  const proxy = read("proxy.ts");
+  const demoAuth = read("lib/demo-auth.ts");
+
+  pin.match(proxy, /matcher: \["\/:path\*"\]/, "expected the demo gate to cover every path, not one route");
+  pin.match(proxy, /status: 401/, "expected an unauthenticated request to be refused");
+  pin.match(proxy, /"WWW-Authenticate": DEMO_AUTH_REALM/, "expected the refusal to carry a Basic challenge");
+  pin.match(proxy, /"Cache-Control": "no-store"/, "expected the 401 never to be cached");
+
+  // Default-off: both env vars must be absent for the gate to disappear, so a
+  // laptop `npm run dev` is untouched.
+  pin.match(proxy, /process\.env\.PRISM_DEMO_AUTH_USER \?\? ""/, "expected the demo username to come from the environment");
+  pin.match(proxy, /process\.env\.PRISM_DEMO_AUTH_PASSWORD \?\? ""/, "expected the demo password to come from the environment");
+  // A NEXT_PUBLIC_ prefix would inline the password into the client bundle and
+  // ship the door key to everyone who loads the page.
+  pin.doesNotMatch(proxy, /NEXT_PUBLIC_PRISM_DEMO/, "expected the demo credentials never to reach the client bundle");
+
+  // Order matters: a redirect served before authentication tells an anonymous
+  // caller which routes exist.
+  pin.match(
+    proxy,
+    /isDemoGateEnabled\(AUTH_USER, AUTH_PASSWORD\)[\s\S]*isLegacyIntersectionsPath\(request\.nextUrl\.pathname\)/,
+    "expected the gate to run before the legacy redirect",
+  );
+
+  // The two comparison properties that a plain `===` would quietly lose.
+  pin.match(demoAuth, /diff \|= a\.charCodeAt\(i\) \^ b\.charCodeAt\(i\)/, "expected constant-time password comparison");
+  pin.match(demoAuth, /const userOk = safeEqual/, "expected the username check to run unconditionally");
+  pin.match(demoAuth, /const passwordOk = safeEqual/, "expected the password check to run unconditionally, not short-circuited");
+  // RFC 7617 allows a colon in the password; splitting on every colon would
+  // corrupt one.
+  pin.match(demoAuth, /decoded\.indexOf\(":"\)/, "expected credentials to split on the first colon only");
+  pin.doesNotMatch(demoAuth, /decoded\.split\(":"\)/, "expected no naive split that would corrupt a password containing a colon");
 });
 
 contractTest("dashboard map signalized intersection uses traffic light artwork", (pin) => {

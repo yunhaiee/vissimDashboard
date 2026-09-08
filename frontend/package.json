@@ -8,6 +8,7 @@
     "lint": "eslint app/page.tsx app/dashboard/page.tsx app/calibration/page.tsx components/calibration/BaseModelStation.tsx components/CorridorSectionComparison.tsx components/NodeDirectionTable.tsx lib/api.ts tests/dashboard-contract.test.ts",
     "test:dashboard-contract": "node --test --experimental-strip-types tests/dashboard-contract.test.ts",
     "test:geh-conformance": "node --test --experimental-strip-types tests/geh-conformance.test.ts",
+    "test:demo-auth": "node --test --experimental-strip-types tests/demo-auth.test.ts",
     "build": "next build",
     "start": "next start"
   },
