@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
-import type { CircleMarker, LeafletMouseEvent, Map as LeafletMap } from "leaflet";
+import type { CircleMarker, LeafletMouseEvent, Map as LeafletMap, TileLayer } from "leaflet";
+
+import { useTheme } from "@/components/ThemeProvider";
+import { basemapTileUrl } from "@/lib/basemap";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import { apiFetch } from "@/lib/api";
@@ -51,7 +54,6 @@ interface Props {
   datasetRevision?: number | string;
 }
 
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const GEO_PARAMS = "scale_x=1.178200&scale_y=1.178200&offset_x=14427.6419&offset_y=-4221.3566&rotation_deg=-0.45759";
 
 const OVERLAY_OPTIONS: Array<{ value: OverlayMode; ko: string; en: string; ja: string }> = [
@@ -69,6 +71,19 @@ export default function BaseValidationMap({
   const { t, lang } = useLanguage();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const { theme } = useTheme();
+  const tileUrl = basemapTileUrl(theme);
+  const tileUrlRef = useRef(tileUrl);
+  const tileLayerRef = useRef<TileLayer | null>(null);
+
+  // The basemap follows the theme without remounting the map: swapping the
+  // URL on the live layer is a Leaflet primitive (TileLayer#setUrl), and the
+  // ref lets a mount still awaiting the leaflet import pick up the latest
+  // choice instead of the one captured when the effect was scheduled.
+  useEffect(() => {
+    tileUrlRef.current = tileUrl;
+    tileLayerRef.current?.setUrl(tileUrl);
+  }, [tileUrl]);
   const linksLayerRef = useRef<{ remove: () => void; addTo: (map: LeafletMap) => void } | null>(null);
   const nodesLayerRef = useRef<{ remove: () => void; addTo: (map: LeafletMap) => void } | null>(null);
 
@@ -130,7 +145,7 @@ export default function BaseValidationMap({
         map.getContainer().style.cursor = "grab";
       });
 
-      L.tileLayer(TILE_URL, {
+      tileLayerRef.current = L.tileLayer(tileUrlRef.current, {
         attribution:
           '&copy; <a href="https://www.openstreetmap.org">OSM</a> &copy; <a href="https://carto.com">CARTO</a>',
         maxZoom: 20,

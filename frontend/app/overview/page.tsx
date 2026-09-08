@@ -134,7 +134,7 @@ function StateNote({ tone, children }: { tone: "empty" | "error" | "info"; child
  * only caller of. */
 function StageCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="flex h-full flex-col rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-5 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
+    <section className="flex h-full flex-col rounded-xl border border-slate-200 bg-slate-50 px-6 py-5 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
       <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
       <div className="mt-3 flex flex-1 flex-col gap-3">{children}</div>
     </section>
@@ -190,7 +190,7 @@ function CreateProjectOnly() {
 
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-6 text-center shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
+      <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-slate-50 px-6 py-6 text-center shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
         <h1 className="text-[17px] font-semibold text-slate-900">
           {t("새 프로젝트 만들기", "Create a new project", "新規プロジェクトを作成")}
         </h1>
@@ -381,7 +381,7 @@ export default function OverviewPage() {
           * implementation (components/ProjectSelector.tsx's own
           * `useWorkspacePicker`), never a second copy of the fetch/switch
           * logic written here. */}
-        <h1 className="text-[22px] font-semibold tracking-tight text-white">
+        <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
           {t("개요", "Overview", "概要")}
         </h1>
         <div className="mt-1.5">

@@ -8781,7 +8781,7 @@ contractTest("B5-2 stage 4: the requires-gated button and the demand-estimate co
   // branch of the same ternary, so this is a real branch, not decoration.
   pin.match(
     page,
-    /fixIsDemandEstimateFraming\(disposition\)\s*\n\s*\? "border-2 border-slate-400 bg-slate-100 text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"\s*\n\s*: "border-slate-300 bg-white\/\[0\.06\]\s*text-slate-600"/,
+    /fixIsDemandEstimateFraming\(disposition\)\s*\n\s*\? "border-2 border-slate-400 bg-slate-100 text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"\s*\n\s*: "border-slate-300 bg-slate-100\s*text-slate-600"/,
     "expected the confidence chip to visibly branch on the demand-estimate framing, mono + weight only",
   );
   pin.doesNotMatch(
@@ -15935,6 +15935,9 @@ contractTest("an effect may only set state after hydration, and says so on the l
   for (const file of [
     "components/calibration/BaseModelStation.tsx",
     "components/LanguageProvider.tsx",
+    // The theme provider folds the pre-paint data-theme stamp back into React
+    // state after hydration -- same exception, same one-line shape.
+    "components/ThemeProvider.tsx",
     "components/ProjectSelector.tsx",
     // The region page reads a one-shot hand-off out of sessionStorage, which
     // does not exist while the server renders the route -- same exception,
@@ -16557,7 +16560,7 @@ contractTest("R-5b: excluded-by-selection is the user's choice, and is never wor
     sliceBetween(
       read("app/report/page.tsx"),
       "  if (!included) {",
-      '<h3 className="text-[15px] font-semibold text-white">{title}</h3>',
+      '<h3 className="text-[15px] font-semibold text-slate-900">{title}</h3>',
     ),
   );
   pin.match(excludedBranch, /\S/, "expected to find the preview's excluded branch (markers moved?)");
@@ -18018,4 +18021,143 @@ contractTest("unit #65: the calibration banner and run picker name an empty run 
     /\.catch\(\(\) => setScenarios\(\[\]\)\)/,
     "expected the old catch-to-empty-array shape to be gone -- that is exactly what made a failed fetch indistinguishable from zero runs",
   );
+});
+
+// ---------------------------------------------------------------------------
+// THE SECOND THEME (2026-09-04). The palette lock in app/globals.css used to
+// name ONE theme; it now names two, and the toggle in the topbar is the only
+// way between them. These pins keep the two halves from drifting apart: a
+// remapped Tailwind shade that exists in only one theme would render as stock
+// Tailwind in the other -- the very blue-on-blue trap unit #50-c pins for the
+// dark half -- and a basemap or chart literal left dark would sit under light
+// chrome like a hole in the page.
+// ---------------------------------------------------------------------------
+contractTest("theme: the reader's choice is stamped before first paint and folded into React after hydration", (pin) => {
+  const theme = read("lib/theme.ts");
+  pin.match(theme, /export type Theme = "dark" \| "light";/, "expected exactly two themes -- there is no 'system' option, dark is the default");
+  pin.match(theme, /export const THEME_STORAGE_KEY = "vissim-theme";/, "expected the storage key to be named once, beside the language key's convention");
+  pin.match(theme, /export const THEME_ATTRIBUTE = "data-theme";/, "expected the html attribute to be named once");
+
+  // The pre-paint stamp. It is a plain script in public/ loaded with
+  // beforeInteractive, NOT an inline dangerouslySetInnerHTML in the layout --
+  // the raw-markup census above must stay at its two files.
+  const init = read("public/theme-init.js");
+  pin.match(init, /localStorage\.getItem\("vissim-theme"\)/, "expected the stamp to read the SAME storage key lib/theme.ts names");
+  pin.match(init, /setAttribute\("data-theme", "light"\)/, "expected light to be stamped as data-theme=light on <html>");
+  pin.doesNotMatch(init, /"dark"/, "expected dark to be the ABSENCE of the attribute, so a fresh browser renders exactly the server's HTML");
+  pin.match(init, /try \{/, "expected storage access to be guarded -- browsers can disable it");
+
+  const layout = read("app/layout.tsx");
+  pin.match(layout, /<Script src="\/theme-init\.js" strategy="beforeInteractive" \/>/, "expected the stamp to load before hydration, from the root layout");
+  pin.match(layout, /<ThemeProvider>/, "expected the theme provider to wrap the shell");
+  pin.match(layout, /<AuthProvider>/, "expected the session provider to still wrap the app shell");
+  pin.doesNotMatch(layout, /dangerouslySetInnerHTML/, "expected no inline script -- the census of raw-markup injectors is closed");
+
+  // The provider reads the DOM stamp, not storage, after hydration: one source
+  // of truth (the script), and the one-line suppression shape the convention
+  // allows.
+  const provider = read("components/ThemeProvider.tsx");
+  pin.match(provider, /useState<Theme>\("dark"\)/, "expected the server-rendered state to be dark, matching the HTML the server sends");
+  pin.match(provider, /readDomTheme\(\)/, "expected the post-hydration read to come from the stamped attribute, not a second localStorage read");
+  pin.match(provider, /eslint-disable-next-line react-hooks\/set-state-in-effect -- .+/, "expected the hydration exception to be declared on its own line with a reason");
+  pin.match(provider, /export function useTheme\(\)/, "expected a useTheme hook, mirroring useLanguage");
+});
+
+contractTest("theme: the toggle lives in the topbar, outside the stepper, and speaks three languages", (pin) => {
+  const shell = read("components/AppShell.tsx");
+  const topbar = sliceBetween(shell, "function AppTopbar(", "const LANGUAGE_OPTIONS");
+  pin.match(topbar, /href="\/docs"[\s\S]*<ThemeToggle \/>[\s\S]*<LanguageMenu \/>/, "expected the toggle between the manual and the language menu -- book, theme, globe, then the account");
+
+  // Outside the stepper slice unit #18 pins as stateless.
+  const stepperEnd = shell.indexOf("// Unit U9.");
+  const toggleAt = shell.indexOf("function ThemeToggle(");
+  pin.match(`${toggleAt > stepperEnd && stepperEnd > 0}`, /^true$/, "expected ThemeToggle to be defined after the stepper's slice marker, so #18's stateless pin stays honest");
+
+  const toggle = sliceBetween(shell, "function ThemeToggle(", "function SunIcon(");
+  pin.match(toggle, /useTheme\(\)/, "expected the toggle to read the provider, not the DOM");
+  pin.match(toggle, /t\("밝은 테마로 전환", "Switch to light theme", "[^"]+"\)/, "expected the dark-state label in three languages, like every other topbar control");
+  pin.match(toggle, /t\("어두운 테마로 전환", "Switch to dark theme", "[^"]+"\)/, "expected the light-state label in three languages");
+  pin.match(toggle, /aria-label=\{label\}/, "expected the label to be the accessible name, not only a title");
+  pin.match(toggle, /className="app-topbar-btn"/, "expected the toggle to be one more topbar button, not a new style");
+  pin.match(toggle, /theme === "dark" \? <SunIcon \/> : <MoonIcon \/>/, "expected the glyph to show the theme the click LEADS TO: a sun while dark, a moon while light");
+});
+
+contractTest("theme: both palettes remap exactly the same Tailwind shades, and only by explicit choice", (pin) => {
+  const globals = read("app/globals.css");
+  pin.match(globals, /^:root \{\n  color-scheme: dark;/m, "expected the default theme to stay dark on :root");
+  pin.doesNotMatch(globals, /prefers-color-scheme/, "expected no OS-driven switch -- the theme is the reader's explicit choice, dark by default");
+
+  const darkBlock = sliceBetween(globals, "@theme {", "\n}");
+  const lightAt = globals.indexOf('html[data-theme="light"] {');
+  pin.match(`${lightAt > globals.indexOf("@theme {")}`, /^true$/, "expected the light block AFTER the @theme block, so #50-c's slice still finds the dark remap first");
+  const lightBlock = sliceBetween(globals, 'html[data-theme="light"] {', "\n}");
+  pin.match(lightBlock, /color-scheme: light;/, "expected form controls and scrollbars to follow the light theme");
+
+  const shadesOf = (block: string) => new Set([...block.matchAll(/--color-([a-z]+-\d{2,3}):/g)].map((m) => m[1]));
+  const dark = shadesOf(darkBlock);
+  const light = shadesOf(lightBlock);
+  const onlyDark = [...dark].filter((s) => !light.has(s));
+  const onlyLight = [...light].filter((s) => !dark.has(s));
+  pin.match(`onlyDark=${onlyDark.join(",")}`, /^onlyDark=$/, "a shade remapped for dark but not light would render as stock Tailwind under the light theme");
+  pin.match(`onlyLight=${onlyLight.join(",")}`, /^onlyLight=$/, "a shade remapped for light but not dark would render as stock Tailwind under the dark theme -- #50-c's trap");
+  pin.doesNotMatch(lightBlock, /--color-sky-700:/, "sky-700 stays outside BOTH remaps; legalising it for one theme only is the blue-on-blue trap");
+
+  // Every semantic token :root defines, the light block redefines. Read from
+  // :root rather than a hand list so a token added to one and not the other
+  // fails here instead of falling through to the dark value under light.
+  const rootBlock = sliceBetween(globals, ":root {", "\n}");
+  const tokensOf = (block: string) => new Set([...block.matchAll(/^\s+(--[a-z][a-z0-9-]*):/gm)].map((m) => m[1]));
+  const rootTokens = [...tokensOf(rootBlock)].filter((t) => !t.startsWith("--font-"));
+  const lightTokens = tokensOf(lightBlock);
+  const missing = rootTokens.filter((t) => !lightTokens.has(t));
+  pin.match(`missing=${missing.join(",")}`, /^missing=$/, "every non-font token on :root must be redefined for light, or it silently keeps its dark value");
+  pin.doesNotMatch(lightBlock, /--font-/, "fonts are not a theme");
+
+  // The chrome's own literals moved into tokens; a hover or well written as a
+  // white-alpha literal is invisible on a white page.
+  const chrome = globals.slice(globals.indexOf(".app-shell {"));
+  pin.doesNotMatch(chrome, /rgba\(255, 255, 255, 0\.0[46]\)/, "expected sidebar/topbar hovers to use var(--hover-fill*) rather than white-alpha literals");
+  pin.doesNotMatch(chrome, /background: rgba\(250, 250, 249/, "expected map tooltips and callouts to take their colours from --map-tooltip-* tokens");
+});
+
+contractTest("theme: basemaps, chart grids and white-alpha fills follow the theme", (pin) => {
+  const basemap = read("lib/basemap.ts");
+  pin.match(basemap, /export function basemapTileUrl\(theme: Theme\): string/, "expected one function to name the CARTO tile template for both themes");
+  pin.match(basemap, /light_all/, "expected CARTO's light twin to be the light basemap");
+  pin.match(basemap, /dark_all/, "expected CARTO dark to stay the dark basemap");
+
+  const mapFiles = [
+    "components/IntersectionCompareMap.tsx",
+    "components/BaseValidationMap.tsx",
+    "components/MapViewer.tsx",
+    "components/DashboardMap.tsx",
+    "components/genesis/GenesisTileMap.tsx",
+    "components/genesis/RegionLassoMap.tsx",
+  ];
+  for (const file of mapFiles) {
+    const source = withoutComments(read(file));
+    pin.match(source, /import \{ basemapTileUrl \} from "@\/lib\/basemap";/, `${file}: expected the tile template to come from lib/basemap.ts`);
+    pin.match(source, /useTheme\(\)/, `${file}: expected the map to know the current theme`);
+    pin.match(source, /tileLayerRef\.current = L\.tileLayer\(tileUrlRef\.current,/, `${file}: expected the mounted tile layer to be kept on a ref and to take the themed URL current at mount time`);
+    pin.match(source, /tileLayerRef\.current\?\.setUrl\(tileUrl\)/, `${file}: expected a theme change to swap tiles on the LIVE map rather than waiting for a remount`);
+  }
+  for (const file of appSourceFiles()) {
+    if (file === "lib/basemap.ts") continue;
+    pin.doesNotMatch(withoutComments(read(file)), /basemaps\.cartocdn\.com/, `${file}: the tile template is named once, in lib/basemap.ts`);
+  }
+
+  // Chart grids and axis labels that were the DARK values of tokens.
+  for (const file of ["components/ComparisonChart.tsx", "components/calibration/BaseModelStation.tsx", "app/dashboard/page.tsx"]) {
+    const source = withoutComments(read(file));
+    pin.doesNotMatch(source, /stroke="#33332f"|stroke="#45443f"|stroke="#fafaf9"/, `${file}: a grid or band stroke written as the dark theme's literal is invisible under light -- use var(--chart-*)`);
+    pin.doesNotMatch(source, /fill(?:=|: )"#898781"/, `${file}: an axis label written as the dark --text-muted literal must use var(--chart-axis)`);
+  }
+
+  // White-alpha fills and text: a white fill is invisible on a white page, and
+  // white text on a contrast chip is the text-white-on-slate-900 defect the
+  // genesis CTA pin bans, in alpha form.
+  for (const file of appSourceFiles()) {
+    const source = withoutComments(read(file));
+    pin.doesNotMatch(source, /\b(?:bg|text)-white\/\[?0?\.?\d+\]?/, `${file}: bg-white/ and text-white/ alpha classes do not survive the light theme -- use the slate fills (bg-slate-50..200) or text-ink/N on a contrast chip`);
+  }
 });

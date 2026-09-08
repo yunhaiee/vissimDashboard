@@ -476,7 +476,7 @@ export default function SimulationPage() {
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-[22px] font-semibold tracking-tight text-white">
+            <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
               {t("시뮬레이션 실행", "Simulation Runner")}
             </h1>
             <p className="mt-1 text-[15px] text-slate-600">
@@ -1098,7 +1098,7 @@ function ModeButton({ active, label, onClick }: { active: boolean; label: string
       type="button"
       onClick={onClick}
       className={`rounded-lg border px-3 py-2 text-[14px] font-bold transition ${
-        active ? "border-white/30 bg-surface text-slate-900" : "border-white/10 bg-surface/8 text-white hover:bg-surface/14"
+        active ? "border-slate-300 bg-surface text-slate-900" : "border-slate-200 bg-surface/8 text-slate-600 hover:text-slate-900 hover:bg-surface/14"
       }`}
     >
       {label}

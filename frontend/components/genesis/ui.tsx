@@ -98,7 +98,7 @@ export function Panel({
 
   return (
     <section
-      className={`${DENSITY[density]} rounded-xl border border-slate-200 bg-white/[0.03] shadow-[0_8px_18px_rgba(15,23,42,0.06)]`}
+      className={`${DENSITY[density]} rounded-xl border border-slate-200 bg-slate-50 shadow-[0_8px_18px_rgba(15,23,42,0.06)]`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -116,7 +116,7 @@ export function Panel({
             type="button"
             onClick={() => setOpen((current) => !current)}
             aria-expanded={open}
-            className="shrink-0 rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 text-[14px] font-semibold text-slate-700"
+            className="shrink-0 rounded-md border border-slate-300 bg-slate-100 px-2.5 py-1 text-[14px] font-semibold text-slate-700"
           >
             {open ? t("접기", "Collapse", "折りたたむ") : t("펼치기", "Expand", "展開")}
           </button>
@@ -202,7 +202,7 @@ export function InfoTip({ text, label }: { text: string; label?: string }) {
             setHovering(false);
           }
         }}
-        className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white/[0.06] text-slate-500"
+        className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-slate-500"
       >
         {/* The dot and the stem are placed about the viewBox's own centre
           * (y = 8): dot 2.2→5.4, gap, stem 6.8→13.2, so the ink spans 2.2→13.2
@@ -318,7 +318,7 @@ export function ModalDialog({
         aria-modal="true"
         aria-labelledby={headingId}
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-full w-full max-w-2xl flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
+        className="flex max-h-full w-full max-w-2xl flex-col overflow-y-auto rounded-xl border border-slate-200 bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
       >
         <div className="flex items-start justify-between gap-3">
           <h2 id={headingId} className="text-[17px] font-semibold text-slate-900">

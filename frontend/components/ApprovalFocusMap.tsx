@@ -47,10 +47,12 @@ const VIEW_H = 200;
 const VIEW_MARGIN = 8;
 
 // Matches NetworkViewer.tsx's own ACCENT constant exactly (frontend/
-// components/NetworkViewer.tsx) -- this app has no dark-mode theme (verified:
-// no `prefers-color-scheme`/`data-theme` rule anywhere in app/globals.css),
-// so a fixed literal, not a CSS var, is the same choice that file already
-// made.
+// components/NetworkViewer.tsx). Since 2026-09-04 the app HAS a second theme
+// (`html[data-theme="light"]` in app/globals.css, toggled from the topbar);
+// the shell, tokens, charts and basemaps follow it, but the map/network
+// FEATURE colours -- this file's and NetworkViewer's included -- are still the
+// dark-tuned literals and are the named follow-up pass. Keep this in step
+// with NetworkViewer when that pass lands, not before.
 const ACCENT = "#4c8dff";
 const MUTED_LINK = "#c7cfdb";
 const HIGHLIGHT_LINK = ACCENT;

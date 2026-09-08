@@ -440,7 +440,7 @@ export default function ObservationsPage() {
             accept=".xlsx,.xlsm"
             multiple
             onChange={(event) => setFilesToUpload(Array.from(event.target.files ?? []))}
-            className="block text-[15px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-[14px] file:font-semibold file:text-slate-700"
+            className="block text-[15px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-slate-100 file:px-3 file:py-1.5 file:text-[14px] file:font-semibold file:text-slate-700"
           />
           <button
             type="button"
@@ -470,7 +470,7 @@ export default function ObservationsPage() {
             {staged.map((item) => (
               <li
                 key={item.token}
-                className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-white/[0.06] px-3 py-1 text-[14px] text-slate-700"
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-[14px] text-slate-700"
               >
                 <span className="font-mono">{item.filename}</span>
                 <button
@@ -709,7 +709,7 @@ export default function ObservationsPage() {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-[17px] font-semibold text-slate-900">{selectedRecord.name}</h3>
-                    <span className="inline-block rounded-full border border-slate-300 bg-white/[0.06] px-2 py-0.5 font-mono text-[13px] text-slate-600">
+                    <span className="inline-block rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 font-mono text-[13px] text-slate-600">
                       {selectedRecord.adapter.name}
                     </span>
                   </div>

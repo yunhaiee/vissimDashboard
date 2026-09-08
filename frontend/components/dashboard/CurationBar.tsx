@@ -171,7 +171,7 @@ export default function CurationBar({
         {t("대시보드 큐레이션", "Dashboard curation", "ダッシュボードキュレーション")}
       </p>
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex h-10 min-w-[260px] flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-white/[0.03] px-3 focus-within:border-slate-300">
+        <div className="flex h-10 min-w-[260px] flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 focus-within:border-slate-300">
           {/* Monochrome sparkle, not a chat/speech-bubble glyph — kept as a
               subtle "this ranking is AI-curated" cue rather than removed.
               It reads as "AI-powered filtering", not "conversation", so it
@@ -201,14 +201,14 @@ export default function CurationBar({
             <button
               type="button"
               onClick={() => onAudienceChange("plain")}
-              className={`flex h-full items-center rounded-md px-3 transition-colors ${audience === "plain" ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"}`}
+              className={`flex h-full items-center rounded-md px-3 transition-colors ${audience === "plain" ? "bg-slate-200 text-slate-900" : "text-slate-500 hover:text-slate-800"}`}
             >
               {t("쉬운 설명", "Plain", "やさしい説明")}
             </button>
             <button
               type="button"
               onClick={() => onAudienceChange("expert")}
-              className={`flex h-full items-center rounded-md px-3 transition-colors ${audience === "expert" ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"}`}
+              className={`flex h-full items-center rounded-md px-3 transition-colors ${audience === "expert" ? "bg-slate-200 text-slate-900" : "text-slate-500 hover:text-slate-800"}`}
             >
               {t("전문가", "Expert", "専門家")}
             </button>

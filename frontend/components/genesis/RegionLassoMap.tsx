@@ -78,10 +78,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
-import type { Map as LeafletMap, LayerGroup, LeafletMouseEvent } from "leaflet";
+import type { Map as LeafletMap, LayerGroup, LeafletMouseEvent, TileLayer } from "leaflet";
+
+import { useTheme } from "@/components/ThemeProvider";
+import { basemapTileUrl } from "@/lib/basemap";
 
 /** The same CARTO dark basemap every other map in this app draws. */
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 
 /** How long a single click is held before it becomes a corner. Kept short so
  * drawing does not feel laggy — it does NOT by itself guarantee a double click
@@ -163,6 +165,19 @@ export default function RegionLassoMap({
 }: RegionLassoMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const { theme } = useTheme();
+  const tileUrl = basemapTileUrl(theme);
+  const tileUrlRef = useRef(tileUrl);
+  const tileLayerRef = useRef<TileLayer | null>(null);
+
+  // The basemap follows the theme without remounting the map: swapping the
+  // URL on the live layer is a Leaflet primitive (TileLayer#setUrl), and the
+  // ref lets a mount still awaiting the leaflet import pick up the latest
+  // choice instead of the one captured when the effect was scheduled.
+  useEffect(() => {
+    tileUrlRef.current = tileUrl;
+    tileLayerRef.current?.setUrl(tileUrl);
+  }, [tileUrl]);
   const drawingRef = useRef<LayerGroup | null>(null);
   // TRUE from `dragstart` to `dragend` on a corner handle. The redraw effect
   // below refuses to rebuild the layer group while this is set, and the reason
@@ -229,7 +244,7 @@ export default function RegionLassoMap({
       map.setView(centre, 15);
       map.getContainer().style.cursor = "crosshair";
 
-      L.tileLayer(TILE_URL, {
+      tileLayerRef.current = L.tileLayer(tileUrlRef.current, {
         attribution:
           '&copy; <a href="https://www.openstreetmap.org">OSM</a> &copy; <a href="https://carto.com">CARTO</a>',
         maxZoom: 20,

@@ -27,7 +27,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "QWEN_WORKER_AUTO_START=0 .venv/bin/python -m uvicorn main:app --app-dir backend --port 8001"
+        "QWEN_WORKER_AUTO_START=0 backend/.venv/bin/python -m uvicorn main:app --app-dir backend --port 8001"
       ],
       "port": 8001
     },

@@ -47,10 +47,19 @@ import random
 import re
 import shutil
 import sqlite3
+import sys
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from xml.sax.saxutils import escape
+
+# Runnable from anywhere -- README and CLAUDE.md both say
+# `python backend/tools/make_demo_data.py` from the repo root -- so the
+# `services` import in __main__ below resolves against backend/, the same
+# bootstrap every sibling tool in this directory carries.
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 

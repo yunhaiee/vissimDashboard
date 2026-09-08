@@ -30,7 +30,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
-import type { LayerGroup, Map as LeafletMap } from "leaflet";
+import type { LayerGroup, Map as LeafletMap, TileLayer } from "leaflet";
+
+import { useTheme } from "@/components/ThemeProvider";
+import { basemapTileUrl } from "@/lib/basemap";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import DraftLocalMap from "@/components/genesis/DraftLocalMap";
@@ -75,7 +78,6 @@ import {
 } from "@/lib/roadWidth";
 
 /** The same CARTO dark basemap every other map in this app draws. */
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 
 // U-19 round 2 -- metres -> on-screen pixels at a given zoom/latitude, so a
 // leaflet stroke weight can be "this many real metres wide" instead of a flat
@@ -539,6 +541,19 @@ function FindingsTileLayer({
   const { t } = useLanguage();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const { theme } = useTheme();
+  const tileUrl = basemapTileUrl(theme);
+  const tileUrlRef = useRef(tileUrl);
+  const tileLayerRef = useRef<TileLayer | null>(null);
+
+  // The basemap follows the theme without remounting the map: swapping the
+  // URL on the live layer is a Leaflet primitive (TileLayer#setUrl), and the
+  // ref lets a mount still awaiting the leaflet import pick up the latest
+  // choice instead of the one captured when the effect was scheduled.
+  useEffect(() => {
+    tileUrlRef.current = tileUrl;
+    tileLayerRef.current?.setUrl(tileUrl);
+  }, [tileUrl]);
   const layerRef = useRef<LayerGroup | null>(null);
   const [ready, setReady] = useState(false);
   // Bumped on every "zoomend" (mount effect below) purely to RE-TRIGGER the
@@ -569,7 +584,7 @@ function FindingsTileLayer({
       mapRef.current = map;
       map.setView([geo.origin.lat, geo.origin.lon], 15);
 
-      L.tileLayer(TILE_URL, {
+      tileLayerRef.current = L.tileLayer(tileUrlRef.current, {
         attribution:
           '&copy; <a href="https://www.openstreetmap.org">OSM</a> &copy; <a href="https://carto.com">CARTO</a>',
         maxZoom: 20,

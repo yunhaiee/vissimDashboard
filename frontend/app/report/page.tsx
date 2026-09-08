@@ -453,7 +453,7 @@ export default function ReportPage() {
   return (
     <div className="mx-auto max-w-[1400px] space-y-5 px-4 py-6">
       <div>
-        <h1 className="text-[22px] font-semibold text-white">{t("보고서", "Report", "レポート")}</h1>
+        <h1 className="text-[22px] font-semibold text-slate-900">{t("보고서", "Report", "レポート")}</h1>
         <p className="mt-1 text-[15px] text-slate-600">
           {t(
             "MRWA가 요구하는 절 구조에 이 제품의 도판을 채워 Word 보고서를 조판합니다.",
@@ -689,7 +689,7 @@ export default function ReportPage() {
       {mdPreviewOpen ? (
         <section className="rounded-xl border border-slate-200 px-4 py-3">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-[15px] font-semibold text-white">
+            <h2 className="text-[15px] font-semibold text-slate-900">
               {t("미리보기 (텍스트)", "Preview (text)", "プレビュー（テキスト）")}
             </h2>
             <div className="flex items-center gap-2">
@@ -775,7 +775,7 @@ export default function ReportPage() {
       {/* ---- the split: spine tree left, per-section preview right ---------- */}
       <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
         <section className="rounded-xl border border-slate-200 p-4">
-          <h2 className="text-[15px] font-semibold text-white">{t("보고서 스파인", "Report spine", "レポートスパイン")}</h2>
+          <h2 className="text-[15px] font-semibold text-slate-900">{t("보고서 스파인", "Report spine", "レポートスパイン")}</h2>
           {spine.loading ? (
             <p className="mt-2 text-[14px] text-slate-500">
               {t("스파인을 불러오는 중…", "Loading the spine…", "スパインを読み込み中…")}
@@ -1108,7 +1108,7 @@ function SectionPreview(props: {
 
   return (
     <section className="rounded-xl border border-slate-200 px-4 py-3">
-      <h3 className="text-[15px] font-semibold text-white">{title}</h3>
+      <h3 className="text-[15px] font-semibold text-slate-900">{title}</h3>
       <BasisFold basis={basis} t={t} />
 
       {figures.length === 0 ? (

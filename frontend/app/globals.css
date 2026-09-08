@@ -48,7 +48,7 @@
     width: 100%;
     border: 1px solid var(--border-soft);
     border-radius: 0.6rem;
-    background: #131312;
+    background: var(--input-bg);
     color: var(--text-strong);
     padding: 0.6rem 0.8rem;
     font-size: 0.9375rem;
@@ -63,13 +63,13 @@
   .ui-select:focus-visible {
     outline: none;
     border-color: color-mix(in oklab, var(--accent) 65%, transparent);
-    box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.2);
+    box-shadow: 0 0 0 3px var(--focus-ring);
   }
 
   /* Project pickers opt out of the accent focus ring -- focus stays visible,
      in the same neutral tones ui-button-ghost:hover uses. */
   .ui-select-quiet:focus-visible {
-    border-color: rgba(245, 243, 236, 0.24);
+    border-color: var(--border-strong);
     box-shadow: none;
   }
 
@@ -77,14 +77,14 @@
     border: 1px solid transparent;
     border-radius: 0.6rem;
     background: var(--text-strong);
-    color: #0b0b0b;
+    color: var(--color-ink);
     font-weight: 600;
     transition: background-color 150ms ease, opacity 150ms ease;
     box-shadow: none;
   }
 
   .ui-button-primary:hover {
-    background: #e8e8e5;
+    background: var(--primary-hover);
   }
 
   .ui-button-primary:disabled {
@@ -101,33 +101,44 @@
   }
 
   .ui-button-ghost:hover {
-    border-color: rgba(245, 243, 236, 0.24);
+    border-color: var(--border-strong);
     color: var(--text-strong);
-    background: rgba(245, 243, 236, 0.04);
+    background: var(--hover-fill-soft);
   }
 
   .ui-button-danger {
-    border: 1px solid rgba(224, 133, 119, 0.35);
+    border: 1px solid var(--danger-border);
     border-radius: 0.6rem;
-    background: rgba(224, 133, 119, 0.1);
-    color: #e49787;
+    background: var(--danger-fill);
+    color: var(--danger-text);
     font-weight: 500;
     transition: background-color 150ms ease, border-color 150ms ease;
   }
 
   .ui-button-danger:hover {
-    border-color: rgba(224, 133, 119, 0.5);
-    background: rgba(224, 133, 119, 0.16);
+    border-color: var(--danger-border-hover);
+    background: var(--danger-fill-hover);
   }
 }
 
 /* ============================================================
-   PALETTE LOCK — Claude Console dark theme (2026-07-23)
-   Values sampled from platform.claude.com/dashboard (dark):
-   page #1a1a19, sidebar #0d0d0d, cards = SAME bg as page with a
-   rgba(255,255,255,0.1) hairline + 12px radius + no shadow/fill,
-   muted text #898781, chip fill white/5, badge navy #032042 with
-   #6da7ec text. Do not drift; adjust here, never inline.
+   PALETTE LOCK — two themes, both locked. Do not drift; adjust
+   here, never inline.
+
+   DARK (default, 2026-07-23) — Claude Console dark. Values sampled
+   from platform.claude.com/dashboard (dark): page #1a1a19, sidebar
+   #0d0d0d, cards = SAME bg as page with a rgba(255,255,255,0.1)
+   hairline + 12px radius + no shadow/fill, muted text #898781, chip
+   fill white/5, badge navy #032042 with #6da7ec text.
+
+   LIGHT (2026-09-04, user-chosen "L2 Console white") — the mirror:
+   page #ffffff, sidebar #f7f7f5, text #0d0d0d, muted #6a6862,
+   hairlines black at 8/12%, accent #3d7ef5 (the dark theme's
+   accent-deep, for contrast on white). It lives in the
+   `html[data-theme="light"]` block below the Tailwind remap, and
+   redefines EVERY token here plus every remapped shade -- the
+   contract suite fails if either theme names a token the other
+   does not. Dark is the ABSENCE of the attribute (lib/theme.ts).
    ============================================================ */
 :root {
   color-scheme: dark;
@@ -146,6 +157,29 @@
   --accent: #4c8dff;
   --accent-hover: #6fa1ff;
   --accent-soft: rgba(76, 141, 255, 0.16);
+  --input-bg: #131312;
+  --hover-fill-soft: rgba(255, 255, 255, 0.04);
+  --hover-fill: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(245, 243, 236, 0.24);
+  --focus-ring: rgba(76, 141, 255, 0.2);
+  --selection: rgba(76, 141, 255, 0.35);
+  --menu-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
+  --primary-hover: #e8e8e5;
+  --danger-text: #e49787;
+  --danger-border: rgba(224, 133, 119, 0.35);
+  --danger-border-hover: rgba(224, 133, 119, 0.5);
+  --danger-fill: rgba(224, 133, 119, 0.1);
+  --danger-fill-hover: rgba(224, 133, 119, 0.16);
+  --chart-grid: #33332f;
+  --chart-axis-line: #45443f;
+  --chart-axis: #898781;
+  --chart-band: #fafaf9;
+  --map-tooltip-bg: rgba(250, 250, 249, 0.97);
+  --map-tooltip-fg: #3a3936;
+  --map-tooltip-strong: #0b0b0b;
+  --map-tooltip-border: rgba(20, 19, 15, 0.2);
+  --map-tooltip-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  --map-callout-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   --font-ui: "Pretendard Variable", "Pretendard", "Segoe UI", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
   --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
 }
@@ -257,6 +291,135 @@
   --color-indigo-600: #93a0de;
 }
 
+/* ------------------------------------------------------------
+   LIGHT THEME (2026-09-04) -- "L2 Console white". Stamped as
+   html[data-theme="light"] by public/theme-init.js before first
+   paint and toggled from the topbar (components/AppShell.tsx).
+   Plain CSS rather than a second @theme: Tailwind's utilities read
+   `var(--color-*)`, so redefining the variables on <html> re-points
+   every one of the ~3,000 class call sites without touching them.
+   The remap is the dark block's MIRROR: 50..300 stay fills and
+   hairlines (black-alpha now), 400..950 run muted -> near-black,
+   contrast chips (slate-900 / amber-500) go dark with text-ink
+   white on them, and amber stays NEUTRAL by the same doctrine.
+   Shades absent from the dark block are absent here too: a hole
+   falls through to stock Tailwind, which is light-first and
+   therefore harmless under this theme -- but do not add one to
+   this block alone (the suite checks both directions).
+   ------------------------------------------------------------ */
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-base: #ffffff;
+  --bg-deep: #f7f7f5;
+  --surface: transparent;
+  --surface-strong: #ffffff;
+  --surface-muted: rgba(0, 0, 0, 0.03);
+  --text-strong: #0d0d0d;
+  --text-muted: #6a6862;
+  --text-faint: #8b8983;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-soft: rgba(0, 0, 0, 0.12);
+  --shadow-soft: none;
+  --shadow-mid: 0 16px 40px rgba(0, 0, 0, 0.1);
+  --accent: #3d7ef5;
+  --accent-hover: #2f6fe8;
+  --accent-soft: rgba(61, 126, 245, 0.12);
+  --input-bg: #ffffff;
+  --hover-fill-soft: rgba(0, 0, 0, 0.04);
+  --hover-fill: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.24);
+  --focus-ring: rgba(61, 126, 245, 0.2);
+  --selection: rgba(61, 126, 245, 0.25);
+  --menu-shadow: 0 16px 34px rgba(0, 0, 0, 0.12);
+  --primary-hover: #262523;
+  --danger-text: #963d2e;
+  --danger-border: rgba(176, 75, 58, 0.35);
+  --danger-border-hover: rgba(176, 75, 58, 0.5);
+  --danger-fill: rgba(176, 75, 58, 0.08);
+  --danger-fill-hover: rgba(176, 75, 58, 0.14);
+  --chart-grid: rgba(0, 0, 0, 0.12);
+  --chart-axis-line: rgba(0, 0, 0, 0.22);
+  --chart-axis: #6a6862;
+  --chart-band: #0d0d0d;
+  --map-tooltip-bg: rgba(13, 13, 13, 0.94);
+  --map-tooltip-fg: #e3e2da;
+  --map-tooltip-strong: #ffffff;
+  --map-tooltip-border: rgba(255, 255, 255, 0.14);
+  --map-tooltip-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+  --map-callout-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+
+  /* the Tailwind remap, mirrored (same keys as @theme above) */
+  --color-surface: #ffffff;
+  --color-ink: #ffffff;
+  --color-accent: #3d7ef5;
+  --color-accent-deep: #2f6fe8;
+  --color-slate-50: rgba(0, 0, 0, 0.03);
+  --color-slate-100: rgba(0, 0, 0, 0.05);
+  --color-slate-200: rgba(0, 0, 0, 0.1);
+  --color-slate-300: rgba(0, 0, 0, 0.16);
+  --color-slate-400: #8b8983;
+  --color-slate-500: #6a6862;
+  --color-slate-600: #55534d;
+  --color-slate-700: #3f3d38;
+  --color-slate-800: #262523;
+  --color-slate-900: #0d0d0d;
+  --color-slate-950: #000000;
+  --color-rose-50: #fdf1ee;
+  --color-rose-100: #fbe4df;
+  --color-rose-200: #f5c9c0;
+  --color-rose-300: #eda99b;
+  --color-rose-400: #c96755;
+  --color-rose-500: #bf5a48;
+  --color-rose-600: #b04b3a;
+  --color-rose-700: #963d2e;
+  --color-rose-800: #7c3225;
+  --color-rose-900: #62281d;
+  --color-amber-50: rgba(0, 0, 0, 0.03);
+  --color-amber-100: rgba(0, 0, 0, 0.05);
+  --color-amber-200: rgba(0, 0, 0, 0.1);
+  --color-amber-300: rgba(0, 0, 0, 0.16);
+  --color-amber-400: #6a6862;
+  --color-amber-500: #0d0d0d;
+  --color-amber-600: #262523;
+  --color-amber-700: #55534d;
+  --color-amber-800: #1c1b19;
+  --color-amber-900: #111110;
+  --color-emerald-50: #eef6ef;
+  --color-emerald-100: #e0efe2;
+  --color-emerald-200: #c3dfc7;
+  --color-emerald-300: #a3cca9;
+  --color-emerald-400: #4f8f5c;
+  --color-emerald-500: #3f7f4c;
+  --color-emerald-600: #2f6b3c;
+  --color-emerald-700: #265a31;
+  --color-emerald-800: #1e4a28;
+  --color-blue-50: #eaf2fd;
+  --color-blue-100: #d8e7fb;
+  --color-blue-200: #b7d1f5;
+  --color-blue-300: #8fb6ec;
+  --color-blue-400: #4a83c2;
+  --color-blue-500: #3672b8;
+  --color-blue-600: #2a5fa3;
+  --color-blue-700: #1f4c86;
+  --color-blue-800: #173b69;
+  --color-sky-50: #eaf2fd;
+  --color-sky-200: #b7d1f5;
+  --color-sky-400: #4a83c2;
+  --color-sky-500: #3672b8;
+  --color-sky-600: #2a5fa3;
+  --color-red-50: #fdf1ee;
+  --color-red-200: #f5c9c0;
+  --color-red-400: #c96755;
+  --color-red-700: #963d2e;
+  --color-cyan-50: #e8f5f7;
+  --color-cyan-100: #d3ecef;
+  --color-cyan-700: #1f6f7a;
+  --color-violet-50: #f0eef8;
+  --color-violet-200: #d8d2ee;
+  --color-indigo-600: #4f5fc0;
+}
+
+
 * {
   box-sizing: border-box;
 }
@@ -274,7 +437,7 @@ body {
 }
 
 ::selection {
-  background: rgba(76, 141, 255, 0.35);
+  background: var(--selection);
 }
 
 .app-shell {
@@ -347,12 +510,12 @@ body {
 
 .app-side-link:hover {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--hover-fill-soft);
 }
 
 .app-side-link-active {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-fill);
 }
 
 /* THE TOPBAR (2026-08-14). The sidebar's footer -- account block plus a
@@ -389,7 +552,7 @@ body {
 
 .app-topbar-btn:hover {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-fill);
 }
 
 .app-topbar-btn svg {
@@ -425,7 +588,7 @@ body {
   border: 1px solid var(--border-soft);
   border-radius: 0.6rem;
   background: var(--bg-deep);
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--menu-shadow);
 }
 
 .app-topbar-menu-item {
@@ -449,7 +612,7 @@ body {
 
 .app-topbar-menu-item:hover {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-fill);
 }
 
 .app-topbar-menu-item-active {
@@ -514,7 +677,7 @@ body {
 
 .app-topbar-account-action:hover {
   color: var(--text-strong);
-  border-color: rgba(245, 243, 236, 0.24);
+  border-color: var(--border-strong);
 }
 
 .app-content {
@@ -531,15 +694,16 @@ body {
   width: 100%;
 }
 
-/* Map overlays sit on dark tiles: point-focus elements (tooltips,
-   callout chips) go ivory for contrast, like inverted chips. */
+/* Map overlays: point-focus elements (tooltips, callout chips) take the
+   INVERTED chip colours of the current theme -- ivory on the dark basemap,
+   near-black on the light one -- through the --map-tooltip-* tokens. */
 .leaflet-tooltip.map-link-tooltip,
 .leaflet-tooltip.map-node-tooltip {
-  border: 1px solid rgba(20, 19, 15, 0.2);
+  border: 1px solid var(--map-tooltip-border);
   border-radius: 0.6rem;
-  background: rgba(250, 250, 249, 0.97);
-  color: #3a3936;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  background: var(--map-tooltip-bg);
+  color: var(--map-tooltip-fg);
+  box-shadow: var(--map-tooltip-shadow);
   font-size: 12px;
   line-height: 1.45;
   padding: 0.45rem 0.55rem;
@@ -547,7 +711,7 @@ body {
 
 .leaflet-tooltip.map-link-tooltip strong,
 .leaflet-tooltip.map-node-tooltip strong {
-  color: #0b0b0b;
+  color: var(--map-tooltip-strong);
 }
 
 .map-node-callout-anchor {
@@ -566,14 +730,14 @@ body {
   height: 24px;
   padding: 0 8px 0 7px;
   border-radius: 7px;
-  border: 1px solid rgba(20, 19, 15, 0.18);
-  background: rgba(250, 250, 249, 0.96);
-  color: #3a3936;
+  border: 1px solid var(--map-tooltip-border);
+  background: var(--map-tooltip-bg);
+  color: var(--map-tooltip-fg);
   font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--map-callout-shadow);
 }
 
 .map-node-callout-chip em {
@@ -585,7 +749,7 @@ body {
   height: 7px;
   flex: 0 0 auto;
   border-radius: 9999px;
-  border: 1px solid rgba(20, 19, 15, 0.25);
+  border: 1px solid var(--map-tooltip-border);
 }
 
 .simulation-map-viewer .leaflet-top.leaflet-left {

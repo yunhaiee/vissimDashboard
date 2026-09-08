@@ -302,7 +302,7 @@ export default function GenesisPage() {
     <div className="mx-auto max-w-[1500px] px-4 py-8">
       <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-white">
+          <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-slate-900">
             {t("네트워크 생성 (Genesis)", "Network Genesis", "ネットワーク生成 (Genesis)")}
           </h1>
           <p className="mt-1 text-[15px] text-slate-500">
@@ -489,7 +489,7 @@ export default function GenesisPage() {
               type="file"
               accept=".osm,.xml"
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              className="block min-w-[200px] flex-1 text-[15px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-[15px] file:font-semibold file:text-slate-700"
+              className="block min-w-[200px] flex-1 text-[15px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-slate-100 file:px-3 file:py-1.5 file:text-[15px] file:font-semibold file:text-slate-700"
             />
             <span className="flex items-center gap-2 whitespace-nowrap">
               <span className="text-[14px] text-slate-500">{t("또는", "or", "または")}</span>

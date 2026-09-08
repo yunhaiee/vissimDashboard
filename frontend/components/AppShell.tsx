@@ -8,6 +8,7 @@ import FloatingAssistant from "@/components/FloatingAssistant";
 import ProjectSelector from "@/components/ProjectSelector";
 import { roleLabel, useAuth } from "@/components/AuthProvider";
 import { useLanguage } from "@/components/LanguageProvider";
+import { useTheme } from "@/components/ThemeProvider";
 import { loginHref } from "@/lib/authRedirect";
 import type { Language } from "@/lib/i18n";
 
@@ -544,8 +545,9 @@ function AccountAffordance() {
 }
 
 /**
- * THE TOPBAR (2026-08-14) -- three affordances that describe THIS BROWSER
- * rather than the model, in the top-right corner of every route.
+ * THE TOPBAR (2026-08-14) -- the affordances that describe THIS BROWSER
+ * rather than the model, in the top-right corner of every route: the manual,
+ * the colour theme (joined 2026-09-04), the language, and the account.
  *
  * WHY IT IS NOT IN THE SIDEBAR ANY MORE. The account block and the language
  * switch used to sit in the rail's footer, which put "who am I" and "what
@@ -577,6 +579,7 @@ function AppTopbar() {
       >
         <BookIcon />
       </Link>
+      <ThemeToggle />
       <LanguageMenu />
       <span aria-hidden className="app-topbar-divider" />
       <AccountAffordance />
@@ -667,6 +670,57 @@ function LanguageMenu() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The theme toggle (2026-09-04). One more affordance that describes THIS
+ * BROWSER: two palettes, both locked in app/globals.css (PALETTE LOCK), and one
+ * button between them. A button rather than a menu because there are exactly
+ * two states and no "system" option to list. The glyph shows the theme the
+ * click LEADS TO -- a sun while dark, a moon while light -- which is what a
+ * switch's face should say; the label says the same in words. Geometry, not
+ * emoji, for the same tofu-box reason `CheckGlyph` gives.
+ *
+ * It is defined here, AFTER `LanguageMenu`, and not beside `PipelineStepper`:
+ * unit #18 slices the stepper's source and pins it stateless, and a hook-
+ * carrying component inside that slice would fail that pin for the wrong reason.
+ */
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+  const { t } = useLanguage();
+  const label =
+    theme === "dark"
+      ? t("밝은 테마로 전환", "Switch to light theme", "ライトテーマに切り替え")
+      : t("어두운 테마로 전환", "Switch to dark theme", "ダークテーマに切り替え");
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      className="app-topbar-btn"
+    >
+      {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+    </button>
+  );
+}
+
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.5 1.5M17.2 17.2l1.5 1.5M5.3 18.7l1.5-1.5M17.2 6.8l1.5-1.5" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M20.2 14.6A8.4 8.4 0 0 1 9.4 3.8a8.4 8.4 0 1 0 10.8 10.8Z" />
+    </svg>
   );
 }
 
