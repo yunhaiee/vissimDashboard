@@ -9,38 +9,27 @@ password, that dies when you press Ctrl-C.
 
 ## The short version
 
-From the repo root, on the machine that will serve the demo:
+One command, from the repo root, on the machine that will serve the demo:
 
 ```
-source .venv/bin/activate                  # or backend/.venv/bin/activate
-(cd backend && python -m tools.make_demo_data)
-python scripts/share_demo.py
+./scripts/demo.sh
 ```
 
-Three things about that first block, each of which bit on 2026-09-08:
+That is the whole procedure. It creates the venv if missing, installs backend
+and frontend dependencies, seeds synthetic demo data if `data/` is empty, and
+opens the tunnel. Every step is idempotent, so a second run reaches the tunnel
+in seconds. Arguments pass through (`./scripts/demo.sh --user prof`).
 
-- **macOS has no `python`, only `python3`.** Activating the venv is what makes
-  a bare `python` work — and you want the venv anyway for the next line.
-- **`make_demo_data` must run from `backend/` and as `-m`,** not as a path.
-  `python tools/make_demo_data.py` puts `backend/tools/` on `sys.path`, not
-  `backend/`, so its `from services.workspaces import ...` dies with
-  `ModuleNotFoundError: No module named 'services'`. `-m` puts the working
-  directory on the path instead. (The module's own docstring still shows the
-  path form; it is wrong.)
-- **It needs the venv, not system Python** — it fails at the last step with
-  `openpyxl is required to write real_counts.xlsx`.
+One prerequisite it cannot install for you:
 
-Seeding is optional if `data/` is already populated, and it is not free:
-a default `--out` run **`rmtree`s `data/Scenarios`** before rebuilding it. The
-rebuild is byte-identical, so nothing that script wrote is lost — but anything
-a *human* put in that tree is deleted. `--out DIR` builds elsewhere.
+```
+brew install cloudflared
+```
 
-`share_demo.py` itself is stdlib-only, so plain `python3 scripts/share_demo.py`
-works with no venv; it finds the backend interpreter on its own, probing both
-`backend/.venv/` and the repo-root `.venv/` so either dev box's layout resolves.
+No Cloudflare account or domain is needed. The script stops with that exact
+line if the binary is missing.
 
-It starts uvicorn on :8001, opens a Cloudflare quick tunnel, starts the Next
-dev server with the tunnel URL wired in, and prints three lines to send:
+It then prints three lines to send, and nothing else needs to be sent:
 
 ```
     URL       https://<random-words>.trycloudflare.com
@@ -48,9 +37,33 @@ dev server with the tunnel URL wired in, and prints three lines to send:
     Password  <freshly generated, printed once>
 ```
 
-That is all the viewer needs — no account, no install, no GitHub. The browser
-shows a standard login box on first load. `--user` and `--password` override
-the defaults; `--no-backend` skips uvicorn if :8001 is already serving.
+The viewer needs no account, no install and no GitHub. Ctrl-C ends it, and the
+URL dies with it. Each run gets a new URL.
+
+### Why a wrapper script exists at all
+
+Because the by-hand version had four separate ways to fail, and on 2026-09-08
+it hit all of them on the Mac laptop this doc recommends using:
+
+- **macOS has no `python`, only `python3`** — the first two commands died at
+  `command not found` before anything ran.
+- **`backend/requirements.txt` could not install on macOS at all.** `pywin32`
+  carried no platform marker, so `pip install -r requirements.txt` failed
+  outright — which is why that laptop had no venv to activate. Fixed in that
+  file; the marker there is load-bearing, not tidying.
+- **`make_demo_data` must run from `backend/` and as `-m`.** A path run puts
+  `backend/tools/` on `sys.path` instead of `backend/`, so its
+  `from services.workspaces import ...` raises ModuleNotFoundError.
+- **`python-dotenv==310; platform_system == "Windows"`** was two bugs in one
+  line: pywin32's marker on the wrong package, and a version that has never
+  existed. It could not install on either platform; `config.py`'s try/except
+  swallowed the resulting ImportError, so `backend/.env` was silently never
+  loaded off Windows.
+
+Seeding is skipped when `data/Scenarios` already exists, deliberately: a
+default `--out` run **`rmtree`s** that directory before rebuilding it. The
+rebuild is byte-identical, so nothing the script wrote is lost — but anything a
+*human* put there is gone. Re-seed by hand with `--out` if you need to.
 
 ## What is protecting it
 
@@ -146,6 +159,38 @@ calibration workspace and the agent chat, with nothing confidential behind it.
 | Login box reappears forever | Password mistyped, or the dev server was restarted without the env vars. |
 | Images/exports 404 for the viewer only | `NEXT_PUBLIC_API_BASE` was not set to the tunnel URL — the dev server was started by hand instead of by the script. |
 
+## The backend suite is not green off Windows — 22 tests
+
+Making `pip install` work on macOS had a side effect worth stating plainly: the
+suite can now RUN there, and 22 tests fail when it does. All of them in the
+COM/agent-run files (`test_agent_run_num_runs.py`, `test_agent_run_trajectory.py`
+and neighbours), all with the same cause:
+
+```
+AssertionError: pywin32 is not installed, so VISSIM COM cannot run.
+ERROR routers.simulations:simulations.py:865 pythoncom not available
+```
+
+This is **not** a regression from the marker fix and not a fault in the demo
+path. It was simply invisible before: `pip install -r requirements.txt` failed
+outright on macOS, so nobody ever got far enough to run pytest there. These
+tests mock the COM layer but still need `pywin32` importable, which cannot
+happen off Windows.
+
+The repo already has the right idiom for this — `test_rag_retrieval_quality`
+passes-or-skips-with-reason on corpus presence, because client PDFs are
+gitignored. These 22 want the same treatment: skip with a named reason when
+`pywin32` is absent, so `pytest` on the Mac reports `0 failed` honestly rather
+than 22 red lines that mean "you are not on Windows". **Not done here** — it is
+a separate change with its own review, and it is not on the path to showing
+somebody the product. Until then: run the backend suite on the Windows box, and
+read a Mac run as "22 expected COM failures + everything else".
+
+One consequence to note: `pytest` itself is not in `requirements.txt` (nor is
+`httpx`, which `starlette.testclient` needs — without it 58 test modules fail at
+collection). Installing them is a separate step from what `scripts/demo.sh`
+does; the demo path does not need either.
+
 ## Verification performed (2026-09-08)
 
 `npm run typecheck` clean · `test:dashboard-contract` 265/265 ·
@@ -158,3 +203,17 @@ backend running); `/favicon.ico` anonymous → 401, authenticated → 200; the
 legacy `/intersections` and `/intersections/abc` redirects to `/dashboard`
 still fire when authenticated and return 401 — not a redirect — when not, so
 the gate does not leak which routes exist.
+
+Then the whole stack, end to end, on a machine with no venv to start with:
+`scripts/demo.sh` created `.venv`, installed `backend/requirements.txt` (the
+marker fix's real test — it now installs off Windows), seeded demo data, and
+stopped exactly at the `brew install cloudflared` line. With uvicorn and the
+gated dev server up, `GET /api/scenarios` **through the Next rewrite** returned
+the three demo scenarios (`Base (AM Peak)`, `Signal Optimization`,
+`Demand +20%`) for an authenticated caller and 401 for an anonymous one —
+which is what the professor's browser will do.
+
+That last check is the one that found the `API_PROXY_TARGET` bug: with only
+`NEXT_PUBLIC_API_BASE` set, the same request hung for 30s and returned zero
+bytes with nothing in the dev log. Worth re-running after any change to how
+those two variables are set.

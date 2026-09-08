@@ -1,6 +1,12 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 
+// TRAP (measured 2026-09-08): NEXT_PUBLIC_API_BASE doubles as the rewrite
+// target here. Anything that repoints the BROWSER's absolute API base -- a
+// tunnel, a reverse proxy -- must set API_PROXY_TARGET back to the backend in
+// the same breath, or /api/* rewrites to the public URL, which resolves to
+// this dev server again: every API call loops until the client times out, and
+// nothing is logged. scripts/share_demo.py sets both together.
 const apiProxyTarget = (process.env.API_PROXY_TARGET ?? process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8001").replace(/\/+$/, "");
 const defaultApiProxyMaxBodySizeBytes = 250 * 1024 * 1024;
 const configuredApiProxyMaxBodySizeBytes = Number.parseInt(process.env.API_PROXY_MAX_BODY_SIZE_BYTES ?? "", 10);

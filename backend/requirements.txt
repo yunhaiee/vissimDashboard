@@ -3,9 +3,19 @@ uvicorn[standard]==0.34.0
 openpyxl==3.1.5
 python-docx==1.2.0
 matplotlib==3.10.6
-pywin32
+# Vissim COM, and therefore Windows-only. The marker is load-bearing: without
+# it `pip install -r requirements.txt` FAILS OUTRIGHT on the Mac laptop, which
+# is why that box had no venv until 2026-09-08. Every import of it is lazy and
+# inside a function (services/vissim_com.py), so its absence costs nothing off
+# Windows -- only live COM work is unavailable there, which was already true.
+pywin32; platform_system == "Windows"
 anthropic
-python-dotenv==310; platform_system == "Windows"
+# Loads backend/.env (ANTHROPIC_API_KEY) via config.py. Wanted on BOTH boxes --
+# it previously carried pywin32's Windows marker by mistake, and a version
+# ("310") that has never existed, so this line could not install anywhere:
+# on Windows it failed to resolve, on the Mac the marker skipped it and
+# config.py's try/except swallowed the ImportError in silence.
+python-dotenv==1.2.3
 scikit-learn==1.7.2
 PyYAML>=6.0
 # Text-layer extraction for the 대전 signal sheets

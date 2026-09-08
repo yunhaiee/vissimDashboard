@@ -283,6 +283,15 @@ def main() -> int:
                 # Absolute-URL builders (apiUrl, createSimulationWS) must point
                 # at the tunnel, not at the viewer's own localhost.
                 "NEXT_PUBLIC_API_BASE": url,
+                # MUST be set alongside it. next.config.ts resolves its rewrite
+                # target as `API_PROXY_TARGET ?? NEXT_PUBLIC_API_BASE ??
+                # http://127.0.0.1:8001`, so setting only the line above would
+                # ALSO repoint the /api/* rewrite at the tunnel -- and the
+                # tunnel points back at this very dev server. Every API call
+                # then loops frontend -> tunnel -> frontend and hangs until the
+                # client times out, with nothing in the log to say why.
+                # (Measured 2026-09-08: 30s timeout, 0 bytes, no request line.)
+                "API_PROXY_TARGET": f"http://127.0.0.1:{BACKEND_PORT}",
                 # next.config.ts reads this; Next 16 blocks dev-resource
                 # requests from unrecognised origins, which is what made the
                 # tailscale setup hang at "불러오는 중…" until it was added.
