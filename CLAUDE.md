@@ -27,7 +27,7 @@ MRWA guideline mapping (client authority numbers): `docs/meeting-brief-tk-mrwa.m
   `github.com/yunhalee2008/vissimDashboard` (approved 2026-07-22). Never make it public, never
   add other remotes, never grant collaborator access — those are the user's calls alone.
   To show it to an outsider without publishing anything, use the password-gated tunnel:
-  `docs/product/remote-demo-2026-09-08.md` (`python scripts/share_demo.py`). It exposes whatever
+  `docs/product/remote-demo-2026-09-08.md` (`python3 scripts/share_demo.py`). It exposes whatever
   workspaces the running backend can see — run it on demo data, never with `client-data/` loaded.
 - **Never commit secrets.** `ANTHROPIC_API_KEY` lives in git-ignored `backend/.env`. Never
   print it. `.gitignore` blocks `.env*` — do not weaken.

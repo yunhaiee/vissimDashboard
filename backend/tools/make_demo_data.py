@@ -10,7 +10,11 @@ The result databases match the schema ``services/results_reader.py`` reads:
 movement OBJECT_IDs use the ``node-fromlink-pos-tolink-pos`` format so
 directional breakdowns resolve against the .inpx geometry.
 
-Usage:  python tools/make_demo_data.py  [--out DIR]
+Usage:  python -m tools.make_demo_data  [--out DIR]     (from ``backend/``)
+Run it with the VENV interpreter and as ``-m``, not as a path: a path run puts
+``backend/tools/`` on ``sys.path`` rather than ``backend/``, so the
+``from services.workspaces import ...`` below raises ModuleNotFoundError, and
+the workbook step needs ``openpyxl`` from the venv.
 Deterministic — same output every run (fixed RNG seed per scenario/run, and a
 byte-stable workbook; see :func:`_stable_xlsx_bytes`).
 

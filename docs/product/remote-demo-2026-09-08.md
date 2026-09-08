@@ -12,8 +12,32 @@ password, that dies when you press Ctrl-C.
 From the repo root, on the machine that will serve the demo:
 
 ```
+source .venv/bin/activate                  # or backend/.venv/bin/activate
+(cd backend && python -m tools.make_demo_data)
 python scripts/share_demo.py
 ```
+
+Three things about that first block, each of which bit on 2026-09-08:
+
+- **macOS has no `python`, only `python3`.** Activating the venv is what makes
+  a bare `python` work — and you want the venv anyway for the next line.
+- **`make_demo_data` must run from `backend/` and as `-m`,** not as a path.
+  `python tools/make_demo_data.py` puts `backend/tools/` on `sys.path`, not
+  `backend/`, so its `from services.workspaces import ...` dies with
+  `ModuleNotFoundError: No module named 'services'`. `-m` puts the working
+  directory on the path instead. (The module's own docstring still shows the
+  path form; it is wrong.)
+- **It needs the venv, not system Python** — it fails at the last step with
+  `openpyxl is required to write real_counts.xlsx`.
+
+Seeding is optional if `data/` is already populated, and it is not free:
+a default `--out` run **`rmtree`s `data/Scenarios`** before rebuilding it. The
+rebuild is byte-identical, so nothing that script wrote is lost — but anything
+a *human* put in that tree is deleted. `--out DIR` builds elsewhere.
+
+`share_demo.py` itself is stdlib-only, so plain `python3 scripts/share_demo.py`
+works with no venv; it finds the backend interpreter on its own, probing both
+`backend/.venv/` and the repo-root `.venv/` so either dev box's layout resolves.
 
 It starts uvicorn on :8001, opens a Cloudflare quick tunnel, starts the Next
 dev server with the tunnel URL wired in, and prints three lines to send:
