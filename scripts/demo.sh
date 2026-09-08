@@ -26,13 +26,49 @@ VENV="$REPO_ROOT/.venv"
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 fail() { printf '\n\033[1;31mx %s\033[0m\n' "$1" >&2; exit 1; }
 
-# --- 1. an interpreter ------------------------------------------------------
-# macOS ships python3 and NOT python; that missing alias is the first thing
-# that bit on 2026-09-08.
-PYTHON_BOOTSTRAP="$(command -v python3 || true)"
-[ -n "$PYTHON_BOOTSTRAP" ] || fail "python3 not found. Install it: brew install python"
+# --- 1. an interpreter NEW ENOUGH FOR THE PINS ------------------------------
+# macOS ships python3 and NOT python, and the python3 it ships can be 3.9 --
+# both bit on 2026-09-08. 3.10 is the real floor: matplotlib==3.10.6 and
+# scikit-learn==1.7.2 both declare Requires-Python >=3.10, and on 3.9 pip does
+# not say "too old", it silently hunts for an ancient matplotlib and dies with
+# "No matching distribution found", which reads like a broken pin.
+# Newest first, so a box with several installed uses the best one.
+python_ok() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
+}
+
+PYTHON_BOOTSTRAP=""
+for candidate in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+  candidate_path="$(command -v "$candidate" 2>/dev/null || true)"
+  [ -n "$candidate_path" ] || continue
+  if python_ok "$candidate_path"; then
+    PYTHON_BOOTSTRAP="$candidate_path"
+    break
+  fi
+done
+
+if [ -z "$PYTHON_BOOTSTRAP" ]; then
+  found="$(command -v python3 >/dev/null 2>&1 && python3 --version 2>&1 || echo 'none found')"
+  fail "Python 3.10 or newer is required; this machine has: $found
+
+    brew install python@3.12
+
+  Then re-run this script -- it picks the newest python3.N on PATH."
+fi
+echo "Using $("$PYTHON_BOOTSTRAP" --version 2>&1) at $PYTHON_BOOTSTRAP"
 
 # --- 2. the venv ------------------------------------------------------------
+# A venv built by a too-old interpreter is worse than none: it exists, so the
+# check below would skip creation, and every install into it fails the same way
+# forever. Rebuild it instead of leaving the operator to guess.
+if [ -x "$VENV/bin/python" ] && ! python_ok "$VENV/bin/python"; then
+  step "Rebuilding .venv -- it was built by $("$VENV/bin/python" --version 2>&1), which is too old"
+  case "$VENV" in
+    */.venv) rm -rf "$VENV" ;;
+    *) fail "Refusing to remove an unexpected venv path: $VENV" ;;
+  esac
+fi
+
 if [ ! -x "$VENV/bin/python" ]; then
   step "Creating the virtualenv (.venv) -- first run only"
   "$PYTHON_BOOTSTRAP" -m venv "$VENV"

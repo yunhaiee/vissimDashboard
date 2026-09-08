@@ -20,14 +20,26 @@ and frontend dependencies, seeds synthetic demo data if `data/` is empty, and
 opens the tunnel. Every step is idempotent, so a second run reaches the tunnel
 in seconds. Arguments pass through (`./scripts/demo.sh --user prof`).
 
-One prerequisite it cannot install for you:
+Two prerequisites it cannot install for you:
 
 ```
-brew install cloudflared
+brew install cloudflared        # the tunnel
+brew install python@3.12        # ONLY if the script says your python3 is too old
 ```
 
-No Cloudflare account or domain is needed. The script stops with that exact
-line if the binary is missing.
+No Cloudflare account or domain is needed. The script stops with the exact
+install line for whichever is missing.
+
+**Python 3.10 is a hard floor**, and the stock macOS `python3` can be 3.9.
+`matplotlib==3.10.6` and `scikit-learn==1.7.2` both declare
+`Requires-Python >=3.10`, and pip's failure on 3.9 is badly misleading: instead
+of "your Python is too old" it hunts backwards for an installable matplotlib
+and ends with `No matching distribution found for matplotlib==3.10.6`, which
+reads like a broken pin. The script now probes `python3.14` down to `python3.10`
+before falling back to `python3`, takes the newest that satisfies the floor, and
+names the version it found when it refuses. A `.venv` already built by a too-old
+interpreter is detected and rebuilt rather than reused — otherwise it exists,
+so creation is skipped, and every install into it fails identically forever.
 
 It then prints three lines to send, and nothing else needs to be sent:
 
@@ -154,6 +166,8 @@ calibration workspace and the agent chat, with nothing confidential behind it.
 | Symptom | Cause |
 |---|---|
 | `cloudflared is not installed` | `brew install cloudflared` (macOS) / `winget install --id Cloudflare.cloudflared` (Windows). No account or domain needed. |
+| `No matching distribution found for matplotlib==3.10.6` | Your `python3` is older than 3.10 — pip's way of saying so. `brew install python@3.12`, then re-run; the script picks the newest and rebuilds the stale venv. |
+| `Python 3.10 or newer is required` | The same thing, caught early. Same fix. |
 | No URL within 60s | Quick tunnels occasionally fail to allocate a hostname. Re-run. |
 | Page hangs at "불러오는 중…" | `ALLOWED_DEV_ORIGINS` did not reach the dev server — check the tunnel came up *before* the frontend. |
 | Login box reappears forever | Password mistyped, or the dev server was restarted without the env vars. |
