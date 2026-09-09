@@ -1,0 +1,37 @@
+# Build context hygiene. Without this the context is ~1.35GB of things the
+# image must NOT have, and one of them is actively harmful: `COPY frontend/`
+# would drop the HOST's node_modules — built for macOS/arm64 — on top of the
+# Linux ones `npm ci` just installed, and .next would seed the build with a
+# stale compile.
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+*.tsbuildinfo
+
+# Virtualenvs are platform-specific for the same reason.
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Runtime state belongs in the named volumes, not baked into a layer. This is
+# also the confidentiality line: runtime/workspaces holds uploaded datasets and
+# runtime/db holds the user table. An image is copied around far more casually
+# than a server is.
+runtime/
+data/
+
+# Client-confidential source data — never in the repo, never in an image.
+client-data/
+docs/pdf_knowledge/
+
+.git/
+.github/
+.claude/
+.omc/
+.codex/
+.superpowers/
+.DS_Store
+Thumbs.db

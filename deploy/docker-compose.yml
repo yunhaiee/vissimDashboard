@@ -1,0 +1,87 @@
+# Prism, hosted continuously behind one origin.
+#
+# SHAPE (docs/ROADMAP.md "Serving shape"): uvicorn + `next start` behind ONE
+# reverse proxy terminating TLS, frontend and API under a SINGLE ORIGIN. That
+# removes CORS entirely.
+#
+# WHY CADDY PROXIES TO NEXT AND NOT TO THE BACKEND
+# ------------------------------------------------
+# It would be tidier to route /api/* straight to uvicorn. It would also be a
+# hole: the demo gate lives in frontend/proxy.ts, INSIDE Next, and its whole
+# job is to sit in front of the /api/* rewrites — including the agent
+# endpoints, which spend ANTHROPIC_API_KEY. Routing the API around Next would
+# leave that surface open to anyone with the url. So everything goes through
+# Next, and the backend port is never published to the host.
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    restart: unless-stopped
+    environment:
+      # The Qwen worker is a heavy optional dependency; a hosted demo has no
+      # use for it (matches .claude/launch.json and share_demo.py).
+      QWEN_WORKER_AUTO_START: "0"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Session cookies over plain HTTP leak sideways. This host is HTTPS, so
+      # routers/auth.py's _cookie_secure() must say yes — it defaults to "0"
+      # so that http://localhost keeps working, which is wrong once deployed.
+      PRISM_AUTH_COOKIE_SECURE: "1"
+    volumes:
+      # Everything the product remembers. `runtime` holds workspaces, uploads,
+      # agent sessions and the SQLite user/session DB; `data` holds the
+      # synthetic demo network the seed step builds.
+      - prism-runtime:/app/runtime
+      - prism-data:/app/data
+    healthcheck:
+      # NO -f: 401 is the HEALTHY answer here (nobody is signed in), and -f
+      # turns any 4xx into a non-zero exit — which would mark a perfectly
+      # working backend as unhealthy forever. -sS keeps it quiet but still
+      # reports transport failures, which are the real unhealthy case.
+      test: ["CMD", "curl", "-sS", "-o", "/dev/null", "http://127.0.0.1:8001/api/auth/whoami"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        # Compile-time. Rebuild when the domain changes — see Dockerfile.frontend.
+        PRISM_PUBLIC_ORIGIN: https://${PRISM_DOMAIN}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Runtime half of next.config.ts's pair. Points the /api/* rewrite at the
+      # backend CONTAINER, never at the public origin.
+      API_PROXY_TARGET: http://backend:8001
+      # The private wall. Both must be non-empty or the gate is off entirely
+      # (lib/demo-auth.ts: isDemoGateEnabled). Set them in deploy/.env.
+      PRISM_DEMO_AUTH_USER: ${PRISM_DEMO_AUTH_USER:?set PRISM_DEMO_AUTH_USER in deploy/.env}
+      PRISM_DEMO_AUTH_PASSWORD: ${PRISM_DEMO_AUTH_PASSWORD:?set PRISM_DEMO_AUTH_PASSWORD in deploy/.env}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PRISM_DOMAIN: ${PRISM_DOMAIN:?set PRISM_DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account state. Losing this volume means
+      # re-issuing on next boot, which Let's Encrypt rate-limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  prism-runtime:
+  prism-data:
+  caddy-data:
+  caddy-config:

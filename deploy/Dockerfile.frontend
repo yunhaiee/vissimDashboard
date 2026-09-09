@@ -1,0 +1,48 @@
+# Prism frontend — `next build` + `next start`, not `next dev`.
+#
+# WHY THE DOMAIN IS A BUILD ARG, NOT JUST AN ENV VAR
+# --------------------------------------------------
+# NEXT_PUBLIC_* is inlined at COMPILE time. lib/api.ts's getApiBase() builds
+# ABSOLUTE urls from it (phase-diagram images, xlsx exports, the health JSON),
+# and createSimulationWS derives its ws:// base from the same value. Passing it
+# only at `docker compose up` would leave the compiled bundle pointing at
+# http://127.0.0.1:8001 — the VIEWER's localhost — and those requests fail with
+# nothing useful in the log. So the image is domain-specific: change the domain,
+# rebuild.
+FROM node:24-slim AS build
+
+WORKDIR /app/frontend
+
+# package files first: a source edit must not re-run `npm ci`.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+COPY shared/ /app/shared/
+
+ARG PRISM_PUBLIC_ORIGIN
+ENV NEXT_PUBLIC_API_BASE=${PRISM_PUBLIC_ORIGIN}
+# THE TRAP next.config.ts:4 names: NEXT_PUBLIC_API_BASE doubles as the /api/*
+# rewrite target, so setting only the line above would rewrite /api/* to the
+# PUBLIC url — which resolves back to this very server. Every API call would
+# loop until the client times out, with nothing logged. Both are always set
+# together; at build time the value is a placeholder that the runtime env
+# overrides with the real backend container.
+ENV API_PROXY_TARGET=http://backend:8001
+
+RUN npm run build
+
+# ---------------------------------------------------------------- runtime ---
+FROM node:24-slim
+
+WORKDIR /app/frontend
+ENV NODE_ENV=production
+
+COPY --from=build /app/frontend ./
+COPY --from=build /app/shared /app/shared
+
+EXPOSE 3000
+
+# `next start` serves the compiled build. proxy.ts still runs here, which is
+# the point: it is the demo gate, and it sits in front of the /api/* rewrites.
+CMD ["npm", "run", "start"]

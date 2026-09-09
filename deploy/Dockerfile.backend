@@ -1,0 +1,41 @@
+# Prism backend — uvicorn, never a dev server, never --reload (docs/ROADMAP.md
+# "Serving shape"). The image carries the code; runtime/ and data/ arrive as
+# volumes, because everything the product remembers lives in files: workspaces,
+# uploads, the SQLite user/session DB, agent sessions.
+FROM python:3.12-slim
+
+# matplotlib and pypdfium2 ship manylinux wheels, so no build toolchain is
+# needed. curl is here for the compose healthcheck and nothing else.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# requirements.txt first so a code edit does not invalidate the pip layer.
+# pywin32 carries `platform_system == "Windows"` (fixed 2026-09-08), which is
+# what lets this file resolve at all on Linux — without that marker pip fails
+# outright here, exactly as it did on the Mac.
+COPY backend/requirements.txt backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# config.py resolves REPO_ROOT as the parent of backend/, and db.py defaults
+# DB_PATH to REPO_ROOT/runtime/db/app.db — so the repo layout has to be
+# preserved inside the image rather than flattened to the backend package.
+COPY backend/ backend/
+COPY shared/ shared/
+# docs/pdf_knowledge/ is deliberately absent: the corpus is client guideline
+# PDFs, git-ignored and not on this host, so services/rag_pdf.py finds nothing
+# and the assistant answers without page citations. Copying the manifest alone
+# would break the build anyway — it is untracked, so a fresh clone has neither.
+
+EXPOSE 8001
+
+# Bound to 0.0.0.0 because the frontend container reaches it over the compose
+# network. It is NOT published to the host in docker-compose.yml: the only way
+# in from outside is Caddy -> Next -> here, which is what keeps the demo gate
+# in front of the agent endpoints.
+CMD ["python", "-m", "uvicorn", "main:app", \
+     "--app-dir", "/app/backend", \
+     "--host", "0.0.0.0", \
+     "--port", "8001"]

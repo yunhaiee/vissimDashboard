@@ -1,0 +1,47 @@
+# One origin, TLS terminated here, everything proxied to Next.
+#
+# Caddy obtains and renews the certificate automatically once PRISM_DOMAIN's
+# A record points at this server. No cert paths to manage, no renewal cron.
+#
+# There is deliberately NO basic_auth here, even though Caddy offers it. The
+# gate belongs in frontend/proxy.ts:
+#   * it already exchanges the password for a session cookie, which is what
+#     makes ONE login hold across in-app navigation (the App Router fetches RSC
+#     payloads, and a fetch() that gets a 401 neither consults the browser's
+#     credential cache nor raises its dialog). Caddy's basic_auth would put the
+#     re-prompt-on-every-click bug straight back.
+#   * it is the layer covered by tests/demo-auth.test.ts and the contract pins.
+# Caddy's job is TLS and routing, nothing else.
+
+{$PRISM_DOMAIN} {
+	encode zstd gzip
+
+	# Uploads are large: a .inpx is megabytes and next.config.ts allows a
+	# 250MB proxied body. Caddy must not be the thing that truncates one.
+	request_body {
+		max_size 250MB
+	}
+
+	reverse_proxy frontend:3000 {
+		# Next needs the real host and scheme to build correct absolute urls
+		# and to set Secure cookies.
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		# A genesis generation or an agent call can run well past Caddy's
+		# default read timeout; the job endpoints are 202 + poll, but the
+		# artifact and export routes stream real work.
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+}
