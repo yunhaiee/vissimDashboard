@@ -1,6 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { DEMO_AUTH_REALM, isAuthorized, isDemoGateEnabled } from "@/lib/demo-auth";
+import {
+  DEMO_AUTH_REALM,
+  DEMO_SESSION_COOKIE,
+  DEMO_SESSION_MAX_AGE_S,
+  demoSessionToken,
+  hasValidDemoSession,
+  isAuthorized,
+  isDemoGateEnabled,
+} from "@/lib/demo-auth";
 
 // Remote demo gate (2026-09-08). Prism's own auth (`services/auth.py`,
 // `routers/auth.py`, `/login`) is the PRODUCT's identity layer, and the master
@@ -31,26 +39,56 @@ function isLegacyIntersectionsPath(pathname: string): boolean {
   return pathname === LEGACY_INTERSECTIONS_PATH || pathname.startsWith(`${LEGACY_INTERSECTIONS_PATH}/`);
 }
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
+  // Set only on the request that actually spends the password, so the
+  // Set-Cookie rides the FIRST authorised response and every later one is a
+  // plain pass-through.
+  let mintSession = false;
+
   // The gate goes FIRST. A redirect served before authentication would tell an
   // anonymous caller which routes exist.
-  if (isDemoGateEnabled(AUTH_USER, AUTH_PASSWORD) && !isAuthorized(request.headers.get("authorization"), AUTH_USER, AUTH_PASSWORD)) {
-    return new NextResponse("Authentication required.", {
-      status: 401,
-      headers: {
-        "WWW-Authenticate": DEMO_AUTH_REALM,
-        // A shared cache replaying a stored 401 would lock out a viewer who
-        // has already typed the password.
-        "Cache-Control": "no-store",
-      },
+  if (isDemoGateEnabled(AUTH_USER, AUTH_PASSWORD)) {
+    const token = await demoSessionToken(AUTH_USER, AUTH_PASSWORD);
+
+    // Cookie before header: the App Router's RSC fetches carry the cookie and
+    // NOT the Authorization header, and they are the majority of requests once
+    // a viewer starts clicking around.
+    if (!hasValidDemoSession(request.cookies.get(DEMO_SESSION_COOKIE)?.value, token)) {
+      if (isAuthorized(request.headers.get("authorization"), AUTH_USER, AUTH_PASSWORD)) {
+        mintSession = true;
+      } else {
+        return new NextResponse("Authentication required.", {
+          status: 401,
+          headers: {
+            "WWW-Authenticate": DEMO_AUTH_REALM,
+            // A shared cache replaying a stored 401 would lock out a viewer who
+            // has already typed the password.
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+    }
+  }
+
+  const response = isLegacyIntersectionsPath(request.nextUrl.pathname)
+    ? NextResponse.redirect(new URL("/dashboard", request.url))
+    : NextResponse.next();
+
+  if (mintSession) {
+    response.cookies.set({
+      name: DEMO_SESSION_COOKIE,
+      value: await demoSessionToken(AUTH_USER, AUTH_PASSWORD),
+      httpOnly: true,
+      sameSite: "lax",
+      // The tunnel is https; a laptop `npm run dev` is http and would silently
+      // drop a Secure cookie, so this follows the origin rather than assuming.
+      secure: request.nextUrl.protocol === "https:",
+      path: "/",
+      maxAge: DEMO_SESSION_MAX_AGE_S,
     });
   }
 
-  if (isLegacyIntersectionsPath(request.nextUrl.pathname)) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
-  }
-
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {
@@ -61,10 +99,12 @@ export const config = {
   // the whole page. The legacy redirect is now a pathname test inside `proxy`
   // rather than a matcher, and is pinned as such by the contract suite.
   //
-  // Known gap, documented rather than papered over: the browser WebSocket API
-  // sends no Authorization header, so `/api/simulations/ws/<job>` gets a 401
-  // through the tunnel and live run-progress falls back to polling via
-  // `fetchSimulationJob`. Moot for a laptop demo (no Vissim, no COM, so no
-  // live runs) — but it WOULD bite a tunnelled demo from the Windows box.
+  // The former WebSocket gap should now close on the session cookie: the
+  // browser WebSocket API still sends no Authorization header, but its
+  // handshake is a same-origin HTTP request and does carry cookies, so
+  // `/api/simulations/ws/<job>` is admitted once a viewer has been through the
+  // door. NOT exercised live — it needs a real run, which needs Vissim — so
+  // `fetchSimulationJob` polling remains the documented fallback until a
+  // tunnelled demo from the Windows box actually proves it.
   matcher: ["/:path*"],
 };

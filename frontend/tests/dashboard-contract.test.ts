@@ -1409,6 +1409,27 @@ contractTest("the remote demo gate covers the whole origin and stays default-off
   // corrupt one.
   pin.match(demoAuth, /decoded\.indexOf\(":"\)/, "expected credentials to split on the first colon only");
   pin.doesNotMatch(demoAuth, /decoded\.split\(":"\)/, "expected no naive split that would corrupt a password containing a colon");
+
+  // ONE login, not one per navigation (2026-09-09). The App Router navigates by
+  // fetching RSC payloads, and a `fetch()` that receives a 401 neither consults
+  // the browser's credential cache nor raises its dialog — so Basic alone
+  // re-challenged the viewer on every in-app link. The cookie is what those
+  // requests carry.
+  pin.match(proxy, /hasValidDemoSession\(request\.cookies\.get\(DEMO_SESSION_COOKIE\)\?\.value, token\)/, "expected the session cookie to be accepted as the door key");
+  pin.match(
+    proxy,
+    /hasValidDemoSession[\s\S]*isAuthorized\(request\.headers\.get\("authorization"\)/,
+    "expected the cookie to be checked before the Authorization header",
+  );
+  pin.match(proxy, /httpOnly: true/, "expected the session cookie to be unreadable from JavaScript");
+  pin.match(proxy, /sameSite: "lax"/, "expected the session cookie not to ride cross-site requests");
+  pin.match(proxy, /maxAge: DEMO_SESSION_MAX_AGE_S/, "expected the session to expire rather than last forever");
+  // The token is derived from the password, so shipping it to the client would
+  // be shipping a door key that outlives the tab.
+  pin.doesNotMatch(proxy, /NEXT_PUBLIC_[A-Z_]*SESSION/, "expected the session token never to reach the client bundle");
+  // A hash, never the raw key at rest in a cookie jar.
+  pin.match(demoAuth, /crypto\.subtle\.digest\("SHA-256"/, "expected the session token to be a hash of the credential pair");
+  pin.match(demoAuth, /return safeEqual\(cookieValue, token\)/, "expected the cookie comparison to be constant-time too");
 });
 
 contractTest("dashboard map signalized intersection uses traffic light artwork", (pin) => {

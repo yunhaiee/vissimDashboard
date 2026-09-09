@@ -12,6 +12,9 @@ import test from "node:test";
 
 import {
   DEMO_AUTH_REALM,
+  DEMO_SESSION_MAX_AGE_S,
+  demoSessionToken,
+  hasValidDemoSession,
   isAuthorized,
   isDemoGateEnabled,
   parseBasicCredentials,
@@ -103,4 +106,62 @@ test("an empty configured password is never satisfiable through isAuthorized", (
   // The gate is off in that configuration; this pins that isAuthorized alone
   // still requires the username to match.
   assert.equal(isAuthorized(basic("wrong:"), "professor", ""), false);
+});
+
+// ---------------------------------------------------------------- session ---
+// The cookie exists because Basic alone challenged the viewer on EVERY in-app
+// navigation (2026-09-09): the App Router fetches RSC payloads, and a `fetch()`
+// that gets a 401 neither consults the browser's credential cache nor raises
+// its dialog. These pin the properties that make one login hold.
+
+test("the session token is deterministic for a credential pair", async () => {
+  // The two processes share_demo.py starts must agree on the token without
+  // exchanging a secret, and a restart must not log the viewer out.
+  const first = await demoSessionToken("professor", "correct-horse");
+  const second = await demoSessionToken("professor", "correct-horse");
+  assert.equal(first, second);
+});
+
+test("a changed password mints a different token, revoking every old cookie", async () => {
+  const before = await demoSessionToken("professor", "correct-horse");
+  const after = await demoSessionToken("professor", "battery-staple");
+  assert.notEqual(before, after);
+  // And the old cookie is no longer admitted under the new key.
+  assert.equal(hasValidDemoSession(before, after), false);
+});
+
+test("the username is part of the token, not just the password", async () => {
+  const one = await demoSessionToken("professor", "correct-horse");
+  const two = await demoSessionToken("student", "correct-horse");
+  assert.notEqual(one, two);
+});
+
+test("the token is a hash, never the password itself", async () => {
+  const token = await demoSessionToken("professor", "correct-horse");
+  // SHA-256 hex: the raw key must never be at rest in a cookie jar.
+  assert.match(token, /^[0-9a-f]{64}$/);
+  assert.equal(token.includes("correct-horse"), false);
+  assert.equal(token.includes("professor"), false);
+});
+
+test("a session is admitted only on an exact token match", async () => {
+  const token = await demoSessionToken("professor", "correct-horse");
+  assert.equal(hasValidDemoSession(token, token), true);
+  assert.equal(hasValidDemoSession(`${token}x`, token), false);
+  assert.equal(hasValidDemoSession(token.slice(0, -1), token), false);
+  assert.equal(hasValidDemoSession(token.toUpperCase(), token), false);
+});
+
+test("an absent or empty cookie is never a session", async () => {
+  // The unauthenticated case has to fall through to the Basic challenge
+  // rather than being mistaken for a valid door key.
+  const token = await demoSessionToken("professor", "correct-horse");
+  assert.equal(hasValidDemoSession(null, token), false);
+  assert.equal(hasValidDemoSession(undefined, token), false);
+  assert.equal(hasValidDemoSession("", token), false);
+});
+
+test("the session expires rather than lasting forever", () => {
+  assert.ok(DEMO_SESSION_MAX_AGE_S > 0, "a session that never expires is a permanent door key");
+  assert.ok(DEMO_SESSION_MAX_AGE_S <= 60 * 60 * 24, "a demo session should not outlive a day");
 });

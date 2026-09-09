@@ -19,6 +19,66 @@
 export const DEMO_AUTH_REALM = 'Basic realm="Prism demo", charset="UTF-8"';
 
 /**
+ * The door key, exchanged for a session cookie on first use.
+ *
+ * WHY A COOKIE AND NOT BASIC ALONE (2026-09-09): Basic credentials are
+ * replayed by the browser on document navigations, but the App Router does not
+ * navigate with documents — it fetches RSC payloads, and a `fetch()` that
+ * receives a 401 does not consult the browser's credential cache or raise its
+ * dialog. Every in-app link therefore hit the gate as an unauthenticated
+ * request, and the viewer was challenged again on each one. The cookie is what
+ * the router's own requests carry without being asked.
+ *
+ * It also closes the WebSocket gap `proxy.ts` used to document: the browser
+ * WebSocket API sends no `Authorization` header, but its handshake is a
+ * same-origin HTTP request and does send cookies.
+ */
+export const DEMO_SESSION_COOKIE = "prism_demo_session";
+
+/** Twelve hours — long enough for a demo session, short enough to expire. */
+export const DEMO_SESSION_MAX_AGE_S = 60 * 60 * 12;
+
+//: Derived from the configured pair, so no separate secret has to be invented
+//: or synchronised across the two processes `share_demo.py` starts. The token
+//: is a BEARER credential of exactly the same strength as the password it came
+//: from — anyone holding it had to have been given the password — so it is set
+//: HttpOnly and, on the tunnel's https origin, Secure. It is a hash rather
+//: than the password itself so the raw key is never at rest in a cookie jar.
+const SESSION_TOKEN_PREFIX = "prism-demo-session-v1:";
+
+let cachedToken: { key: string; token: Promise<string> } | null = null;
+
+async function computeSessionToken(key: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${SESSION_TOKEN_PREFIX}${key}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * The session token for a configured credential pair.
+ *
+ * Memoised on the pair itself: the digest is deterministic, so a changed env
+ * var (a restarted `share_demo.py` with a new password) invalidates every
+ * cookie minted under the old one without any explicit revocation step.
+ */
+export function demoSessionToken(user: string, password: string): Promise<string> {
+  const key = `${user}:${password}`;
+  if (!cachedToken || cachedToken.key !== key) {
+    cachedToken = { key, token: computeSessionToken(key) };
+  }
+  return cachedToken.token;
+}
+
+/** True when the cookie carries exactly the current session token. */
+export function hasValidDemoSession(cookieValue: string | null | undefined, token: string): boolean {
+  if (!cookieValue) return false;
+  // Same constant-time comparison as the password: the cookie IS a credential.
+  return safeEqual(cookieValue, token);
+}
+
+/**
  * Constant-time string comparison.
  *
  * The Edge runtime has no `crypto.timingSafeEqual`, and `===` on a secret
