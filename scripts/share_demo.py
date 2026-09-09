@@ -48,6 +48,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +64,23 @@ BACKEND_PORT = 8001
 #: suffix is what makes this safe to scrape.
 TUNNEL_URL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
 TUNNEL_TIMEOUT_SECONDS = 60
+
+#: How often the public URL is probed from this machine, and how many probes
+#: must fail before the alarm. Measured 2026-09-09: cloudflared ran for 3h54m
+#: with ZERO established edge connections while the hostname had gone NXDOMAIN
+#: — the process never exited, so the supervision loop's `poll()` check saw a
+#: healthy child and said nothing. The viewer got "This site can't be reached"
+#: and the operator got no signal at all. A tunnel is only up if the URL
+#: answers, so that is what gets measured.
+TUNNEL_HEALTH_EVERY_SECONDS = 30
+TUNNEL_HEALTH_FAILURES_BEFORE_ALARM = 2
+
+#: cloudflared lines worth repeating. Everything else is per-request noise.
+TUNNEL_NOTABLE_RE = re.compile(
+    r"\b(err|error|failed|failure|warn|unauthorized|disconnect|reconnect|"
+    r"retry|unregistered|terminat|shutdown|expired)",
+    re.IGNORECASE,
+)
 
 CLOUDFLARED_INSTALL_HINT = """
 cloudflared is not installed (or not on PATH). Install it:
@@ -115,6 +134,45 @@ def pump_stderr(stream, sink: "queue.Queue[str]", echo_prefix: str | None) -> No
         stream.close()
 
 
+def tunnel_is_reachable(url: str, timeout: float = 8.0) -> bool:
+    """True when the public URL still answers from the open internet.
+
+    ANY http status counts as up, 401 included — the demo gate refusing an
+    unauthenticated probe is proof the request reached this machine, which is
+    exactly what is being measured. Only DNS and transport failures mean down,
+    and NXDOMAIN on the quick-tunnel hostname is the observed shape of a
+    cloudflared that is still running but no longer registered.
+    """
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "prism-share-demo-healthcheck"})
+    try:
+        urllib.request.urlopen(request, timeout=timeout).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def drain_tunnel_output(lines: "queue.Queue[str]", current_url: str) -> str | None:
+    """Echo anything notable cloudflared said; return a NEW url if it moved.
+
+    A quick tunnel that re-registers gets a different hostname, and the old
+    link is dead the moment it does.
+    """
+    new_url = None
+    while True:
+        try:
+            line = lines.get_nowait()
+        except queue.Empty:
+            break
+        found = TUNNEL_URL_RE.search(line)
+        if found and found.group(0) != current_url:
+            new_url = found.group(0)
+        elif TUNNEL_NOTABLE_RE.search(line):
+            log(f"cloudflared: {line}")
+    return new_url
+
+
 def start_backend(env: dict[str, str]) -> subprocess.Popen:
     python = find_backend_python()
     log(f"starting backend on :{BACKEND_PORT} ({python})")
@@ -134,8 +192,14 @@ def start_backend(env: dict[str, str]) -> subprocess.Popen:
     )
 
 
-def start_tunnel() -> tuple[subprocess.Popen, str]:
-    """Open a quick tunnel to the frontend port and return its public URL."""
+def start_tunnel() -> tuple[subprocess.Popen, str, "queue.Queue[str]"]:
+    """Open a quick tunnel to the frontend port and return its public URL.
+
+    The stderr queue comes back with it: cloudflared keeps talking after the
+    URL appears — including when it loses the edge — and the supervision loop
+    has to keep reading, or those lines pile up unread and the operator learns
+    the tunnel is dead from whoever they sent the link to.
+    """
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
         raise SystemExit(CLOUDFLARED_INSTALL_HINT)
@@ -170,7 +234,7 @@ def start_tunnel() -> tuple[subprocess.Popen, str]:
             continue
         match = TUNNEL_URL_RE.search(line)
         if match:
-            return process, match.group(0)
+            return process, match.group(0), lines
 
     process.terminate()
     raise SystemExit(
@@ -272,7 +336,7 @@ def main() -> int:
             backend_env["QWEN_WORKER_AUTO_START"] = "0"
             children.append(start_backend(backend_env))
 
-        tunnel_process, url = start_tunnel()
+        tunnel_process, url, tunnel_lines = start_tunnel()
         children.append(tunnel_process)
         log(f"tunnel is up at {url}")
 
@@ -311,11 +375,51 @@ def main() -> int:
         children.append(start_frontend(frontend_env))
         print_banner(url, args.user, password)
 
+        # A dead tunnel is NOT a dead process, so `poll()` alone is blind to it
+        # (see TUNNEL_HEALTH_EVERY_SECONDS). The URL itself is the thing under
+        # supervision from here on.
+        next_health_check = time.monotonic() + TUNNEL_HEALTH_EVERY_SECONDS
+        failures = 0
+        alarm_raised = False
+
         while True:
             for child in children:
                 if child.poll() is not None:
                     log(f"a child process exited with {child.returncode}; shutting down.")
                     return child.returncode or 1
+
+            moved_to = drain_tunnel_output(tunnel_lines, url)
+            if moved_to:
+                log("=" * 68)
+                log(f"cloudflared re-registered at a NEW url: {moved_to}")
+                log(f"the link you sent ({url}) is dead.")
+                log("RESTART this script rather than sending the new one: the")
+                log("frontend baked the old url into NEXT_PUBLIC_API_BASE and")
+                log("ALLOWED_DEV_ORIGINS at startup, so the new host would be")
+                log("refused as an unrecognised dev origin.")
+                log("=" * 68)
+                url = moved_to
+
+            now = time.monotonic()
+            if now >= next_health_check:
+                next_health_check = now + TUNNEL_HEALTH_EVERY_SECONDS
+                if tunnel_is_reachable(url):
+                    if alarm_raised:
+                        log(f"tunnel is answering again: {url}")
+                        alarm_raised = False
+                    failures = 0
+                else:
+                    failures += 1
+                    if failures >= TUNNEL_HEALTH_FAILURES_BEFORE_ALARM and not alarm_raised:
+                        alarm_raised = True
+                        log("=" * 68)
+                        log(f"TUNNEL IS DOWN — {url} no longer answers.")
+                        log("Anyone you sent the link to is seeing a browser error.")
+                        log("cloudflared may still be running; a quick tunnel can lose")
+                        log("its edge registration without the process exiting.")
+                        log("Press Ctrl-C and re-run this script to get a fresh url.")
+                        log("=" * 68)
+
             time.sleep(1.0)
     except KeyboardInterrupt:
         log("Ctrl-C — closing the tunnel.")
